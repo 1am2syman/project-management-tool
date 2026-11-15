@@ -23,7 +23,7 @@
       <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
       <span class="sep"></span>
       <button id="sharebtn" title="Share this project read-only"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg>Share</button>
-      <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden></span></button>
+      <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden role="img" aria-label="Reminders are on"></span></button>
       <button id="impbtn" title="Import from Excel or CSV"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg>Import</button>
       <button id="expbtn" title="Export to Excel or PDF"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>Export</button>
       <span class="sep"></span>
@@ -42,12 +42,12 @@
         <input id="fxin" spellcheck="false" autocomplete="off">
         <button id="colbtn" class="colbtn" title="Choose visible columns"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10M10 3v10"/></svg>Columns</button>
       </div>
-      <div class="gx" id="gx">
+      <div class="gx" id="gx" tabindex="0" role="grid" aria-label="Task grid. Arrow keys move, Enter edits, Escape releases the grid so Tab can leave it.">
         <div class="ginner" id="ginner">
           <div class="g-band" id="gband"></div>
           <div class="g-letters" id="gletters"></div>
           <div class="g-headrow" id="ghead"></div>
-          <div class="g-body" id="gbody"></div>
+          <div class="g-body" id="gbody" role="rowgroup"></div>
         </div>
       </div>
     </section>

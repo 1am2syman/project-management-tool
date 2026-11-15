@@ -112,6 +112,8 @@ window.addEventListener('storage', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back')) return; // dialogs own the keyboard
   const mod = e.metaKey || e.ctrlKey;
+  // keys on a focused button/link/switch belong to that control, not to the grid (keeps Tab and Enter working for keyboard users)
+  if (!mod && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;
   if (gantt.isDragging() && e.key !== 'Escape') { if (mod || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) store.redo(); else store.undo(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
@@ -120,7 +122,7 @@ document.addEventListener('keydown', (e) => {
     if (ui.linkId || (ui.selId != null && mod)) { e.preventDefault(); act.del(); }
     else if (ui.selId != null) { // spreadsheet behaviour: clear the cell; deleting a task needs Ctrl/⌘+Delete or the toolbar button
       e.preventDefault();
-      if (['owner', 'pred'].includes(ui.col)) { const err = store.setCell(ui.selId, ui.col, ''); if (err) ctx.toast(err); }
+      if (['owner', 'email', 'pred'].includes(ui.col)) { const err = store.setCell(ui.selId, ui.col, ''); if (err) ctx.toast(err); }
       else ctx.toast('Ctrl/⌘+Delete removes the selected task');
     }
     return;
@@ -131,7 +133,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); act.indent(); return; }
   if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); act.outdent(); return; }
-  if (ui.selId == null) { if (e.key.startsWith('Arrow')) { e.preventDefault(); ctx.select(store.rows[0]?.id, 'name'); } return; }
+  if (ui.selId == null) { if (e.key.startsWith('Arrow') && (e.target === document.body || e.target.id === 'gx')) { e.preventDefault(); ctx.select(store.rows[0]?.id, 'name'); } return; }
   const mv = { ArrowDown: [1, 0], ArrowUp: [-1, 0], ArrowRight: [0, 1], ArrowLeft: [0, -1] }[e.key];
   if (mv) { e.preventDefault(); grid.moveSel(...mv); return; }
   if (e.key === 'Tab') { e.preventDefault(); grid.moveSel(0, e.shiftKey ? -1 : 1); return; }

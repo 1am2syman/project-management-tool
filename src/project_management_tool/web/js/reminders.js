@@ -250,12 +250,12 @@ export function createReminders(ctx) {
     if (autoMsg) warn.push(esc(autoMsg));
     const muted = rem.muted.map((e) => `<button class="chip2 off" data-unmute="${esc(e)}" title="Un-mute">${esc(e)} ×</button>`).join('');
     setHTML(dlg.body.querySelector('#remPane'),
-      `<div class="rem-sec"><div class="rem-row"><label class="sw"><input type="checkbox" id="remOn"${rem.on ? ' checked' : ''}${ro ? ' disabled' : ''}><i></i></label><div><b>Remind owners before deadlines</b><span class="sub">Project “${esc(sh.name)}” · deadline = task end date · finished tasks are skipped</span></div></div>` +
+      `<div class="rem-sec"><div class="rem-row"><label class="sw"><input type="checkbox" id="remOn" aria-label="Turn on reminders for this project"${rem.on ? ' checked' : ''}${ro ? ' disabled' : ''}><i></i></label><div><b>Remind owners before deadlines</b><span class="sub">Project “${esc(sh.name)}” · deadline = task end date · finished tasks are skipped</span></div></div>` +
       `<div class="rem-opts"${rem.on ? '' : ' hidden'}>` +
       `<div class="modes" role="radiogroup" aria-label="Reminder granularity">${modes.map(([k, t, s]) => `<label class="mode${rem.mode === k ? ' on' : ''}"><input type="radio" name="remMode" value="${k}"${rem.mode === k ? ' checked' : ''}><b>${t}</b><span>${s}</span></label>`).join('')}</div>` +
       `<div class="chips">${chips}</div>` +
       `<div class="rem-row2"><label class="chk"><input type="checkbox" id="remOver"${rem.overdue ? ' checked' : ''}> Also notify the day after a missed deadline</label><label>Send at <select id="remHour">${hours}</select></label></div>` +
-      `<div class="rem-row auto"><label class="sw"><input type="checkbox" id="remAuto"${rem.auto ? ' checked' : ''}><i></i></label><div><b>Automatic</b><span class="sub">Keep reminders in sync whenever this project changes (while the app is open, signed in)</span></div></div>` +
+      `<div class="rem-row auto"><label class="sw"><input type="checkbox" id="remAuto" aria-label="Send reminders automatically"${rem.auto ? ' checked' : ''}><i></i></label><div><b>Automatic</b><span class="sub">Keep reminders in sync whenever this project changes (while the app is open, signed in)</span></div></div>` +
       (muted ? `<div class="mutedrow"><span class="mut">Muted:</span>${muted}</div>` : '') + `</div></div>` +
       `<div class="rem-sec"><div class="rem-sum"><span><b>${d.create.length}</b> to schedule</span><span><b>${d.cancel.length}</b> to cancel</span><span><b>${d.keep.length}</b> up to date</span>${plan.skipped.past ? `<span class="mut">${plan.skipped.past} already past</span>` : ''}${plan.skipped.noRem ? `<span class="mut">${plan.skipped.noRem} skipped · <button class="lnk" id="remUnskip">clear</button></span>` : ''}</div>` +
       (warn.length ? `<div class="rem-warn">${warn.map((w) => `<p>${w}</p>`).join('')}</div>` : '') +
@@ -265,7 +265,7 @@ export function createReminders(ctx) {
   }
   function render() {
     if (!dlg) return;
-    setHTML(dlg.body.querySelector('#remTabs'), `<button data-tab="schedule" class="${tab === 'schedule' ? 'on' : ''}">Schedule</button><button data-tab="message" class="${tab === 'message' ? 'on' : ''}">Message template</button>`);
+    setHTML(dlg.body.querySelector('#remTabs'), `<button role="tab" aria-selected="${tab === 'schedule'}" data-tab="schedule" class="${tab === 'schedule' ? 'on' : ''}">Schedule</button><button role="tab" aria-selected="${tab === 'message'}" data-tab="message" class="${tab === 'message' ? 'on' : ''}">Message template</button>`);
     if (tab === 'schedule') renderSchedule(); else renderMessage();
   }
   const saveTpl = (name) => {
@@ -276,7 +276,7 @@ export function createReminders(ctx) {
 
   function open() {
     if (store.sheet().readOnly) { ctx.toast('This is a read-only copy: reminders are set by its owner'); return; }
-    dlg = openModal('Deadline reminders', '<div class="tabs" id="remTabs"></div><div id="remPane"></div>', { wide: true, onClose: () => { dlg = null; } });
+    dlg = openModal('Deadline reminders', '<div class="tabs" id="remTabs" role="tablist"></div><div id="remPane"></div>', { wide: true, onClose: () => { dlg = null; } });
     const B = dlg.body;
     B.addEventListener('change', (e) => {
       const t = e.target; if (store.sheet().readOnly) return;

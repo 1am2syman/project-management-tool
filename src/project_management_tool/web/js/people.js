@@ -47,14 +47,17 @@ export function createPeople(ctx) {
   }
 
   // ---------- type-ahead dropdown attached to an <input> ----------
+  let listN = 0;
   function attach(inp, onPick) {
-    const box = document.createElement('div'); box.className = 'pplist'; box.setAttribute('role', 'listbox'); document.body.appendChild(box);
+    const box = document.createElement('div'); box.className = 'pplist'; box.setAttribute('role', 'listbox'); box.id = `pplist-${++listN}`;
+    inp.setAttribute('role', 'combobox'); inp.setAttribute('aria-autocomplete', 'list'); inp.setAttribute('aria-controls', box.id); document.body.appendChild(box);
     let items = [], idx = -1, seq = 0, timer = 0, dead = false, touched = false; // until the user types, show suggestions instead of searching for the current value
     const place = () => { const r = inp.getBoundingClientRect(); box.style.left = `${Math.min(r.left, innerWidth - 300)}px`; box.style.top = `${r.bottom + 4}px`; box.style.minWidth = `${Math.max(r.width, 280)}px`; };
     const paint = (note) => {
-      setHTML(box, items.map((p, i) => `<div class="pp${i === idx ? ' on' : ''}" role="option" data-i="${i}">${avatar(p.name)}<span class="pn"><b>${esc(p.name)}</b><i>${esc(p.email)}${p.title ? ` · ${esc(p.title)}` : ''}</i></span></div>`).join('') +
+      setHTML(box, items.map((p, i) => `<div class="pp${i === idx ? ' on' : ''}" role="option" id="${box.id}-${i}" aria-selected="${i === idx}" data-i="${i}">${avatar(p.name)}<span class="pn"><b>${esc(p.name)}</b><i>${esc(p.email)}${p.title ? ` · ${esc(p.title)}` : ''}</i></span></div>`).join('') +
         (note ? `<div class="ppnote">${esc(note)}</div>` : '') + (!items.length && !note ? '<div class="ppnote">No matches. Press Enter to keep the typed name.</div>' : ''));
       box.hidden = false; place();
+      inp.setAttribute('aria-expanded', 'true'); inp.setAttribute('aria-activedescendant', idx >= 0 ? `${box.id}-${idx}` : '');
     };
     async function refresh() {
       const my = ++seq, r = await suggestions(touched ? inp.value : '');
@@ -62,14 +65,14 @@ export function createPeople(ctx) {
       items = r.items; idx = items.length && touched && inp.value.trim() ? 0 : -1; paint(r.note);
     }
     const queue = () => { touched = true; idx = -1; items = []; clearTimeout(timer); timer = setTimeout(refresh, 220); }; // results of an older query must not stay pickable
-    const pick = (p) => { cleanup(); onPick(p); };
+    const pick = (p, ev) => { cleanup(); onPick(p, ev); };
     function key(e) {
       if (e.key === 'Escape' && inp.closest('.modal')) { e.preventDefault(); e.stopImmediatePropagation(); cleanup(); return; } // close the list, not the dialog
       if (!items.length) return;
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); idx = (idx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; paint(); }
-      else if ((e.key === 'Enter' || e.key === 'Tab') && idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); pick(items[idx]); }
+      else if ((e.key === 'Enter' || e.key === 'Tab') && idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); pick(items[idx], e); }
     }
-    function cleanup() { dead = true; clearTimeout(timer); inp.removeEventListener('keydown', key, true); inp.removeEventListener('input', queue); inp.removeEventListener('blur', cleanup); box.remove(); }
+    function cleanup() { dead = true; clearTimeout(timer); inp.removeEventListener('keydown', key, true); inp.removeEventListener('input', queue); inp.removeEventListener('blur', cleanup); box.remove(); inp.setAttribute('aria-expanded', 'false'); inp.removeAttribute('aria-activedescendant'); }
     box.addEventListener('pointerdown', (e) => { e.preventDefault(); const row = e.target.closest('.pp'); if (row) pick(items[+row.dataset.i]); }); // preventDefault keeps focus in the input
     inp.addEventListener('keydown', key, true); inp.addEventListener('input', queue); inp.addEventListener('blur', cleanup);
     refresh();

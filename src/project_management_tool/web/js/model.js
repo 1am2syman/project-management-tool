@@ -202,7 +202,14 @@ export class Store {
     this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
     this.settle();
   }
-  serialize() { return JSON.stringify({ tasks: this.tasks, links: this.links, collapsed: [...this.collapsed], nextId: this.nextId, nextLink: this.nextLink }); }
+  // What is stored: tasks and the user-authored fields of links (slack/violated/critical are recomputed on load).
+  // Undo snapshots leave out which groups are collapsed: folding a group is a view choice, not an edit to be undone.
+  serialize(withView = true) {
+    const o = { tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
+    if (withView) o.collapsed = [...this.collapsed];
+    return JSON.stringify(o);
+  }
+  snap() { return this.serialize(false); }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
     try {
@@ -311,25 +318,25 @@ export class Store {
   get readOnly() { const s = this.wb && this.sheet(); return !!(s && s.readOnly); } // detached views (export) have no workbook
   tx(fn) {
     if (this.readOnly) { this.emit('denied'); return undefined; } // shared read-only copy
-    const before = this.serialize();
+    const before = this.snap();
     const r = fn();
     this.settle();
-    if (this.serialize() !== before) { this.undoStack.push(before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
+    if (this.snap() !== before) { this.undoStack.push(before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this.emit();
     return r;
   }
-  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.serialize()); this.load(JSON.parse(this.undoStack.pop())); this.save(); this.emit(); }
-  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.serialize()); this.load(JSON.parse(this.redoStack.pop())); this.save(); this.emit(); }
+  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.snap()); this.load({ ...JSON.parse(this.undoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
+  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
-  beginDrag() { this._before = this.serialize(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress })); }
+  beginDrag() { this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress })); }
   dragApply(fn) {
     for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; }
     fn(); this.settle(); this.emit('drag');
   }
   endDrag(commit = true) {
     if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; } this.settle(); }
-    else if (this.serialize() !== this._before) { this.undoStack.push(this._before); this.redoStack = []; this.save(); }
+    else if (this.snap() !== this._before) { this.undoStack.push(this._before); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
   }
   orig(id) { return this._orig.find((o) => o.id === id); }
@@ -551,8 +558,7 @@ export class Store {
     if (col === 'start') {
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date (try "Nov 12" or 2026-11-12)';
       this.tx(() => {
-        if (f.summary) { const delta = d - f.start; for (const lid of this.descLeaves(id)) this.byId.get(lid).start += delta; }
-        else { t.start = this.auto ? Math.max(d, this.lowerBound(id)) : d; }
+        this.dragMove(id, d - f.start); // same clamping as dragging, so a group keeps its shape
       });
       return null;
     }

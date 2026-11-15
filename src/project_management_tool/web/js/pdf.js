@@ -57,7 +57,7 @@ function projectPages(st, name, pages) {
   const tableW = cols.reduce((a, c) => a + c[1], 0), gx0 = M + tableW + 8, gw = PW - M - gx0, sc = gw / span;
   const topBlock = M + 38, hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
   const rowH = Math.max(11, Math.min(18, avail / Math.max(n, 1))), perPage = Math.max(1, Math.floor(avail / rowH));
-  const first = pages.length, count = Math.max(1, Math.ceil(n / perPage));
+  const count = Math.max(1, Math.ceil(n / perPage));
   const X = (d) => gx0 + (d - t0) * sc;
   const done = st.tasks.filter((t) => !st.info.get(t.id).summary && t.progress >= 100).length, leaves = st.tasks.filter((t) => !st.info.get(t.id).summary).length;
 
@@ -122,7 +122,7 @@ function projectPages(st, name, pages) {
     const fy = PH - M + 4; let lx = M;
     const sw = (col, label, shape) => { if (shape === 'm') p.poly([[lx + 3, fy - 6], [lx + 6, fy - 3], [lx + 3, fy], [lx, fy - 3]], col); else if (shape === 'l') p.line(lx, fy - 3, lx + 8, fy - 3, col, 0.8); else p.rect(lx, fy - 6, 8, 5, col); p.text(label, lx + 11, fy - 0.5, 6.8, '64748B'); lx += 14 + tw(label, 6.8); };
     sw('5B7CFA', 'Task'); if (crit) sw('F43F5E', 'Critical'); sw('334155', 'Summary'); sw('F59E0B', 'Milestone', 'm'); sw('94A3B8', 'Link', 'l');
-    p.text(`${name}  \u00B7  page ${pg + 1 + first - first} of ${count}  \u00B7  exported ${new Date().toISOString().slice(0, 10)}`.replace('\u00B7', '-').replace('\u00B7', '-'), PW - M, fy, 6.8, '94A3B8', false, 'r');
+    p.text(`${name}  -  page ${pg + 1} of ${count}  -  exported ${new Date().toISOString().slice(0, 10)}`, PW - M, fy, 6.8, '64748B', false, 'r'); // page numbers are per project
     pages.push(p);
   }
 }

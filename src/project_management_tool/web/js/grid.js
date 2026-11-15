@@ -113,7 +113,7 @@ export function createGrid(ctx) {
       case 'email': html = esc(t.email || '') || '<span style="color:#cbd5e1">—</span>'; break;
       case 'owner': if (t.owner) { const h = [...t.owner].reduce((a, ch) => a + ch.charCodeAt(0), 0); html = `<span class="chip"><span class="av" style="background:${AV[h % AV.length]}">${esc(t.owner.split(' ').map((w) => w[0]).join('').slice(0, 2))}</span>${esc(t.owner)}</span>`; } break;
     }
-    return `<div class="${cls}" data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
+    return `<div class="${cls}" role="gridcell"${sel ? ' aria-selected="true"' : ''} data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
   }
 
   // Rows are diffed against what is already on screen: while dragging a bar only the few rows whose text changed are re-parsed,
@@ -144,7 +144,7 @@ export function createGrid(ctx) {
     const rowHtml = [];
     for (const t of rows) {
       const f = store.info.get(t.id);
-      rowHtml.push([t.id, `<div class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`]);
+      rowHtml.push([t.id, `<div role="row" class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`]);
     }
     const P = store.project, pd = P.end - P.start;
     let tot = '<div class="c rn">Σ</div>';
@@ -195,7 +195,10 @@ export function createGrid(ctx) {
       else if (e.key === 'Tab') { e.preventDefault(); const d = e.shiftKey ? -1 : 1; finish(true, () => moveSel(0, d)); }
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
-    if (col === 'owner' && ctx.people) unpick = ctx.people.attach(inp, (p) => { picked = p; inp.value = p.name; finish(true); });
+    if (col === 'owner' && ctx.people) unpick = ctx.people.attach(inp, (p, ev) => { // Enter/Tab on a suggestion behaves like Enter/Tab in any cell: commit, then move on
+      picked = p; inp.value = p.name;
+      finish(true, ev && ev.key === 'Enter' ? () => moveSel(1, 0) : ev && ev.key === 'Tab' ? () => moveSel(0, ev.shiftKey ? -1 : 1) : undefined);
+    });
     inp.addEventListener('blur', () => finish(true));
     inp.addEventListener('input', () => { fxin.value = inp.value; });
   }

@@ -96,7 +96,7 @@ export function createGantt(ctx) {
     const [y, m, dd] = ymd(d);
     if (unit === 'year') return w >= 40 ? String(y) : '';
     if (unit === 'quarter') return w >= 90 ? `Q${Math.floor(m / 3) + 1} · ${y}` : w >= 26 ? `Q${Math.floor(m / 3) + 1}` : '';
-    if (unit === 'month') return w >= 130 ? `${FULL[m]} ${y}` : w >= 58 ? MONTHS[m] : w >= 24 ? MONTHS[m][0] : last === 'x' ? '' : '';
+    if (unit === 'month') return w >= 130 ? `${FULL[m]} ${y}` : w >= 30 ? MONTHS[m].slice(0, 3) : w >= 24 ? MONTHS[m][0] : last === 'x' ? '' : '';
     if (unit === 'week') return w >= 96 ? `W${isoWeek(d)} · ${fmtDate(d)}` : w >= 36 ? `W${isoWeek(d)}` : w >= 20 ? String(dd) : '';
     return '';
   }
@@ -156,6 +156,13 @@ export function createGantt(ctx) {
     if (!ms) el.style.width = Math.max(6, x2 - x1 - 2) + 'px';
   }
 
+  const tctx = document.createElement('canvas').getContext('2d'), twCache = new Map(); let twKey = '';
+  function textW(s) { // width of a bar label in the bar font, cached per density
+    const k = dims.name, ref = barsEl.querySelector('.label'); if (!ref) return s.length * 6.5;
+    if (k !== twKey) { twKey = k; twCache.clear(); const cs = getComputedStyle(ref); tctx.font = `500 ${cs.fontSize} ${cs.fontFamily}`; }
+    let w = twCache.get(s); if (w == null) { w = tctx.measureText(s).width; twCache.set(s, w); } return w;
+  }
+
   // focus mode: classes for the selected task's parents/children and predecessor/successor chains
   const relClass = (id) => ctx.relClass(id);
   function renderBars() {
@@ -175,7 +182,7 @@ export function createGantt(ctx) {
       el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${y}px,0)`;
       if (!ms) el.style.width = w + 'px';
       if (el._lt !== t.name) { el._label.textContent = t.name; el._lt = t.name; }
-      const out = !f.summary && !ms && w < 78;
+      const out = !f.summary && !ms && textW(t.name) + 16 > w; // label goes outside as soon as the text would not fit
       el._label.classList.toggle('out', out);
       const hw = ms || f.summary ? 8 : clamp(w * 0.22, 3, 8); if (el._hw !== hw) { el._hw = hw; el.style.setProperty('--hw', hw + 'px'); }
       const p = f.progress;
