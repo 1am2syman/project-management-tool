@@ -3,9 +3,9 @@
 export const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export function setHTML(el, markup) {
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  el.replaceChildren(range.createContextualFragment(markup));
+  // DOMParser documents have scripting disabled, so a stray <script> in the markup stays inert when adopted.
+  const doc = new DOMParser().parseFromString(`<!doctype html><body>${markup}`, 'text/html');
+  el.replaceChildren(...[...doc.body.childNodes].map((n) => document.adoptNode(n)));
 }
 
 export function setSVG(el, markup) {

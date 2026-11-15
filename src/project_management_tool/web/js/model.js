@@ -16,7 +16,7 @@ export const fmtISO = (d) => new Date(d * DAY).toISOString().slice(0, 10);
 export function parseDate(s, ref) {
   s = String(s).trim(); if (!s) return null;
   const y0 = ymd(ref ?? today)[0];
-  const mk = (y, m, d) => { const v = Date.UTC(y, m, d) / DAY; return Number.isFinite(v) ? v : null; };
+  const mk = (y, m, d) => { if (m < 0 || m > 11 || d < 1 || d > 31) return null; const v = Date.UTC(y, m, d) / DAY; if (!Number.isFinite(v)) return null; const r = ymd(v); return r[0] === y && r[1] === m && r[2] === d ? v : null; };
   const mi = (n) => MON.findIndex((x) => x.toLowerCase() === n.slice(0, 3).toLowerCase());
   let m;
   if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return mk(+m[1], m[2] - 1, +m[3]);
@@ -273,25 +273,29 @@ export class Store {
     this.emit();
     return r;
   }
-  undo() { if (!this.undoStack.length) return; this.redoStack.push(this.serialize()); this.load(JSON.parse(this.undoStack.pop())); this.save(); this.emit(); }
-  redo() { if (!this.redoStack.length) return; this.undoStack.push(this.serialize()); this.load(JSON.parse(this.redoStack.pop())); this.save(); this.emit(); }
+  undo() { if (this._orig || !this.undoStack.length) return; this.redoStack.push(this.serialize()); this.load(JSON.parse(this.undoStack.pop())); this.save(); this.emit(); }
+  redo() { if (this._orig || !this.redoStack.length) return; this.undoStack.push(this.serialize()); this.load(JSON.parse(this.redoStack.pop())); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
   beginDrag() { this._before = this.serialize(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress })); }
   dragApply(fn) {
-    for (const o of this._orig) { const t = this.byId.get(o.id); t.start = o.start; t.dur = o.dur; t.progress = o.progress; }
+    for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; }
     fn(); this.settle(); this.emit('drag');
   }
   endDrag(commit = true) {
-    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); t.start = o.start; t.dur = o.dur; t.progress = o.progress; } this.settle(); }
+    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; } this.settle(); }
     else if (this.serialize() !== this._before) { this.undoStack.push(this._before); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
   }
   orig(id) { return this._orig.find((o) => o.id === id); }
 
   // ---- scheduling ----
-  incoming(id) { return this.links.filter((l) => l.to === id); }
-  outgoing(id) { return this.links.filter((l) => l.from === id); }
+  incoming(id) { return this._in.get(id) || []; }
+  outgoing(id) { return this._out.get(id) || []; }
+  index() {
+    this._in = new Map(); this._out = new Map();
+    for (const l of this.links) { (this._in.get(l.to) || this._in.set(l.to, []).get(l.to)).push(l); (this._out.get(l.from) || this._out.set(l.from, []).get(l.from)).push(l); }
+  }
   startLB(id, exclude) {
     let m = -Infinity;
     for (const l of this.incoming(id)) {
@@ -318,12 +322,12 @@ export class Store {
     const leaves = this.tasks.filter((t) => !this.info.get(t.id).summary);
     const indeg = new Map(leaves.map((t) => [t.id, 0]));
     for (const l of this.links) if (indeg.has(l.to) && indeg.has(l.from)) indeg.set(l.to, indeg.get(l.to) + 1);
-    const q = leaves.filter((t) => indeg.get(t.id) === 0).map((t) => t.id), out = [];
-    while (q.length) {
-      const id = q.shift(); out.push(id);
-      for (const l of this.links) if (l.from === id && indeg.has(l.to)) { indeg.set(l.to, indeg.get(l.to) - 1); if (indeg.get(l.to) === 0) q.push(l.to); }
+    const q = leaves.filter((t) => indeg.get(t.id) === 0).map((t) => t.id), out = [], seen = new Set();
+    for (let h = 0; h < q.length; h++) {
+      const id = q[h]; out.push(id); seen.add(id);
+      for (const l of this.outgoing(id)) if (indeg.has(l.to)) { indeg.set(l.to, indeg.get(l.to) - 1); if (indeg.get(l.to) === 0) q.push(l.to); }
     }
-    for (const t of leaves) if (!out.includes(t.id)) out.push(t.id);
+    for (const t of leaves) if (!seen.has(t.id)) out.push(t.id);
     return out;
   }
   propagate() {
@@ -343,6 +347,7 @@ export class Store {
     for (let i = 0; i < n; i++) { let e = i; while (e + 1 < n && T[e + 1].level > T[i].level) e++; info.set(T[i].id, { i, sub: e, summary: e > i }); }
     this.info = info;
     this.links = this.links.filter((l) => info.has(l.from) && info.has(l.to) && !info.get(l.from).summary && !info.get(l.to).summary);
+    this.index();
     // summaries
     for (const t of T) {
       const f = info.get(t.id);
@@ -379,7 +384,7 @@ export class Store {
       const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = p.start + p.dur, se = s.start + s.dur;
       l.slack = l.type === 'FS' ? s.start - (pe + l.lag) : l.type === 'SS' ? s.start - (p.start + l.lag) : l.type === 'FF' ? se - (pe + l.lag) : se - (p.start + l.lag);
       l.violated = l.slack < 0;
-      l.critical = l.slack === 0 && info.get(l.from).critical && info.get(l.to).critical;
+      l.critical = l.slack <= 0 && info.get(l.from).critical && info.get(l.to).critical;
     }
     this.project = { start: isFinite(pstart) ? pstart : today, end: isFinite(pend) ? pend : today + 1 };
     this.critCount = leaves.filter((t) => info.get(t.id).critical).length;
@@ -436,12 +441,15 @@ export class Store {
     this.tx(() => { const f = this.info.get(id); const gone = new Set(this.tasks.slice(f.i, f.sub + 1).map((t) => t.id)); this.tasks.splice(f.i, f.sub - f.i + 1, ); this.links = this.links.filter((l) => !gone.has(l.from) && !gone.has(l.to)); });
   }
   indent(id, dir) {
-    this.tx(() => {
-      const f = this.info.get(id), T = this.tasks;
-      if (dir > 0 && (f.i === 0 || T[f.i].level > T[f.i - 1].level)) return;
-      if (dir < 0 && T[f.i].level === 0) return;
-      for (let j = f.i; j <= f.sub; j++) T[j].level += dir;
-    });
+    const f = this.info.get(id), T = this.tasks;
+    if (dir > 0 && (f.i === 0 || T[f.i].level > T[f.i - 1].level)) return null;
+    if (dir < 0 && T[f.i].level === 0) return null;
+    if (dir > 0) { // the previous row becomes a summary; summaries cannot carry links, so refuse rather than delete data silently
+      const p = T[f.i - 1];
+      if (!this.info.get(p.id).summary && this.links.some((l) => l.from === p.id || l.to === p.id)) return `“${p.name}” has links and would become a summary; remove its links first`;
+    }
+    this.tx(() => { for (let j = f.i; j <= f.sub; j++) T[j].level += dir; });
+    return null;
   }
   toggle(id) { if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id); this.recalc(); this.save(); this.emit(); }
   reaches(a, b, seen = new Set()) { if (a === b) return true; if (seen.has(a)) return false; seen.add(a); return this.outgoing(a).some((l) => this.reaches(l.to, b, seen)); }

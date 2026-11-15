@@ -22,7 +22,7 @@ const ctx = {
   },
   selectLink(id) { ui.linkId = id; ui.selId = null; renderAll(); },
   toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2600); },
-  scrollV(dy) { $('#gb').scrollTop += dy; },
+  syncGantt(v) { const gb = $('#gb'); if (gb.scrollTop !== v) gb.scrollTop = v; },
   syncV(v) { grid.setScrollTop(v); },
 };
 grid = createGrid(ctx);
@@ -58,7 +58,7 @@ store.on((kind) => {
 const act = {
   add: () => { const id = store.addTask(ui.selId); ctx.select(id, 'name', true); setTimeout(() => grid.startEdit(id, 'name'), 30); },
   addms: () => { const id = store.addTask(ui.selId, true); ctx.select(id, 'name', true); },
-  indent: () => { if (ui.selId != null) store.indent(ui.selId, 1); },
+  indent: () => { if (ui.selId != null) { const err = store.indent(ui.selId, 1); if (err) ctx.toast(err); } },
   outdent: () => { if (ui.selId != null) store.indent(ui.selId, -1); },
   del: () => {
     if (ui.linkId) { store.removeLink(ui.linkId); ui.linkId = null; gantt.closePop(); }
@@ -75,12 +75,21 @@ $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.c
 
 // keyboard
 document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input,textarea')) return;
+  if (e.target.matches('input,textarea,select')) return;
   const mod = e.metaKey || e.ctrlKey;
+  if (gantt.isDragging() && e.key !== 'Escape') { if (mod || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) store.redo(); else store.undo(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
   if (e.key === 'Escape') { if (gantt.isDragging()) gantt.cancelDrag(); else if (gantt.popOpen()) gantt.closePop(); else { ui.linkId = null; ctx.select(null); } return; }
-  if (e.key === 'Delete' || e.key === 'Backspace') { if (ui.linkId || ui.selId != null) { e.preventDefault(); act.del(); } return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (ui.linkId || (ui.selId != null && mod)) { e.preventDefault(); act.del(); }
+    else if (ui.selId != null) { // spreadsheet behaviour: clear the cell; deleting a task needs Ctrl/⌘+Delete or the toolbar button
+      e.preventDefault();
+      if (['owner', 'pred'].includes(ui.col)) { const err = store.setCell(ui.selId, ui.col, ''); if (err) ctx.toast(err); }
+      else ctx.toast('Ctrl/⌘+Delete removes the selected task');
+    }
+    return;
+  }
   if (e.altKey && (e.key === 'PageDown' || e.key === 'PageUp')) {
     e.preventDefault(); const ws = store.wb.sheets, i = ws.findIndex((s) => s.id === store.wb.active), n = ws.length;
     store.switchSheet(ws[(i + (e.key === 'PageDown' ? 1 : n - 1)) % n].id); return;
@@ -97,14 +106,15 @@ document.addEventListener('keydown', (e) => {
 
 // splitter
 (() => {
-  const sp = $('#split'), saved = localStorage.getItem('pm-gridw');
+  const sp = $('#split'); let saved = null; try { saved = localStorage.getItem('pm-gridw'); } catch { /* storage blocked */ }
   if (saved) document.documentElement.style.setProperty('--gridw', `${saved}px`);
   sp.addEventListener('pointerdown', (e) => {
     sp.setPointerCapture(e.pointerId); sp.classList.add('on');
     const x0 = e.clientX, w0 = $('#left').getBoundingClientRect().width;
-    const mv = (ev) => { const w = Math.max(320, Math.min(innerWidth - 320, w0 + ev.clientX - x0)); document.documentElement.style.setProperty('--gridw', `${w}px`); localStorage.setItem('pm-gridw', Math.round(w)); gantt.render(); };
-    const up = () => { sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('pointerup', up); };
-    sp.addEventListener('pointermove', mv); sp.addEventListener('pointerup', up);
+    let w = w0, pend = 0;
+    const mv = (ev) => { w = Math.max(320, Math.min(innerWidth - 320, w0 + ev.clientX - x0)); if (!pend) pend = requestAnimationFrame(() => { pend = 0; document.documentElement.style.setProperty('--gridw', `${w}px`); gantt.render(); }); };
+    const up = () => { sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('lostpointercapture', up); try { localStorage.setItem('pm-gridw', Math.round(w)); } catch { /* storage blocked */ } };
+    sp.addEventListener('pointermove', mv); sp.addEventListener('lostpointercapture', up);
   });
 })();
 

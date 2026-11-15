@@ -56,7 +56,7 @@ export function createGrid(ctx) {
   };
 
   const tpl = () => `44px ${VIS().map((c) => `${c.w}px`).join(' ')}`;
-  const applyTpl = () => { inner.style.setProperty('--tpl', tpl()); inner.style.width = `${44 + VIS().reduce((a, c) => a + c.w, 0)}px`; };
+  const applyTpl = () => { inner.style.setProperty('--tpl', tpl()); gx.style.setProperty('--frz', `${44 + (VIS()[0]?.w || 0) + 6}px`); inner.style.width = `${44 + VIS().reduce((a, c) => a + c.w, 0)}px`; };
 
   function renderHead() {
     const key = `${ui.col}|${[...hidden].join(',')}`;
@@ -138,7 +138,7 @@ export function createGrid(ctx) {
       tot += `<div class="${cl}"${st ? ` style="${st}"` : ''}>${v}</div>`;
     }
     h += `<div class="r tot">${tot}</div><div class="pad"></div>`;
-    const st = body.scrollTop; setHTML(body, h); body.scrollTop = st;
+    setHTML(body, h);
     // name box + formula bar
     const col = COLS.find((c) => c.id === ui.col), has = ui.selId != null && store.info.has(ui.selId);
     namebox.textContent = has ? col.letter + store.rowNum(ui.selId) : 'A1';
@@ -160,9 +160,8 @@ export function createGrid(ctx) {
       if (!editing) return; const e = editing; editing = null;
       const val = e.inp.value; e.inp.remove();
       if (commit && val !== raw(e.id, e.col)) { const err = store.setCell(e.id, e.col, val); if (err) ctx.toast(err); }
-      render(); ctx.requestRender();
-      if (move) move();
-      document.activeElement?.blur?.();
+      if (move) { render(); move(); } else ctx.requestRender();
+      if (document.activeElement?.tagName === 'INPUT') document.activeElement.blur();
     };
     inp.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -194,10 +193,7 @@ export function createGrid(ctx) {
     const r = e.target.closest('.r[data-id]'), c = e.target.closest('.c[data-col]');
     if (r && c && c.dataset.col !== 'rn' && !e.target.closest('.tog')) startEdit(+r.dataset.id, c.dataset.col);
   });
-  body.addEventListener('wheel', (e) => {
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { ctx.scrollV(e.deltaY); e.preventDefault(); }
-  }, { passive: false });
-  gx.addEventListener('scroll', () => gx.classList.toggle('scrolled', gx.scrollLeft > 0));
+  gx.addEventListener('scroll', () => { gx.classList.toggle('scrolled', gx.scrollLeft > 0); ctx.syncGantt(gx.scrollTop); });
 
   letters.addEventListener('pointerdown', (e) => {
     const rs = e.target.closest('.rs');
@@ -205,13 +201,19 @@ export function createGrid(ctx) {
     const col = COLS[+rs.dataset.i], x0 = e.clientX, w0 = col.w;
     rs.setPointerCapture(e.pointerId);
     const mv = (ev) => { col.w = Math.max(44, w0 + ev.clientX - x0); applyTpl(); };
-    const up = () => { rs.removeEventListener('pointermove', mv); rs.removeEventListener('pointerup', up); };
-    rs.addEventListener('pointermove', mv); rs.addEventListener('pointerup', up);
+    const up = () => { rs.removeEventListener('pointermove', mv); rs.removeEventListener('lostpointercapture', up); };
+    rs.addEventListener('pointermove', mv); rs.addEventListener('lostpointercapture', up);
   });
 
+  let fxcancel = false;
+  fxin.addEventListener('focus', () => { fxcancel = false; });
+  fxin.addEventListener('blur', () => {
+    if (fxcancel || ui.selId == null || !store.info.has(ui.selId)) return;
+    if (fxin.value !== raw(ui.selId, ui.col)) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); }
+  });
   fxin.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); fxin.blur(); render(); }
-    else if (e.key === 'Escape') { fxin.blur(); render(); }
+    if (e.key === 'Enter' && ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); fxcancel = true; fxin.blur(); render(); }
+    else if (e.key === 'Escape') { fxcancel = true; fxin.value = ui.selId != null ? raw(ui.selId, ui.col) : ''; fxin.blur(); render(); }
     e.stopPropagation();
   });
 
@@ -245,5 +247,5 @@ export function createGrid(ctx) {
   document.addEventListener('pointerdown', (e) => { if (!colpop.hidden && !colpop.contains(e.target) && !colbtn.contains(e.target)) colpop.hidden = true; }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') colpop.hidden = true; });
 
-  return { render, startEdit, moveSel, setScrollTop: (v) => { body.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
+  return { render, startEdit, moveSel, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
 }
