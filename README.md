@@ -27,6 +27,11 @@ No client secret is used. Users sign in with their corporate account in a Micros
 
 Limits worth knowing: auto-reminders and auto-publish run only while the app is open and signed in (the *scheduled emails themselves* do not need the app); deferred messages sit in the sender's Outbox until due; `Files.Read.All` is needed to open files other people shared with you.
 
+## Focus, import
+
+- **Focus** (toolbar switch, on by default): select a task in the grid or on the Gantt and everything else fades; its WBS parents/children (dashed), predecessor chain (teal) and successor chain (violet) stay highlighted in both panes, with counts in a legend.
+- **Import** (Excel `.xlsx` or `.csv`, or drop a file anywhere): *Download template* gives a documented workbook (Tasks + Instructions, dropdowns/validation). Headers are matched by name (Task/Name, Start, End/Finish, Days/Duration, Depends on/Predecessors, Owner/Resource Names, Email, % done, Level, #). Hierarchy comes from *Level* or Excel row grouping; dependencies like `4`, `6SS+2`, `9FF-1` refer to the `#` column (or Excel row numbers). Files exported by this app re-import unchanged. A preview lists warnings per row; each ticked sheet becomes a new project tab.
+
 ## Tests
 
 Playwright scripts used during development live outside the repo (`/tmp/pwt`); the Microsoft 365 flows were verified against a mocked Graph, not a live tenant.

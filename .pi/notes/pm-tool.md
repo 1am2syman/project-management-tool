@@ -47,3 +47,11 @@ Built (uncommitted at time of writing; commit next): js/m365.js (MSAL v3 vendore
 Mock harness: /tmp/pwt/mock.mjs (fake Graph) + /tmp/pwt/m365.mjs (end-to-end, 2 browser contexts). Run: `cd /tmp/pwt && node m365.mjs`. Last run all green except: mock bug in permission DELETE path parsing (use parts[4], parts[6]); picker empty-query list showed [] (timing? verify); 'denied' toast in viewer didn't show (check main.js store.on replace applied).
 Cannot test against real tenant: requires Azure app registration (clientId) — tell user. Client-side read-only is UX; real enforcement = OneDrive read permission.
 Next: fix the 3 items above, add tests for sheets tab lock icon (optional), rerun all /tmp/pwt suites, commit, update README with M365 setup, then re-run Opus review (include new files), then final summary.
+
+## UPDATE 4 (committed a997da6)
+All 3 mock-test items fixed (mock perm DELETE parse; click-count e.detail>=2 edit start in grid.js; people picker `touched` flag; sheet tab lock icon). README written with M365 setup. Committed a997da6. Opus review #2 of a997da6 running as bg job opus-review-2-e8a2, output /tmp/review2/out.md (copy of HEAD at /tmp/review2, server :5175). Next: triage findings, fix verified ones, rerun /tmp/pwt suites (dbg views cols sheets export frozen rev m365), commit, final summary (flag: not tested on real tenant; needs Azure app registration clientId; open items H5/L19/L21-25).
+
+## UPDATE 5 (committed): two new features done
+1. Focus mode: store.related(id) (anc/desc/up/down chains + link sets); ctx.rel/relClass in main.js; classes r-self/r-anc/r-desc/r-up/r-down/dim on rows, bars, links; #optFocus switch (pm-focus), #focusleg legend. Test /tmp/pwt/focus.mjs.
+2. Import: js/xlsxread.js (zip+XML reader, csv), js/import.js (mapSheet header aliasing, preview dialog, drop anywhere, template download), xlsx.js buildTemplate (+dataValidations, pack()). Tests /tmp/pwt/imp.mjs (template + own-export round trip identical), imp2.mjs (messy CSV). #impbtn in toolbar. README updated.
+Still pending: Opus review #2 (job opus-review-2-e8a2, /tmp/review2/out.md) of a997da6 — triage on wake; this commit is newer than what it reviews. Final summary after triage.

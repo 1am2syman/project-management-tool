@@ -377,6 +377,18 @@ export class Store {
       if (lb > t.start) t.start = lb;
     }
   }
+  // Everything connected to a task: WBS ancestors / descendants and the transitive dependency chain in both directions.
+  related(id) {
+    const f = this.info.get(id); if (!f) return null;
+    const T = this.tasks, anc = new Set(), desc = new Set(), up = new Set(), down = new Set(), upL = new Set(), downL = new Set();
+    for (let i = f.i - 1, lv = T[f.i].level; i >= 0 && lv > 0; i--) if (T[i].level < lv) { anc.add(T[i].id); lv = T[i].level; }
+    for (let j = f.i + 1; j <= f.sub; j++) desc.add(T[j].id);
+    const walk = (start, map, key, set, lset) => { const q = [start]; while (q.length) { const x = q.pop(); for (const l of map.get(x) || []) { lset.add(l.id); if (!set.has(l[key]) && l[key] !== id) { set.add(l[key]); q.push(l[key]); } } } };
+    const roots = f.summary ? [...desc].filter((d) => !this.info.get(d).summary) : [id]; // a summary stands for its leaves
+    for (const r of roots) { walk(r, this._in, 'from', up, upL); walk(r, this._out, 'to', down, downL); }
+    for (const d of desc) { up.delete(d); down.delete(d); }
+    return { anc, desc, up, down, upL, downL };
+  }
   settle() { this.recalc(); if (this.auto) { this.propagate(); this.recalc(); } }
 
   // ---- derived state ----

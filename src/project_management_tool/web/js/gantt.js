@@ -141,6 +141,8 @@ export function createGantt(ctx) {
     return el;
   }
 
+  // focus mode: classes for the selected task's parents/children and predecessor/successor chains
+  const relClass = (id) => ctx.relClass(id);
   function renderBars() {
     const seen = new Set();
     store.rows.forEach((t, i) => {
@@ -149,7 +151,8 @@ export function createGantt(ctx) {
       seen.add(t.id);
       const x1 = xOf(f.start), x2 = xOf(f.end), y = i * dims.row + (dims.row - dims.bar) / 2;
       const ms = t.ms && !f.summary;
-      const cls = 'bar' + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
+      const rc = relClass(t.id);
+      const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
       if (el._cls !== cls) { el.className = cls; el._cls = cls; }
       let w = ms ? 18 : Math.max(6, x2 - x1 - 2);
@@ -190,7 +193,8 @@ export function createGantt(ctx) {
         d = route(ax, ay, dA, bx, by, dF);
         arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
       }
-      h += `<g class="lk${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`;
+      const rl = ctx.rel ? (ctx.rel.upL.has(l.id) ? ' r-up' : ctx.rel.downL.has(l.id) ? ' r-down' : ' dim') : '';
+      h += `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`;
     }
     setSVG(linksEl, h);
   }

@@ -124,7 +124,7 @@ export function createGrid(ctx) {
     let h = '';
     for (const t of rows) {
       const f = store.info.get(t.id);
-      h += `<div class="r${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`;
+      h += `<div class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`;
     }
     const P = store.project, pd = P.end - P.start;
     let tot = '<div class="c rn">Σ</div>';

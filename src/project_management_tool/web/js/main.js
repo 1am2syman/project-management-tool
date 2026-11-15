@@ -4,6 +4,7 @@ import { createGantt } from './gantt.js';
 import { setHTML } from './dom.js';
 import { createSheets } from './sheets.js';
 import { createExport } from './export.js';
+import { createImport } from './import.js';
 import { createPeople } from './people.js';
 import { createM365UI } from './m365ui.js';
 import { createReminders } from './reminders.js';
@@ -14,11 +15,19 @@ import { initDensity, setDensity, dims } from './dims.js';
 const $ = (s) => document.querySelector(s);
 initDensity();
 const store = new Store();
-const ui = { selId: null, col: 'name', linkId: null };
+let focusOn = true; try { focusOn = localStorage.getItem('pm-focus') !== '0'; } catch {}
+const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
 let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
   store, ui,
+  rel: null,
+  // css classes for a task row/bar given the current selection (focus mode)
+  relClass(id) {
+    const r = this.rel; if (!r) return '';
+    if (id === ui.selId) return ' r-self';
+    return r.anc.has(id) ? ' r-anc' : r.desc.has(id) ? ' r-desc' : r.up.has(id) ? ' r-up' : r.down.has(id) ? ' r-down' : ' dim';
+  },
   requestRender() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderAll(); }); },
   select(id, col, reveal) {
     ui.selId = id; ui.linkId = null; if (col) ui.col = col;
@@ -34,6 +43,7 @@ grid = createGrid(ctx);
 gantt = createGantt(ctx);
 sheets = createSheets(ctx);
 createExport(ctx);
+createImport(ctx);
 ctx.people = createPeople(ctx);
 ctx.m365ui = createM365UI(ctx);
 const reminders = createReminders(ctx);
@@ -49,6 +59,9 @@ function status() {
 
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
+  ctx.rel = ui.focus && ui.selId != null ? store.related(ui.selId) : null;
+  $('#app').classList.toggle('focusing', !!ctx.rel);
+  { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
   grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner();
   $('.brand b').textContent = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
@@ -80,6 +93,8 @@ const act = {
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
+$('#optFocus').checked = ui.focus;
+$('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { localStorage.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
 $('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 

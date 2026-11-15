@@ -42,7 +42,7 @@ class Styles {
 
 // ---------- sheet ----------
 class Sheet {
-  constructor(name, tab) { this.name = name; this.tab = tab; this.rows = new Map(); this.widths = []; this.merges = []; this.freeze = null; this.filter = null; this.heights = new Map(); this.outline = new Map(); this.grid = true; this.maxC = 0; this.landscape = true; }
+  constructor(name, tab) { this.name = name; this.tab = tab; this.rows = new Map(); this.widths = []; this.merges = []; this.freeze = null; this.filter = null; this.heights = new Map(); this.outline = new Map(); this.grid = true; this.maxC = 0; this.landscape = true; this.validations = []; }
   set(r, c, v, s = 0) { if (!this.rows.has(r)) this.rows.set(r, new Map()); this.rows.get(r).set(c, { v, s }); this.maxC = Math.max(this.maxC, c); }
   cellXml(r, c, { v, s }) {
     const ref = `${colL(c)}${r + 1}`;
@@ -72,6 +72,7 @@ class Sheet {
     x += '</sheetData>';
     if (this.filter) x += `<autoFilter ref="${this.filter}"/>`;
     if (this.merges.length) x += `<mergeCells count="${this.merges.length}">${this.merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`;
+    if (this.validations.length) x += `<dataValidations count="${this.validations.length}">${this.validations.map((v) => `<dataValidation type="${v.type}"${v.op ? ` operator="${v.op}"` : ''} allowBlank="1" showErrorMessage="1" errorTitle="${esc(v.title || 'Invalid value')}" error="${esc(v.error || '')}" sqref="${v.ref}">${v.f1 != null ? `<formula1>${esc(v.f1)}</formula1>` : ''}${v.f2 != null ? `<formula2>${esc(v.f2)}</formula2>` : ''}</dataValidation>`).join('')}</dataValidations>`;
     x += `<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="${this.landscape ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/></worksheet>`;
     return x;
   }
@@ -196,6 +197,10 @@ export async function buildXlsx(projects) {
     sheets.push(tasksSheet(S, p.store, safeName(p.name, used), tab));
     sheets.push(ganttSheet(S, p.store, safeName(`${p.name.slice(0, 24)} Gantt`, used), tab));
   });
+  return pack(S, sheets);
+}
+
+async function pack(S, sheets) {
   const files = [
     { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
     { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
@@ -205,4 +210,80 @@ export async function buildXlsx(projects) {
     ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: s.xml() })),
   ];
   return zip(files);
+}
+
+// ---------- import template ----------
+export const TEMPLATE_COLS = ['#', 'Task', 'Type', 'Level', 'Start', 'Days', '% done', 'Depends on', 'Owner', 'Email'];
+
+/** Blank, documented import template: a Tasks sheet with a worked example and an Instructions sheet. */
+export async function buildTemplate() {
+  const S = new Styles(), used = new Set();
+  const sh = new Sheet('Tasks', '2B59E6'); sh.freeze = [2, 1]; sh.widths = [6, 38, 12, 8, 13, 8, 9, 16, 18, 30];
+  const head = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', h: 'center', wrap: 1, bb: '0F172A' });
+  TEMPLATE_COLS.forEach((h, c) => sh.set(0, c, h, head)); sh.heights.set(0, 22);
+  const d0 = Math.floor(Date.now() / 86400000), mon = d0 - ((dow(d0) + 6) % 7) + 7; // next Monday
+  // [id, task, type, level, startOffsetDays, days, %done, depends, owner, email]
+  const ex = [
+    [1, 'Website redesign', 'Task', 1, 0, null, null, '', '', ''],
+    [2, 'Discovery', 'Task', 2, 0, null, null, '', '', ''],
+    [3, 'Stakeholder interviews', 'Task', 3, 0, 5, 1, '', 'Alex Morgan', 'alex.morgan@example.com'],
+    [4, 'Requirements sign-off', 'Milestone', 3, 5, 0, 0, '3', 'Alex Morgan', 'alex.morgan@example.com'],
+    [5, 'Design', 'Task', 2, 0, null, null, '', '', ''],
+    [6, 'Wireframes', 'Task', 3, 5, 7, 0.4, '4', 'Sam Lee', 'sam.lee@example.com'],
+    [7, 'Visual design', 'Task', 3, 12, 9, 0, '6', 'Sam Lee', 'sam.lee@example.com'],
+    [8, 'Build', 'Task', 2, 0, null, null, '', '', ''],
+    [9, 'Frontend', 'Task', 3, 12, 14, 0, '6SS+5, 7FF', 'Jo Park', 'jo.park@example.com'],
+    [10, 'Launch', 'Milestone', 2, 26, 0, 0, '9, 7', '', ''],
+  ];
+  const g = (o) => S.get({ bb: 'E2E8F0', ...o });
+  ex.forEach((r, i) => {
+    const sum = r[5] == null, row = i + 1, b = sum ? 1 : 0, fill = sum ? 'F1F5F9' : null;
+    sh.set(row, 0, r[0], g({ h: 'center', color: '94A3B8', b, fill }));
+    sh.set(row, 1, r[1], g({ indent: r[3] - 1, h: 'left', b, fill }));
+    sh.set(row, 2, r[2], g({ color: '64748B', fill }));
+    sh.set(row, 3, r[3], g({ h: 'center', fmt: '0', fill }));
+    sh.set(row, 4, sum ? '' : mon + r[4] + 25569, g({ fmt: 'yyyy-mm-dd', h: 'center', fill }));
+    sh.set(row, 5, sum ? '' : r[5], g({ h: 'center', fmt: '0', fill }));
+    sh.set(row, 6, sum ? '' : r[6], g({ h: 'center', fmt: '0%', fill }));
+    sh.set(row, 7, r[7], g({ color: '475569', fill }));
+    sh.set(row, 8, r[8], g({ fill }));
+    sh.set(row, 9, r[9], g({ color: '475569', fill }));
+  });
+  // empty, pre-formatted rows to type into
+  for (let row = ex.length + 1; row <= 300; row++) {
+    sh.set(row, 0, '', g({ h: 'center', color: '94A3B8' })); sh.set(row, 1, '', g({})); sh.set(row, 2, '', g({ color: '64748B' })); sh.set(row, 3, '', g({ h: 'center', fmt: '0' }));
+    sh.set(row, 4, '', g({ fmt: 'yyyy-mm-dd', h: 'center' })); sh.set(row, 5, '', g({ h: 'center', fmt: '0' })); sh.set(row, 6, '', g({ h: 'center', fmt: '0%' }));
+    sh.set(row, 7, '', g({ color: '475569' })); sh.set(row, 8, '', g({})); sh.set(row, 9, '', g({ color: '475569' }));
+  }
+  sh.validations.push(
+    { type: 'list', ref: 'C2:C300', f1: '"Task,Milestone"', title: 'Type', error: 'Choose Task or Milestone.' },
+    { type: 'whole', op: 'between', ref: 'D2:D300', f1: '1', f2: '8', title: 'Level', error: 'Level is a whole number from 1 (top) to 8.' },
+    { type: 'whole', op: 'greaterThanOrEqual', ref: 'F2:F300', f1: '0', title: 'Days', error: 'Days is a whole number of calendar days (0 = milestone).' },
+    { type: 'decimal', op: 'between', ref: 'G2:G300', f1: '0', f2: '1', title: '% done', error: 'Enter 0%–100%.' },
+  );
+  sh.filter = `A1:${colL(TEMPLATE_COLS.length - 1)}300`;
+
+  const ins = new Sheet('Instructions', 'F59E0B'); ins.widths = [18, 92]; ins.grid = false; ins.landscape = false;
+  const h1 = S.get({ b: 1, sz: 16, color: '0F172A' }), th = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', bb: '0F172A' }), k = S.get({ b: 1, bb: 'E2E8F0', v: 'top' }), v = S.get({ bb: 'E2E8F0', wrap: 1, v: 'top' }), p = S.get({ color: '475569', wrap: 1, v: 'top' });
+  ins.set(0, 0, 'How to fill in the import template', h1); ins.heights.set(0, 28);
+  [
+    'Fill in the Tasks sheet (one task per row, in the order you want them), save as .xlsx, then use Import in the app.',
+    'The example rows show the structure; delete them and type your own. Column headers must stay in row 1 — extra columns are ignored.',
+  ].forEach((t, i) => { ins.set(2 + i, 0, t, p); ins.merges.push(`A${3 + i}:B${3 + i}`); ins.heights.set(2 + i, 30); });
+  ins.set(5, 0, 'Column', th); ins.set(5, 1, 'What to enter', th);
+  [
+    ['#', 'A unique ID for the row (numbers or WBS codes such as 1.2). Used by "Depends on". If left empty the Excel row number is used.'],
+    ['Task *', 'The task name. Required.'],
+    ['Type', '"Task" (default) or "Milestone". A task with Days = 0 is also treated as a milestone. Summary (parent) tasks are created automatically from Level, see below.'],
+    ['Level', 'Outline depth: 1 = top level, 2 = child of the nearest row above with Level 1, and so on. A row becomes a summary task when the next row is deeper. Summaries need no dates; they are computed from their children.'],
+    ['Start', 'First day of the task, as a real Excel date or text like 2026-11-30, 30 Nov 2026, Nov 30 or 11/30/2026. If empty, the task starts after its predecessors (or on the project start date).'],
+    ['Days', 'Duration in calendar days (end date is exclusive of the next day: Start Nov 2 + 5 days finishes Nov 6). 0 makes a milestone. You can supply an End column instead.'],
+    ['End (optional)', 'Optional extra column: last day of the task (inclusive). Used when Days is empty.'],
+    ['% done', 'Progress, 0%–100% (format the cell as a percentage) or 0–100.'],
+    ['Depends on', 'Predecessors, by the # of those rows, separated by commas. Optional link type and lag: 4  ·  6SS+2 (start-to-start, 2 days later)  ·  9FF-1 (finish-to-finish, 1 day earlier). Default type is FS (finish-to-start).'],
+    ['Owner / Email', 'Person responsible. Email is optional and is used for deadline reminders; connect Microsoft 365 afterwards to pick people from your directory.'],
+  ].forEach((r, i) => { ins.set(6 + i, 0, r[0], k); ins.set(6 + i, 1, r[1], v); ins.heights.set(6 + i, r[1].length > 190 ? 60 : r[1].length > 95 ? 45 : 30); });
+  ins.set(17, 0, 'Also works with', S.get({ b: 1, color: '475569' }));
+  ins.set(17, 1, 'Excel files exported from this app (Tasks sheet), CSV files with the same headers, and most Microsoft Project / Smartsheet / Excel task lists — common header names such as Name, Finish, Duration, Predecessors, Resource Names and Assigned To are recognised.', p); ins.heights.set(17, 45);
+  return pack(S, [sh, ins]);
 }

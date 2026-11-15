@@ -24,6 +24,7 @@
       <span class="sep"></span>
       <button id="sharebtn" title="Share this project read-only"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg>Share</button>
       <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden></span></button>
+      <button id="impbtn" title="Import from Excel or CSV"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg>Import</button>
       <button id="expbtn" title="Export to Excel or PDF"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>Export</button>
       <span class="sep"></span>
       <button id="m365btn" class="m365" title="Connect Microsoft 365"><span id="m365lbl"></span></button>
@@ -62,10 +63,12 @@
         <span class="sep"></span>
         <button data-act="density" title="Toggle row density">Density</button>
         <span class="grow"></span>
+        <label class="switch" title="Highlight the selected task's parents, children, predecessors and successors"><input type="checkbox" id="optFocus"><i></i>Focus</label>
         <label class="switch crit"><input type="checkbox" id="optCrit"><i></i>Critical path</label>
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
       </div>
       <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>
+      <div class="focusleg" id="focusleg" hidden><b>Focus</b><span class="k anc"><i></i>Parents <em class="n-anc">0</em></span><span class="k desc"><i></i>Children <em class="n-desc">0</em></span><span class="k up"><i></i>Predecessors <em class="n-up">0</em></span><span class="k down"><i></i>Successors <em class="n-down">0</em></span></div>
       <div class="gbody" id="gb">
         <div class="canvas" id="canvas">
           <svg class="bg" id="bg"></svg>
