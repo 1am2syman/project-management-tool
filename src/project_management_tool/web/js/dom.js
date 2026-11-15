@@ -3,8 +3,12 @@
 export const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export function setHTML(el, markup) {
-  // DOMParser documents have scripting disabled, so a stray <script> in the markup stays inert when adopted.
+  // A DOMParser document does not run <script>, but event-handler attributes (onerror=…) DO fire once the nodes are adopted,
+  // so strip them (and javascript: URLs) here as a second line of defence behind esc().
   const doc = new DOMParser().parseFromString(`<!doctype html><body>${markup}`, 'text/html');
+  for (const n of doc.body.querySelectorAll('*')) {
+    for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (/^(href|src|xlink:href|action|formaction)$/i.test(a.name) && /^\s*(javascript|data):/i.test(a.value))) n.removeAttribute(a.name);
+  }
   el.replaceChildren(...[...doc.body.childNodes].map((n) => document.adoptNode(n)));
 }
 
@@ -19,9 +23,23 @@ export function openModal(title, bodyMarkup, { wide = false, onClose } = {}) {
   setHTML(back, `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="m-head"><b>${esc(title)}</b><button class="m-x" aria-label="Close">×</button></div><div class="m-body"></div></div>`);
   const body = back.querySelector('.m-body'); setHTML(body, bodyMarkup);
   document.body.appendChild(back);
-  const close = () => { document.removeEventListener('keydown', key, true); back.remove(); onClose?.(); };
-  const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const prev = document.activeElement, modal = back.querySelector('.modal');
+  modal.setAttribute('tabindex', '-1');
+  const close = () => { document.removeEventListener('keydown', key, true); back.remove(); onClose?.(); if (prev && prev.isConnected && prev.focus) prev.focus(); };
+  const focusables = () => [...modal.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])')].filter((x) => !x.disabled && !x.hidden && x.offsetParent !== null);
+  const key = (e) => {
+    if (!back.isConnected) return;
+    if (e.key === 'Escape') { if (document.querySelector('.pplist')) return; e.stopPropagation(); close(); return; } // an open people list takes Escape first
+    if (e.key === 'Tab') { // keep keyboard focus inside the dialog
+      const f = focusables(); if (!f.length) { e.preventDefault(); modal.focus(); return; }
+      const first = f[0], last = f[f.length - 1], a = document.activeElement;
+      if (!modal.contains(a)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+    }
+  };
   document.addEventListener('keydown', key, true);
+  setTimeout(() => { if (back.isConnected && !modal.contains(document.activeElement)) (modal.querySelector('input:not([disabled]),textarea,select') || modal).focus(); }, 0);
   back.addEventListener('pointerdown', (e) => { if (e.target === back) close(); });
   back.querySelector('.m-x').addEventListener('click', close);
   return { el: back, body, close };

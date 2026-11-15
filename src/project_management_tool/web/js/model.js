@@ -36,7 +36,7 @@ export const REM_DEF = { on: false, auto: false, mode: 'task', offsets: [3, 1, 0
 export function cleanShare(s) {
   if (!s || typeof s !== 'object' || typeof s.driveId !== 'string' || typeof s.itemId !== 'string') return null;
   const people = {};
-  if (s.people && typeof s.people === 'object') for (const [k, v] of Object.entries(s.people).slice(0, 500)) if (isEmail(k) && v && typeof v === 'object') people[k.toLowerCase()] = { name: String(v.name || k).slice(0, 80), permId: typeof v.permId === 'string' ? v.permId : '', at: Number(v.at) || 0 };
+  if (s.people && typeof s.people === 'object') for (const [k, v] of Object.entries(s.people).slice(0, 500)) if (isEmail(k) && v && typeof v === 'object') people[k.toLowerCase()] = { name: String(v.name || k).slice(0, 80), permId: typeof v.permId === 'string' ? v.permId : '', uid: typeof v.uid === 'string' ? v.uid.slice(0, 100) : '', at: Number(v.at) || 0 };
   return { driveId: s.driveId.slice(0, 300), itemId: s.itemId.slice(0, 300), webUrl: typeof s.webUrl === 'string' && /^https:\/\//.test(s.webUrl) ? s.webUrl.slice(0, 1000) : '', auto: !!s.auto, publishedAt: Number(s.publishedAt) || 0, people };
 }
 export function cleanSource(s) {
@@ -45,7 +45,7 @@ export function cleanSource(s) {
 }
 export function cleanRem(r) {
   const o = r && typeof r === 'object' ? r : {};
-  const offs = [...new Set((Array.isArray(o.offsets) ? o.offsets : REM_DEF.offsets).map((n) => Math.round(Number(n))).filter((n) => Number.isFinite(n) && n >= 0 && n <= 60))].sort((a, b) => b - a).slice(0, 6);
+  const offs = [...new Set((Array.isArray(o.offsets) ? o.offsets : REM_DEF.offsets).map((n) => Math.round(Number(n))).filter((n) => Number.isFinite(n) && n >= 0 && n <= 60))].sort((a, b) => b - a).slice(0, 8);
   const hour = Math.round(Number(o.hour)); 
   const str = (v, d, n) => (typeof v === 'string' && v.trim() ? v.slice(0, n) : d);
   const muted = [...new Set((Array.isArray(o.muted) ? o.muted : []).map((e) => String(e).toLowerCase()).filter(isEmail))].slice(0, 500);
@@ -174,7 +174,7 @@ export class Store {
     this.load(this.sheet().data);
   }
   on(fn) { this.listeners.push(fn); }
-  emit(kind = 'change') { for (const f of this.listeners) f(kind); }
+  emit(kind = 'change') { for (const f of this.listeners) { try { f(kind); } catch (e) { console.error(e); } } } // one broken listener must not stop the others (e.g. the renderer)
 
   // ---- persistence ----
   readWB() {
@@ -204,6 +204,7 @@ export class Store {
   }
   serialize() { return JSON.stringify({ tasks: this.tasks, links: this.links, collapsed: [...this.collapsed], nextId: this.nextId, nextLink: this.nextLink }); }
   save() {
+    if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
     try {
       this.sheet().data = JSON.parse(this.serialize());
       localStorage.setItem(WB, JSON.stringify(this.wb));
@@ -226,10 +227,10 @@ export class Store {
     this.load(this.sheet().data); this.save(); this.emit('sheet');
   }
   switchSheet(id) { if (id === this.wb.active || !this.sheet(id)) return; this.stash(); this.enter(id); }
-  addSheet(data, name) {
+  addSheet(data, name, extra = {}) {
     this.stash();
     const id = `s${this.wb.nextSheet++}`;
-    this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data), rem: cleanRem() });
+    this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data), rem: cleanRem(), ...extra });
     this.enter(id); return id;
   }
   // A read-only copy of a project somebody shared with me. Re-importing the same source refreshes it in place.
@@ -240,10 +241,14 @@ export class Store {
       if (ex.id === this.wb.active) { this.load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
       return ex.id;
     }
-    const id = this.addSheet(data, name), s = this.sheet(id); s.readOnly = true; s.source = cleanSource(source); this.save(); this.emit('sheet'); return id;
+    const id = this.addSheet(data, name, { readOnly: true, source: cleanSource(source) }); this.save(); this.emit('sheet'); return id;
   }
   // Snapshot of the active sheet for publishing: tasks, links and name only. Reminder settings and sharing state stay private.
-  snapshot(id = this.wb.active) { if (id === this.wb.active) this.save(); const s = this.sheet(id); return { v: 1, name: s.name, data: JSON.parse(JSON.stringify(s.data)) }; }
+  snapshot(id = this.wb.active) {
+    if (id === this.wb.active) this.save(); const s = this.sheet(id), data = JSON.parse(JSON.stringify(s.data));
+    for (const t of data.tasks) delete t.noRem; // my reminder choices are not part of what I share
+    return { v: 1, name: s.name, data };
+  }
   newBlank() { return this.addSheet(blank(), `Project ${this.wb.nextSheet}`); }
   renameSheet(id, name) {
     const s = this.sheet(id), n = String(name).trim(); if (!s || !n || n === s.name) return false;
@@ -269,7 +274,7 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { listeners: [], auto: this.auto, critical: this.critical, tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
+    Object.assign(v, { listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
     v.settle(); return v;
   }
 
@@ -303,7 +308,7 @@ export class Store {
   }
 
   // ---- transactions / undo ----
-  get readOnly() { return !!this.sheet().readOnly; }
+  get readOnly() { const s = this.wb && this.sheet(); return !!(s && s.readOnly); } // detached views (export) have no workbook
   tx(fn) {
     if (this.readOnly) { this.emit('denied'); return undefined; } // shared read-only copy
     const before = this.serialize();
@@ -313,8 +318,8 @@ export class Store {
     this.emit();
     return r;
   }
-  undo() { if (this._orig || !this.undoStack.length) return; this.redoStack.push(this.serialize()); this.load(JSON.parse(this.undoStack.pop())); this.save(); this.emit(); }
-  redo() { if (this._orig || !this.redoStack.length) return; this.undoStack.push(this.serialize()); this.load(JSON.parse(this.redoStack.pop())); this.save(); this.emit(); }
+  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.serialize()); this.load(JSON.parse(this.undoStack.pop())); this.save(); this.emit(); }
+  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.serialize()); this.load(JSON.parse(this.redoStack.pop())); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
   beginDrag() { this._before = this.serialize(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress })); }
@@ -389,7 +394,7 @@ export class Store {
     for (const d of desc) { up.delete(d); down.delete(d); }
     return { anc, desc, up, down, upL, downL };
   }
-  settle() { this.recalc(); if (this.auto) { this.propagate(); this.recalc(); } }
+  settle() { this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
 
   // ---- derived state ----
   recalc() {
@@ -525,7 +530,8 @@ export class Store {
   predText(id) {
     return this.incoming(id).map((l) => `${this.rowNum(l.from)}${l.type === 'FS' ? '' : l.type}${l.lag ? (l.lag > 0 ? '+' : '') + l.lag : ''}`).join(', ');
   }
-  setShare(share) { const s = this.sheet(); s.share = cleanShare(share); this.save(); this.emit('meta'); }
+  // Always addressed by sheet id: callers finish async work after the user may have switched tabs.
+  setShare(id, share) { const s = this.sheet(id); if (!s || s.readOnly) return; s.share = cleanShare(share); this.save(); this.emit('share'); }
   clearNoRem() { this.tx(() => { for (const t of this.tasks) t.noRem = false; }); }
   setNoRem(id, v) { this.tx(() => { const t = this.byId.get(id); if (t) t.noRem = !!v; }); }
   setOwner(id, name, email) { this.tx(() => { const t = this.byId.get(id); if (t) { t.owner = String(name).slice(0, 80); t.email = isEmail(email) ? email : ''; } }); }

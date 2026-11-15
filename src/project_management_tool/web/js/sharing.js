@@ -24,57 +24,76 @@ export function grantEmail({ owner, project, link, message, person }) {
 export function createSharing(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#sharebtn'), banner = document.querySelector('#robanner'), app = document.querySelector('#app');
-  let dlg = null, pending = [], grants = null, busy = false, autoTimer = 0;
-  const sh = () => store.sheet();
+  let dlg = null, pending = [], grants = null, busy = false, sid = null, stopPicker = null, quiet = false;
+  const sh = () => store.sheet();                       // the sheet on screen (viewer banner)
+  const ds = () => store.sheet(sid) || store.sheet();   // the sheet the open dialog is about: every async step is pinned to it
   const owner = () => (m365.currentAccount() || { name: 'Someone', email: '' });
   const status = (s, bad = false) => { const el = dlg && dlg.body.querySelector('#shStatus'); if (el) { el.textContent = s; el.classList.toggle('bad', bad); } };
   const reason = (e) => (e.status === 403 ? 'Not allowed: your organisation may restrict sharing or this app has not been granted file access' : e.status === 401 ? 'Sign-in expired; sign in again' : e.message || String(e));
 
   // ---------- publish + grant ----------
-  async function publish(interactive = true) {
-    const s = sh(), snap = store.snapshot(), json = JSON.stringify(snap);
-    const it = await m365.publishFile(s.name, json, s.share ? { driveId: s.share.driveId, itemId: s.share.itemId } : null, interactive);
-    if (!it.driveId || !it.itemId) throw new Error('OneDrive did not return the file location');
-    store.setShare({ ...(s.share || { people: {} }), driveId: it.driveId, itemId: it.itemId, webUrl: it.webUrl, publishedAt: Date.now() });
-    return sh().share;
+  const inflight = new Map(), lastSent = new Map(), timers = new Map();
+  // Upload the project to OneDrive. Pinned to a sheet id (the user may switch tabs while it runs); concurrent calls share one upload;
+  // unless forced, an unchanged project is not uploaded again.
+  function publish(id, interactive = true, force = true) {
+    if (inflight.has(id)) return inflight.get(id);
+    const p = (async () => {
+      const s = store.sheet(id); if (!s || s.readOnly) throw new Error('That project is no longer available');
+      const json = JSON.stringify(store.snapshot(id)), where = s.share ? `${s.share.driveId}|${s.share.itemId}|` : '';
+      if (!force && s.share && lastSent.get(id) === where + json) return s.share;
+      const it = await m365.publishFile(s.name, json, s.share ? { driveId: s.share.driveId, itemId: s.share.itemId } : null, interactive);
+      if (!it.driveId || !it.itemId) throw new Error('OneDrive did not return the file location');
+      const cur = store.sheet(id); if (!cur) throw new Error('That project was deleted while publishing');
+      store.setShare(id, { ...(cur.share || { people: {} }), driveId: it.driveId, itemId: it.itemId, webUrl: it.webUrl, publishedAt: Date.now() });
+      lastSent.set(id, `${it.driveId}|${it.itemId}|${json}`);
+      return store.sheet(id).share;
+    })().finally(() => inflight.delete(id));
+    inflight.set(id, p); return p;
   }
   async function grant() {
     if (busy || !pending.length) return; busy = true; lock(true);
-    const msg = dlg.body.querySelector('#shMsg').value.trim().slice(0, 1000), who = owner(), ok = [], fail = [];
+    const id = sid, msg = dlg.body.querySelector('#shMsg').value.trim().slice(0, 1000), who = owner(), ok = [], fail = [], batch = pending.slice();
     try {
-      status('Publishing to your OneDrive…'); const share = await publish();
+      status('Publishing to your OneDrive…'); const share = await publish(id);
       status('Granting read-only access…');
-      const perms = await m365.createGrant(share, pending.map((p) => p.email)), people = { ...share.people };
-      for (const p of pending) { const hit = perms.find((x) => x.email === p.email.toLowerCase()); people[p.email.toLowerCase()] = { name: p.name, permId: (hit && hit.id) || '', at: Date.now() }; }
-      store.setShare({ ...share, people });
-      for (const p of pending) {
+      const perms = await m365.createGrant(share, batch.map((p) => p.email));
+      const people = { ...store.sheet(id).share.people }, done = [];
+      batch.forEach((p, i) => {
+        const hit = perms[i];
+        if (!hit) { fail.push(`${p.email}: OneDrive did not confirm the permission`); return; }
+        people[p.email.toLowerCase()] = { name: p.name, permId: hit.id || '', uid: hit.uid || '', at: Date.now() }; done.push(p);
+      });
+      store.setShare(id, { ...store.sheet(id).share, people });
+      for (const p of done) {
         status(`Emailing ${p.email}…`);
-        try { const { subject, html } = grantEmail({ owner: who.name, project: sh().name, link: m365.shareLink(share), message: msg, person: p.name }); await m365.sendNow(p, subject, html); ok.push(p); }
+        try { const { subject, html } = grantEmail({ owner: who.name, project: store.sheet(id).name, link: m365.shareLink(share), message: msg, person: p.name }); await m365.sendNow(p, subject, html); ok.push(p); }
         catch (e) { fail.push(`${p.email}: ${reason(e)}`); }
       }
-      pending = [];
-      ctx.toast(`Read-only access granted to ${ok.length + fail.length}${fail.length ? ` (${fail.length} confirmation email${fail.length > 1 ? 's' : ''} failed)` : '; confirmation emails sent'}`);
+      pending = pending.filter((p) => !batch.includes(p));
+      ctx.toast(`Read-only access granted to ${done.length}${fail.length ? ` (${fail.length} problem${fail.length > 1 ? 's' : ''})` : '; confirmation emails sent'}`);
       grants = null; lock(false); render(); if (fail.length) status(fail.join(' · '), true); else status(`Done: ${ok.length} person${ok.length === 1 ? '' : 's'} can now view this project.`);
     } catch (e) { lock(false); render(); status(`Could not share: ${reason(e)}`, true); }
     finally { busy = false; }
   }
   async function revoke(email) {
-    const s = sh().share, p = s && s.people[email]; if (!s) return;
+    const id = sid, s = ds().share, p = s && s.people[email]; if (!s) return;
     if (!window.confirm(`Remove ${p ? p.name : email}'s access to this project?`)) return;
     try {
-      let id = p && p.permId;
-      if (!id) id = (await m365.listGrants(s)).find((g) => g.email === email)?.id;
-      if (id) await m365.revokeGrant(s, id);
-      const people = { ...s.people }; delete people[email]; store.setShare({ ...s, people }); grants = null; render(); status(`Access removed for ${email}.`);
+      let permId = p && p.permId;
+      if (!permId) { const g = (await m365.listGrants(s)).filter((x) => !x.link && ((p && p.uid && x.uid === p.uid) || x.email === email)); permId = g[0] && g[0].id; }
+      if (!permId) { status(`Could not find ${email}'s permission in OneDrive, so nothing was removed. Use “refresh from OneDrive” to see who has access.`, true); return; }
+      await m365.revokeGrant(s, permId);
+      const cur = store.sheet(id); if (cur && cur.share) { const people = { ...cur.share.people }; delete people[email]; store.setShare(id, { ...cur.share, people }); }
+      grants = null; render(); status(`Access removed for ${email}.`);
     } catch (e) { status(`Could not revoke: ${reason(e)}`, true); }
   }
   async function resend(email) {
-    const s = sh().share, p = s && s.people[email]; if (!s) return;
-    try { const { subject, html } = grantEmail({ owner: owner().name, project: sh().name, link: m365.shareLink(s), message: '', person: p.name }); await m365.sendNow({ name: p.name, email }, subject, html); status(`Confirmation re-sent to ${email}.`); }
+    const s = ds().share, p = s && s.people[email]; if (!s) return;
+    try { const { subject, html } = grantEmail({ owner: owner().name, project: ds().name, link: m365.shareLink(s), message: '', person: p.name }); await m365.sendNow({ name: p.name, email }, subject, html); status(`Confirmation re-sent to ${email}.`); }
     catch (e) { status(`Could not send: ${reason(e)}`, true); }
   }
   async function refreshGrants() {
-    const s = sh().share; if (!s) return;
+    const s = ds().share; if (!s) return;
     try { grants = await m365.listGrants(s); render(); status('Access list refreshed from OneDrive.'); } catch (e) { status(`Could not refresh: ${reason(e)}`, true); }
   }
 
@@ -82,9 +101,10 @@ export function createSharing(ctx) {
   const lock = (on) => dlg?.body.querySelectorAll('button,input,textarea').forEach((e) => { e.disabled = on; });
   function render() {
     if (!dlg) return;
-    const s = sh(), share = s.share, signed = m365.isSignedIn();
+    stopPicker?.(); stopPicker = null;
+    const s = ds(), share = s.share, signed = m365.isSignedIn();
     const people = share ? Object.entries(share.people) : [];
-    const known = new Set(people.map(([e]) => e)), server = grants ? grants.filter((g) => g.email && !known.has(g.email)) : [];
+    const known = new Set(people.map(([e]) => e)), server = grants ? grants.filter((g) => g.email && !g.link && !known.has(g.email)) : [], links = grants ? grants.filter((g) => g.link).length : 0;
     const row = ([email, p]) => `<div class="g-row">${avatar(p.name)}<span class="gn"><b>${esc(p.name)}</b><i>${esc(email)} · since ${esc(fmt(p.at))}</i></span><span class="gr">View only</span><button class="lnk" data-resend="${esc(email)}">resend email</button><button class="lnk red" data-revoke="${esc(email)}">remove</button></div>`;
     const srow = (g) => `<div class="g-row">${avatar(g.name || g.email)}<span class="gn"><b>${esc(g.name || g.email)}</b><i>${esc(g.email)} · granted elsewhere</i></span><span class="gr">${esc(g.roles.includes('write') ? 'Can edit' : 'View only')}</span><button class="lnk red" data-revoke="${esc(g.email)}">remove</button></div>`;
     setHTML(dlg.body,
@@ -93,25 +113,34 @@ export function createSharing(ctx) {
       `<label class="fld"><span>Message (optional)</span><textarea id="shMsg" rows="3" maxlength="1000" placeholder="Add a note for the people you are sharing with"></textarea></label>` +
       `<div class="rem-actions"><span id="shStatus" class="mut" role="status"></span><span style="flex:1"></span><button id="shGo" class="primary"${signed && pending.length ? '' : ' disabled'}>Grant access${pending.length ? ` (${pending.length})` : ''}</button></div></div>` +
       `<div class="sh-sec"><div class="sh-h"><b>People with access</b>${share ? '<button class="lnk" id="shRef">refresh from OneDrive</button>' : ''}</div>` +
-      (people.length || server.length ? `<div class="g-list">${people.map(row).join('')}${server.map(srow).join('')}</div>` : '<div class="rem-empty">Nobody yet.</div>') + `</div>` +
+      (people.length || server.length ? `<div class="g-list">${people.map(row).join('')}${server.map(srow).join('')}</div>` : '<div class="rem-empty">Nobody yet.</div>') +
+      (links ? `<div class="rem-warn"><p><b>${links}</b> sharing link${links > 1 ? 's' : ''} on this file also give access. Manage them in OneDrive.</p></div>` : '') + `</div>` +
       (share ? `<div class="sh-sec"><div class="rem-row"><label class="sw"><input type="checkbox" id="shAuto"${share.auto ? ' checked' : ''}><i></i></label><div><b>Keep the shared copy up to date</b><span class="sub">Re-publish automatically a few seconds after you change this project (last published ${esc(fmt(share.publishedAt))})</span></div></div>` +
         `<div class="rem-actions"><button id="shPub">Publish now</button><button id="shCopy">Copy link</button></div></div>` : '') +
-      `<div class="rem-foot">The project is stored as a file in <b>your</b> OneDrive (Plan projects folder). Access is a real Microsoft 365 permission: viewers sign in with their work account, and removing someone here removes their access immediately.</div>`);
+      `<div class="rem-foot">The project is stored as a file in <b>your</b> OneDrive (Plan projects folder). Access is a real Microsoft 365 permission: viewers sign in with their work account, and removing someone stops them opening or refreshing the plan. A copy they have already opened stays in their browser.</div>`);
     const inp = dlg.body.querySelector('#shIn');
     if (inp && signed && ctx.people) attachPicker(inp);
   }
   function attachPicker(inp) {
-    let stop = null;
-    const arm = () => { stop?.(); stop = ctx.people.attach(inp, (p) => { if (!pending.some((x) => x.email.toLowerCase() === p.email.toLowerCase())) pending.push({ name: p.name, email: p.email }); render(); dlg.body.querySelector('#shIn')?.focus(); }); };
-    inp.addEventListener('focus', arm);
-    inp.addEventListener('keydown', (e) => { // allow pasting a plain email address
-      if (e.key === 'Enter' && isEmail(inp.value.trim())) { e.preventDefault(); const em = inp.value.trim(); pending.push({ name: em.split('@')[0], email: em }); render(); dlg.body.querySelector('#shIn')?.focus(); }
+    let armed = false;
+    const arm = () => { if (armed) return; armed = true; stopPicker = ctx.people.attach(inp, (p) => { add(p); }); };
+    const add = (p) => {
+      const em = p.email.toLowerCase();
+      if (pending.some((x) => x.email.toLowerCase() === em)) { ctx.toast(`${p.email} is already in the list`); return; }
+      if (ds().share && ds().share.people[em]) { ctx.toast(`${p.email} already has access`); return; }
+      pending.push({ name: p.name, email: p.email }); render(); quiet = true; dlg.body.querySelector('#shIn')?.focus(); quiet = false; // re-focus without re-opening the list over the Grant button
+    };
+    inp.addEventListener('focus', () => { if (!quiet) arm(); });
+    inp.addEventListener('pointerdown', arm);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key.length === 1 || e.key === 'ArrowDown' || e.key === 'Backspace') arm(); // first key re-opens the suggestions
+      if (e.key === 'Enter' && isEmail(inp.value.trim())) { e.preventDefault(); const em = inp.value.trim(); add({ name: em.split('@')[0], email: em }); } // paste a plain address
     });
   }
   function open() {
     if (sh().readOnly) { ctx.toast('This is a read-only copy: only its owner can share it'); return; }
-    pending = []; grants = null;
-    dlg = openModal('Share project', '', { wide: true, onClose: () => { dlg = null; } });
+    pending = []; grants = null; sid = store.wb.active;
+    dlg = openModal('Share project', '', { wide: true, onClose: () => { stopPicker?.(); stopPicker = null; dlg = null; } });
     dlg.body.addEventListener('click', (e) => {
       const t = e.target, q = (s) => t.closest(s);
       if (t.id === 'shGo') grant();
@@ -119,23 +148,23 @@ export function createSharing(ctx) {
       else if (q('[data-revoke]')) revoke(q('[data-revoke]').dataset.revoke);
       else if (q('[data-resend]')) resend(q('[data-resend]').dataset.resend);
       else if (t.id === 'shRef') refreshGrants();
-      else if (t.id === 'shPub') publish().then(() => { render(); status('Published.'); }).catch((er) => status(`Could not publish: ${reason(er)}`, true));
-      else if (t.id === 'shCopy') navigator.clipboard?.writeText(m365.shareLink(sh().share)).then(() => status('Link copied. Only people with access can open it.'), () => status('Copy failed', true));
+      else if (t.id === 'shPub') publish(sid).then(() => { render(); status('Published.'); }).catch((er) => status(`Could not publish: ${reason(er)}`, true));
+      else if (t.id === 'shCopy') navigator.clipboard?.writeText(m365.shareLink(ds().share)).then(() => status('Link copied. Only people with access can open it.'), () => status('Copy failed', true));
     });
-    dlg.body.addEventListener('change', (e) => { if (e.target.id === 'shAuto') { store.setShare({ ...sh().share, auto: e.target.checked }); queueAuto(); } });
+    dlg.body.addEventListener('change', (e) => { if (e.target.id === 'shAuto') { store.setShare(sid, { ...ds().share, auto: e.target.checked }); queueAuto(sid); } });
     if (!m365.isSignedIn()) ctx.toast(m365.isConfigured() ? 'Sign in with Microsoft 365 to share' : 'Connect Microsoft 365 first (Microsoft 365 › Settings)');
     render();
   }
   btn.addEventListener('click', open);
 
-  // keep the shared copy current (silent; never opens a popup)
-  function queueAuto() {
-    clearTimeout(autoTimer); const s = sh();
-    if (!s.share || !s.share.auto || s.readOnly || !m365.isSignedIn()) return;
-    const id = s.id; autoTimer = setTimeout(async () => {
-      if (store.sheet().id !== id) return;
-      try { await publish(false); } catch (e) { ctx.toast(`Auto-publish failed: ${reason(e)}`); }
-    }, 8000);
+  // keep the shared copy current (silent; never opens a popup). Reacts to edits only, never to its own bookkeeping.
+  function queueAuto(id = store.wb.active) {
+    clearTimeout(timers.get(id)); const s = store.sheet(id);
+    if (!s || !s.share || !s.share.auto || s.readOnly || !m365.isSignedIn()) return;
+    timers.set(id, setTimeout(async () => {
+      timers.delete(id);
+      try { await publish(id, false, false); } catch (e) { ctx.toast(`Auto-publish failed: ${reason(e)}`); }
+    }, 8000));
   }
 
   // ---------- viewer side ----------
@@ -164,15 +193,19 @@ export function createSharing(ctx) {
     const m = location.hash.match(/^#open=([\w-]+)$/); if (!m) return;
     let ref; try { ref = m365.unb64(m[1]); } catch { ref = null; }
     history.replaceState(null, '', location.pathname + location.search);
-    if (!ref || typeof ref.d !== 'string' || typeof ref.i !== 'string' || ref.d.length > 300 || ref.i.length > 300) { ctx.toast('That share link is not valid'); return; }
-    const go = async () => { if (!m365.isSignedIn()) await ctx.m365ui.signIn(); if (m365.isSignedIn()) await load(ref.d, ref.i); };
-    if (m365.isSignedIn()) { go(); return; }
-    // sign-in needs a click (browsers block popups otherwise), so ask first
-    const d = openModal('Open shared project', `<p class="sub" style="margin:0 0 14px">Someone shared a project plan with you. Sign in with your work account to open it.</p><div class="rem-actions"><span style="flex:1"></span><button id="shOpen" class="primary">${m365.isConfigured() ? 'Sign in and open' : 'Set up Microsoft 365'}</button></div>`);
-    d.body.querySelector('#shOpen').addEventListener('click', async () => { d.close(); if (!m365.isConfigured()) { ctx.m365ui.settings(); return; } await go(); });
+    const okId = (v) => typeof v === 'string' && /^[A-Za-z0-9!_.-]{1,300}$/.test(v) && !/^\.+$/.test(v);
+    if (!ref || !okId(ref.d) || !okId(ref.i)) { ctx.toast('That share link is not valid'); return; }
+    // sign-in and the file-read consent are popups, which browsers only allow straight after a click
+    const go = async () => { if (!m365.isSignedIn()) await ctx.m365ui.signIn(m365.SCOPES_FILES_READ); if (m365.isSignedIn()) { try { await m365.token(m365.SCOPES_FILES_READ); } catch (e) { ctx.toast(`Permission to open shared files was not granted: ${e.message || e}`); return; } await load(ref.d, ref.i); } };
+    if (m365.isSignedIn()) { m365.token(m365.SCOPES_FILES_READ, false).then(() => load(ref.d, ref.i), () => ask()); return; }
+    ask();
+    function ask() {
+      const d = openModal('Open shared project', `<p class="sub" style="margin:0 0 14px">Someone shared a project plan with you. Sign in with your work account to open it.</p><div class="rem-actions"><span style="flex:1"></span><button id="shOpen" class="primary">${!m365.isConfigured() ? 'Set up Microsoft 365' : m365.isSignedIn() ? 'Allow and open' : 'Sign in and open'}</button></div>`);
+      d.body.querySelector('#shOpen').addEventListener('click', async () => { d.close(); if (!m365.isConfigured()) { ctx.m365ui.settings(); return; } await go(); });
+    }
   }
 
-  store.on((kind) => { if (kind === 'drag' || kind === 'denied') return; queueAuto(); });
+  store.on((kind) => { if (kind === 'change') queueAuto(); });
   m365.onAuthChange(() => { render(); queueAuto(); });
   return { paintBanner, fromHash, open, load };
 }

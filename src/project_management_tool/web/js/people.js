@@ -25,6 +25,7 @@ export function createPeople(ctx) {
     const uniq = new Map(hits.map((p) => [p.email.toLowerCase(), p])); return uniq.size === 1 ? [...uniq.values()][0] : null;
   }
   store.resolvePerson = resolve;
+  m365.onAuthChange(() => { cache.clear(); relevant = null; relevantErr = ''; }); // never show the previous account's contacts
 
   async function suggestions(q) {
     q = q.trim().toLowerCase();
@@ -60,9 +61,10 @@ export function createPeople(ctx) {
       if (dead || my !== seq) return;
       items = r.items; idx = items.length && touched && inp.value.trim() ? 0 : -1; paint(r.note);
     }
-    const queue = () => { touched = true; clearTimeout(timer); timer = setTimeout(refresh, 220); };
+    const queue = () => { touched = true; idx = -1; items = []; clearTimeout(timer); timer = setTimeout(refresh, 220); }; // results of an older query must not stay pickable
     const pick = (p) => { cleanup(); onPick(p); };
     function key(e) {
+      if (e.key === 'Escape' && inp.closest('.modal')) { e.preventDefault(); e.stopImmediatePropagation(); cleanup(); return; } // close the list, not the dialog
       if (!items.length) return;
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); idx = (idx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; paint(); }
       else if ((e.key === 'Enter' || e.key === 'Tab') && idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); pick(items[idx]); }

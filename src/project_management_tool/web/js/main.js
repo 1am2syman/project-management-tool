@@ -98,9 +98,19 @@ $('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; 
 $('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 
+// another tab saved the workbook: stop writing from this one (it would overwrite that tab's work) and offer a reload
+window.addEventListener('storage', (e) => {
+  if (e.key !== 'pm-workbook-v1' || store.stale) return;
+  store.stale = true;
+  const bar = document.createElement('div'); bar.className = 'robanner stale';
+  setHTML(bar, '<span class="lock">Changed in another tab</span><span>Edits here are no longer saved, to protect the other tab’s work.</span><span style="flex:1"></span><button>Reload</button>');
+  bar.querySelector('button').addEventListener('click', () => location.reload());
+  document.body.appendChild(bar);
+});
+
 // keyboard
 document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input,textarea,select')) return;
+  if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back')) return; // dialogs own the keyboard
   const mod = e.metaKey || e.ctrlKey;
   if (gantt.isDragging() && e.key !== 'Escape') { if (mod || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); return; }
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) store.redo(); else store.undo(); return; }

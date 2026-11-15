@@ -11,9 +11,9 @@ export function createM365UI(ctx) {
     if (a) { setHTML(lbl, `${avatar(a.name)}<span class="who">${esc(String(a.name).split(/\s+/)[0])}</span>`); btn.title = `Signed in as ${a.email}`; btn.classList.add('on'); }
     else { setHTML(lbl, '<span>Microsoft 365</span>'); btn.title = m365.isConfigured() ? 'Sign in with your work account' : 'Connect Microsoft 365'; btn.classList.remove('on'); }
   }
-  async function doSignIn() {
+  async function doSignIn(extra = []) {
     if (!m365.isConfigured()) { settings(); return; }
-    try { await m365.signIn(); ctx.toast(`Signed in as ${m365.currentAccount().email}`); }
+    try { await m365.signIn(extra); ctx.toast(`Signed in as ${m365.currentAccount().email}`); }
     catch (e) { ctx.toast(/popup/i.test(e.message || e.errorCode || '') ? 'Sign-in popup was blocked or closed. Allow popups for this site and retry.' : `Sign-in failed: ${e.errorMessage || e.message || e}`); }
   }
   function openMenu() {

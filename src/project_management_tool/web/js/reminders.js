@@ -19,7 +19,18 @@ export const VARS = [['person', 'First name (or "team")'], ['task', 'Task name o
 
 const jget = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
 const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } };
-const readLedger = () => { const l = jget(LEDGER, {}); return l && typeof l === 'object' && !Array.isArray(l) ? l : {}; };
+// The ledger of scheduled messages belongs to ONE account: another user's message ids mean nothing in my mailbox.
+const acct = () => { const a = m365.currentAccount(); return a ? String(a.email).toLowerCase() : ''; };
+const ledgerKey = () => `${LEDGER}:${acct()}`;
+const validEntry = (e) => e && typeof e === 'object' && typeof e.id === 'string' && Number.isFinite(e.sendAt) && typeof e.sheet === 'string' && typeof e.hash === 'string';
+const readLedger = () => {
+  if (!acct()) return {};
+  const l = jget(ledgerKey(), {}); if (!l || typeof l !== 'object' || Array.isArray(l)) return {};
+  return Object.fromEntries(Object.entries(l).filter(([, e]) => validEntry(e)));
+};
+const writeLedger = (l) => { if (acct()) jset(ledgerKey(), l); };
+// one sync at a time across tabs, so two tabs never schedule the same reminder twice
+const exclusive = (fn) => (navigator.locks ? navigator.locks.request('pm-reminder-sync', fn) : fn());
 const dayName = (d) => new Date(d * DAY).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 const atHour = (day, h) => { const [y, m, d] = ymd(day); return new Date(y, m, d, h, 0, 0, 0).getTime(); };
 const when = (ts) => new Date(ts).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -96,7 +107,7 @@ export function templateVars(item, sender) {
     prefix: overdueAll ? 'Overdue' : 'Reminder', count: String(es.length), sender: sender || 'the project manager',
   };
 }
-const fill = (s, vars, enc) => String(s).replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? (enc ? esc(vars[k]) : vars[k]) : m));
+const fill = (s, vars, enc) => String(s).replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.hasOwn(vars, k) ? (enc ? esc(vars[k]) : vars[k]) : m));
 export function renderEmail(item, sender) {
   const vars = templateVars(item, sender), overdue = vars.prefix === 'Overdue', accent = overdue ? '#be123c' : '#2b59e6';
   const subject = fill(item.tpl.subject, vars, false).replace(/\s+/g, ' ').trim().slice(0, 250) || 'Reminder';
@@ -111,7 +122,7 @@ export function renderEmail(item, sender) {
 export function createReminders(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#rembtn'), dot = btn.querySelector('.dot');
-  let me = null, dlg = null, tab = 'schedule', busy = false, autoTimer = 0, autoMsg = '';
+  let me = null, dlg = null, tab = 'schedule', busy = false, again = false, autoTimer = 0, autoMsg = '';
   const userTpls = () => { const t = jget(TPLS, []); return Array.isArray(t) ? t.filter((x) => x && x.id && typeof x.subject === 'string' && typeof x.body === 'string') : []; };
   const status = (s) => { const el = dlg && dlg.body.querySelector('#remStatus'); if (el) el.textContent = s; };
 
@@ -119,26 +130,30 @@ export function createReminders(ctx) {
   const ledgerSheets = (led) => [...new Set(Object.values(led).map((e) => e.sheet))];
   function currentDiff() { const led = readLedger(), ids = [...new Set([...scopeIds(), ...ledgerSheets(led)])], plan = buildPlan(store); return { plan, d: diffPlan(plan, led, Date.now(), ids), ids }; }
   function badge() { const { d } = currentDiff(); const n = d.create.length + d.cancel.length; dot.hidden = !(m365.isSignedIn() && n > 0 && !store.wb.sheets.some((s) => s.rem && s.rem.on && s.rem.auto && !autoMsg)); dot.title = autoMsg || (n ? `${n} reminder change${n > 1 ? 's' : ''} not synced` : ''); if (autoMsg) dot.hidden = false; }
-  async function senderName() { if (!me) { try { me = await m365.me(); } catch { me = { name: '', email: '' }; } } return me; }
+  async function senderName(interactive = true) { if (!me) { try { me = await m365.me(interactive); } catch { const a = m365.currentAccount(); return { name: a ? a.name : '', email: a ? a.email : '' }; } } return me; } // a failed lookup is not cached
 
   // Execute a diff against Graph. Shared by the dialog (interactive) and auto-sync (silent).
   async function execute(d, { interactive, progress, cap }) {
-    const led = readLedger(), errs = []; let made = 0, cancelled = 0, n = 0;
-    const who = await senderName(), sender = who.name || who.email, total = d.create.length + d.cancel.length;
+    const led = readLedger(), errs = [], failed = new Set(), failedSheets = new Set(); let made = 0, cancelled = 0, n = 0, authFail = false;
+    const who = await senderName(interactive), sender = who.name || who.email, total = d.create.length + d.cancel.length;
     for (const k of d.forget) delete led[k];
     for (const c of d.cancel) {
       progress?.(++n, total);
-      try { await m365.cancelMail(c.id, interactive); delete led[c.key]; cancelled++; } catch (e) { errs.push(`Could not cancel “${c.label || c.subject}”: ${e.message}`); if (e.status === 401 || e.status === 403) break; }
-      jset(LEDGER, led);
+      if (authFail) { failed.add(c.key); continue; }
+      try { await m365.cancelMail(c.id, interactive); delete led[c.key]; cancelled++; }
+      catch (e) { failed.add(c.key); failedSheets.add(c.sheet); errs.push(`Could not cancel “${c.label || c.subject}”: ${e.message}`); if (e.status === 401 || e.status === 403) authFail = true; }
+      writeLedger(led);
     }
+    // never create replacements in a project whose old messages could not all be cancelled: they would be sent twice. The next sync retries.
     for (const i of d.create.slice(0, cap)) {
       progress?.(++n, total);
+      if (authFail || failed.has(i.key) || failedSheets.has(i.sheet)) continue;
       try {
         const { subject, html } = renderEmail(i, sender);
         const id = await m365.scheduleMail(i.to, subject, html, i.sendAt, interactive);
         led[i.key] = { id, sendAt: i.sendAt, hash: hashOf(i), sheet: i.sheet, subject, label: i.entries.length === 1 ? i.entries[0].task : plural(i.entries.length, 'task'), to: i.to.map((p) => p.email) }; made++;
-      } catch (e) { errs.push(`${i.entries.length === 1 ? i.entries[0].task : plural(i.entries.length, 'task')} → ${i.to.map((p) => p.email).join(', ')}: ${e.message}`); if (e.status === 401 || e.status === 403) break; }
-      jset(LEDGER, led);
+      } catch (e) { errs.push(`${i.entries.length === 1 ? i.entries[0].task : plural(i.entries.length, 'task')} → ${i.to.map((p) => p.email).join(', ')}: ${e.message}`); if (e.status === 401 || e.status === 403) authFail = true; }
+      writeLedger(led);
     }
     return { made, cancelled, errs };
   }
@@ -147,35 +162,44 @@ export function createReminders(ctx) {
     if (busy) return; busy = true;
     try {
       try { await m365.token(m365.SCOPES_MAIL); } catch (e) { status(`Mail permission was not granted: ${e.message || e}`); return; }
-      const { d } = currentDiff(); lockUI(true);
-      const r = await execute(d, { interactive: true, cap: SYNC_CAP, progress: (n, t) => status(`Working… ${n}/${t}`) });
+      lockUI(true);
+      const r = await exclusive(() => execute(currentDiff().d, { interactive: true, cap: SYNC_CAP, progress: (n, t) => status(`Working… ${n}/${t}`) })); // diff is computed inside the lock, from the freshest ledger
       autoMsg = ''; lockUI(false); render(); badge();
       const msg = `Scheduled ${r.made}, cancelled ${r.cancelled}${r.errs.length ? `, ${r.errs.length} failed` : ''}.`;
       status(msg); ctx.toast(r.errs.length ? `Reminders partly synced: ${r.errs.length} failed` : msg);
       if (r.errs.length && dlg) { const box = document.createElement('div'); box.className = 'rem-warn'; setHTML(box, r.errs.slice(0, 5).map((x) => `<p>${esc(x)}</p>`).join('') + (r.errs.length > 5 ? `<p>+ ${r.errs.length - 5} more</p>` : '')); dlg.body.querySelector('.rem-actions')?.before(box); }
-    } finally { busy = false; }
+    } finally { busy = false; if (again) { again = false; queueAuto(); } }
   }
   const lockUI = (on) => dlg?.body.querySelectorAll('button,input,select,textarea').forEach((e) => { e.disabled = on; });
 
   // auto-sync: silent, only for projects with auto on, never opens a popup, refuses large batches
+  // Also runs when a project was switched off or deleted but still has queued messages, so those get cancelled.
+  const orphaned = () => ledgerSheets(readLedger()).some((id) => { const s = store.sheet(id); return !s || !s.rem || !s.rem.on; });
   function queueAuto() {
     clearTimeout(autoTimer);
-    if (!m365.isSignedIn() || !store.wb.sheets.some((s) => s.rem && s.rem.on && s.rem.auto && !s.readOnly)) return;
+    if (!m365.isSignedIn() || store.stale) return;
+    if (!store.wb.sheets.some((s) => s.rem && s.rem.on && s.rem.auto && !s.readOnly) && !orphaned()) return;
     autoTimer = setTimeout(runAuto, 12000);
   }
   async function runAuto() {
-    if (busy || !m365.isSignedIn()) return; busy = true;
+    if (!m365.isSignedIn() || store.stale) return;
+    if (busy) { again = true; return; } // an edit arrived mid-sync: go round again afterwards
+    busy = true;
     try {
-      const autoIds = store.wb.sheets.filter((s) => s.rem && s.rem.on && s.rem.auto && !s.readOnly).map((s) => s.id), led = readLedger();
-      const ids = [...new Set([...autoIds, ...ledgerSheets(led).filter((id) => { const s = store.sheet(id); return !s || !s.rem || !s.rem.on; })])];
-      const plan = buildPlan(store, Date.now(), autoIds), d = diffPlan(plan, led, Date.now(), ids);
-      if (!d.create.length && !d.cancel.length) { jset(LEDGER, (() => { const l = readLedger(); for (const k of d.forget) delete l[k]; return l; })()); autoMsg = ''; badge(); return; }
-      if (d.create.length > AUTO_CAP) { autoMsg = `Auto-reminders paused: ${d.create.length} changes need your review`; badge(); return; }
-      const r = await execute(d, { interactive: false, cap: AUTO_CAP });
+      const r = await exclusive(async () => {
+        const autoIds = store.wb.sheets.filter((s) => s.rem && s.rem.on && s.rem.auto && !s.readOnly).map((s) => s.id), led = readLedger();
+        const ids = [...new Set([...autoIds, ...ledgerSheets(led).filter((id) => { const s = store.sheet(id); return !s || !s.rem || !s.rem.on; })])];
+        const plan = buildPlan(store, Date.now(), autoIds), d = diffPlan(plan, led, Date.now(), ids);
+        if (!d.create.length && !d.cancel.length) { const l = readLedger(); for (const k of d.forget) delete l[k]; writeLedger(l); return { quiet: true }; }
+        if (d.create.length > AUTO_CAP) return { paused: d.create.length };
+        return execute(d, { interactive: false, cap: AUTO_CAP });
+      });
+      if (r.quiet) { autoMsg = ''; badge(); return; }
+      if (r.paused) { autoMsg = `Auto-reminders paused: ${r.paused} changes need your review`; badge(); return; }
       autoMsg = r.errs.length ? `Auto-reminders: ${r.errs[0]}` : ''; if (r.made || r.cancelled) ctx.toast(`Auto-reminders updated (${r.made} scheduled, ${r.cancelled} cancelled)`);
       if (dlg) render(); badge();
     } catch (e) { autoMsg = /interaction|consent|login/i.test(`${e.errorCode} ${e.message}`) ? 'Auto-reminders need mail permission: open Reminders and sync once' : `Auto-reminders failed: ${e.message}`; badge(); }
-    finally { busy = false; }
+    finally { busy = false; if (again) { again = false; queueAuto(); } }
   }
 
   async function test() {
@@ -218,7 +242,7 @@ export function createReminders(ctx) {
       const what = i.entries.length === 1 ? `${esc(i.entries[0].task)}<i>${i.entries[0].kind === 'overdue' ? 'overdue notice' : esc(dayName(i.entries[0].deadline))}</i>` : `${plural(i.entries.length, 'task')}<i title="${esc(i.entries.map((e) => e.task).join(', '))}">${esc(i.entries.slice(0, 2).map((e) => e.task).join(', '))}${i.entries.length > 2 ? '…' : ''}</i>`;
       const who = i.to.length === 1 ? `${esc(i.to[0].name)}<i>${esc(i.to[0].email)}</i>` : `${plural(i.to.length, 'person')}<i>${esc(i.to.slice(0, 2).map((p) => p.name).join(', '))}${i.to.length > 2 ? '…' : ''}</i>`;
       const acts = i.to.length === 1 ? `<button class="lnk" data-mute="${esc(i.to[0].email)}" title="Never remind this person in this project">mute</button>` : '';
-      return `<tr><td>${esc(when(i.sendAt))}</td><td>${who}</td><td>${what}</td><td class="ra">${i.sheet !== sh.id ? `<i>${esc(i.sheetName)}</i>` : ''}${acts}${i.entries.length === 1 ? `<button class="lnk" data-skip="${i.sheet}:${i.entries[0].taskId}" title="Don't remind about this task">skip</button>` : ''}</td></tr>`;
+      return `<tr><td>${esc(when(i.sendAt))}</td><td>${who}</td><td>${what}</td><td class="ra">${i.sheet !== sh.id ? `<i>${esc(i.sheetName)}</i>` : ''}${acts}${i.entries.length === 1 ? `<button class="lnk" data-skip="${esc(i.sheet)}:${i.entries[0].taskId}" title="Don't remind about this task">skip</button>` : ''}</td></tr>`;
     }).join('');
     const warn = [];
     if (plan.skipped.noEmail.length) warn.push(`<b>${plan.skipped.noEmail.length}</b> task${plan.skipped.noEmail.length > 1 ? 's have' : ' has'} an owner without an email (${esc(plan.skipped.noEmail.slice(0, 3).map((x) => x.owner).join(', '))}${plan.skipped.noEmail.length > 3 ? '…' : ''}). Pick them from the directory in the Owner column.`);
@@ -251,6 +275,7 @@ export function createReminders(ctx) {
   };
 
   function open() {
+    if (store.sheet().readOnly) { ctx.toast('This is a read-only copy: reminders are set by its owner'); return; }
     dlg = openModal('Deadline reminders', '<div class="tabs" id="remTabs"></div><div id="remPane"></div>', { wide: true, onClose: () => { dlg = null; } });
     const B = dlg.body;
     B.addEventListener('change', (e) => {
@@ -261,12 +286,13 @@ export function createReminders(ctx) {
       else if (t.id === 'remHour') store.setRem({ hour: +t.value });
       else if (t.name === 'remMode') store.setRem({ mode: t.value });
       else if (t.dataset.o != null) store.setRem({ offsets: [...B.querySelectorAll('[data-o]:checked')].map((x) => +x.dataset.o) });
-      else if (t.id === 'tplSel' && t.value) { const p = [...BUILTIN_TPL, ...userTpls()].find((x) => x.id === t.value); if (p) store.setRem({ subject: p.subject, body: p.body }); }
+      else if (t.id === 'tplSel' && t.value) { const p = [...BUILTIN_TPL, ...userTpls()].find((x) => x.id === t.value); if (p) { store.setRem({ subject: p.subject, body: p.body }); render(); } }
     });
     B.addEventListener('input', (e) => {
       if (e.target.id === 'remSubj' || e.target.id === 'remBody') {
         const subject = B.querySelector('#remSubj').value, body = B.querySelector('#remBody').value;
-        if (subject.trim() && body.trim()) { store.sheet().rem = { ...store.rem, subject, body }; store.save(); const pv = renderEmail(sampleItem(), (me && me.name) || 'You'); B.querySelector('.pv-sub').replaceChildren(Object.assign(document.createElement('b'), { textContent: 'Subject: ' }), document.createTextNode(pv.subject)); setHTML(B.querySelector('#pvBody'), pv.html); }
+        if (store.sheet().readOnly) return;
+        if (subject.trim() && body.trim()) { store.setRem({ subject, body }); const pv = renderEmail(sampleItem(), (me && me.name) || 'You'); B.querySelector('.pv-sub').replaceChildren(Object.assign(document.createElement('b'), { textContent: 'Subject: ' }), document.createTextNode(pv.subject)); setHTML(B.querySelector('#pvBody'), pv.html); }
       }
     });
     B.addEventListener('click', (e) => {
@@ -284,7 +310,11 @@ export function createReminders(ctx) {
     render();
   }
   btn.addEventListener('click', open);
-  store.on((kind) => { if (kind !== 'drag') { badge(); queueAuto(); } if (dlg && kind !== 'drag') render(); });
+  store.on((kind) => {
+    if (kind === 'drag' || kind === 'denied' || kind === 'share') return; // sharing bookkeeping must not reset the sync timer or rebuild the dialog
+    badge(); queueAuto();
+    if (dlg && !(kind === 'meta' && tab === 'message')) render(); // the template editor keeps its own preview while you type
+  });
   m365.onAuthChange(() => { me = null; autoMsg = ''; render(); badge(); queueAuto(); });
   return { render, badge, open };
 }

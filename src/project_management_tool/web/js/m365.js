@@ -13,6 +13,9 @@ const listeners = new Set();
 export const onAuthChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 const emit = () => { for (const f of listeners) f(); };
 
+// Test hook: lets automated tests supply a fake sign-in. Only honoured on localhost so it can never replace real sign-in in production.
+const hook = () => (['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname) ? window.__pmAuth : null);
+
 let cfg = { clientId: '', tenant: 'organizations' }, app = null, account = null, loading = null;
 
 export class GraphError extends Error {
@@ -35,7 +38,7 @@ export async function loadConfig() {
     try { const r = await fetch('m365.config.json', { cache: 'no-cache' }); if (r.ok) c = await r.json(); } catch { /* no file */ }
   }
   if (c && !validateConfig(c)) cfg = { clientId: c.clientId.trim(), tenant: String(c.tenant || 'organizations').trim() };
-  if (window.__pmAuth) account = window.__pmAuth.account || null; // test hook: lets automated tests supply a fake sign-in
+  if (hook()) account = hook().account || null; // test hook: lets automated tests supply a fake sign-in
   emit();
 }
 export function saveConfig(c) {
@@ -70,24 +73,24 @@ async function getApp() {
   })();
   try { return await loading; } catch (e) { loading = null; throw e; }
 }
-export async function init() { await loadConfig(); if (isConfigured() && !window.__pmAuth) { try { await getApp(); emit(); } catch { /* shown on demand */ } } }
+export async function init() { await loadConfig(); if (isConfigured() && !hook()) { try { await getApp(); emit(); } catch { /* shown on demand */ } } }
 
 export const isSignedIn = () => !!account;
 export const currentAccount = () => (account ? { name: account.name || account.username, email: account.username } : null);
 
-export async function signIn() {
-  if (window.__pmAuth) { account = window.__pmAuth.account; emit(); return account; }
+export async function signIn(extraScopes = []) { // extraScopes are consented in the same popup (a second popup after an await would be blocked)
+  if (hook()) { account = hook().account; emit(); return account; }
   const a = await getApp();
-  const r = await a.loginPopup({ scopes: SCOPES_SIGNIN, prompt: 'select_account' });
+  const r = await a.loginPopup({ scopes: SCOPES_SIGNIN, ...(extraScopes.length ? { extraScopesToConsent: extraScopes } : {}), prompt: 'select_account' });
   account = r.account; a.setActiveAccount(account); emit(); return account;
 }
 export async function signOut() {
   const a = app, acc = account; account = null; emit();
-  if (window.__pmAuth) return;
+  if (hook()) return;
   if (a && acc) { try { await a.logoutPopup({ account: acc, mainWindowRedirectUri: location.pathname }); } catch { /* user closed the popup; local state is already cleared */ } }
 }
 export async function token(scopes, interactive = true) {
-  if (window.__pmAuth) return window.__pmAuth.token(scopes);
+  if (hook()) return hook().token(scopes);
   const a = await getApp(); if (!account) throw new Error('Not signed in');
   try { return (await a.acquireTokenSilent({ scopes, account })).accessToken; }
   catch (e) {
@@ -117,7 +120,7 @@ export function person(u) {
   const email = [u.mail, u.userPrincipalName].find((x) => isEmail(x)) || '';
   return { id: u.id || email, name: u.displayName || email, email, title: u.jobTitle || '', dept: u.department || '' };
 }
-export async function me() { return person(await graph(`/me?$select=${SEL}`)); }
+export async function me(interactive = true) { return person(await graph(`/me?$select=${SEL}`, { interactive })); }
 export async function searchPeople(q) {
   q = String(q).replace(/["\\]/g, ' ').trim(); if (q.length < 2) return [];
   const d = await graph(`/users?$search=${encodeURIComponent(`"displayName:${q}" OR "mail:${q}" OR "userPrincipalName:${q}"`)}&$select=${SEL}&$top=15`, { headers: { ConsistencyLevel: 'eventual' } });
@@ -137,14 +140,15 @@ export async function scheduleMail(to, subject, html, sendAt, interactive = true
     body: { ...msg(to, subject, html), singleValueExtendedProperties: [{ id: DEFERRED, value: new Date(sendAt).toISOString() }] },
   });
   try { await graph(`/me/messages/${encodeURIComponent(draft.id)}/send`, { method: 'POST', scopes: SCOPES_MAIL, interactive }); }
-  catch (e) { try { await graph(`/me/messages/${encodeURIComponent(draft.id)}`, { method: 'DELETE', scopes: SCOPES_MAIL }); } catch { /* leave draft */ } throw e; }
+  catch (e) { try { await graph(`/me/messages/${encodeURIComponent(draft.id)}`, { method: 'DELETE', scopes: SCOPES_MAIL, interactive }); } catch { /* leave draft */ } throw e; }
   return draft.id;
 }
 export async function cancelMail(id, interactive = true) {
   try { await graph(`/me/messages/${encodeURIComponent(id)}`, { method: 'DELETE', scopes: SCOPES_MAIL, interactive }); return true; }
   catch (e) { if (e.status === 404) return true; throw e; } // already gone (sent or deleted)
 }
-export const sendNow = (to, subject, html) => graph('/me/sendMail', { method: 'POST', scopes: SCOPES_MAIL, body: { message: msg(to, subject, html), saveToSentItems: true } });
+export const SCOPES_SEND = ['Mail.Send']; // confirmation emails only need to send, not to read or edit the mailbox
+export const sendNow = (to, subject, html) => graph('/me/sendMail', { method: 'POST', scopes: SCOPES_SEND, body: { message: msg(to, subject, html), saveToSentItems: true } });
 
 // ---------- OneDrive sharing (read-only grants are real OneDrive permissions, enforced by Microsoft 365) ----------
 export const SCOPES_FILES = ['Files.ReadWrite'];       // publish my project file and grant access to it
@@ -156,13 +160,24 @@ export async function publishFile(name, json, existing, interactive = true) {
   const path = existing ? `/drives/${encodeURIComponent(existing.driveId)}/items/${encodeURIComponent(existing.itemId)}/content` : `/me/drive/root:/Plan%20projects/${encodeURIComponent(safeName(name))}.plan.json:/content?@microsoft.graph.conflictBehavior=rename`;
   return item(await graph(path, o));
 }
+const grantee = (p) => {
+  const u = (p.grantedToV2 && p.grantedToV2.user) || (p.grantedTo && p.grantedTo.user) || {};
+  return { uid: u.id || '', email: String(u.email || (p.invitation && p.invitation.email) || '').toLowerCase(), name: u.displayName || '' };
+};
 export async function createGrant(it, emails) { // read-only, signed-in users only, no Microsoft invitation mail (we send our own confirmation)
   const r = await graph(`/drives/${encodeURIComponent(it.driveId)}/items/${encodeURIComponent(it.itemId)}/invite`, { method: 'POST', scopes: SCOPES_FILES, body: { recipients: emails.map((email) => ({ email })), roles: ['read'], requireSignIn: true, sendInvitation: false } });
-  return (r.value || []).map((p) => ({ id: p.id, email: ((p.grantedToV2 && p.grantedToV2.user && p.grantedToV2.user.email) || (p.invitation && p.invitation.email) || '').toLowerCase(), name: p.grantedToV2 && p.grantedToV2.user && p.grantedToV2.user.displayName }));
+  const v = r.value || [];
+  // the response lists one permission per recipient, in request order: use position first, then the e-mail as a fallback
+  return emails.map((e, i) => { const p = v.length === emails.length ? v[i] : v.find((x) => grantee(x).email === e.toLowerCase()); return p ? { id: p.id, ...grantee(p) } : null; });
 }
 export async function listGrants(it) {
-  const r = await graph(`/drives/${encodeURIComponent(it.driveId)}/items/${encodeURIComponent(it.itemId)}/permissions`, { scopes: SCOPES_FILES });
-  return (r.value || []).filter((p) => !p.link && !(p.roles || []).includes('owner')).map((p) => ({ id: p.id, roles: p.roles || [], email: ((p.grantedToV2 && p.grantedToV2.user && p.grantedToV2.user.email) || (p.invitation && p.invitation.email) || '').toLowerCase(), name: (p.grantedToV2 && p.grantedToV2.user && p.grantedToV2.user.displayName) || '' }));
+  const out = []; let url = `/drives/${encodeURIComponent(it.driveId)}/items/${encodeURIComponent(it.itemId)}/permissions`;
+  for (let page = 0; url && page < 10; page++) {
+    const r = await graph(url, { scopes: SCOPES_FILES });
+    for (const p of r.value || []) if (!(p.roles || []).includes('owner')) out.push({ id: p.id, roles: p.roles || [], link: !!p.link, ...grantee(p) });
+    url = r['@odata.nextLink'] || '';
+  }
+  return out;
 }
 export const revokeGrant = (it, permId) => graph(`/drives/${encodeURIComponent(it.driveId)}/items/${encodeURIComponent(it.itemId)}/permissions/${encodeURIComponent(permId)}`, { method: 'DELETE', scopes: SCOPES_FILES });
 export async function fetchShared(driveId, itemId) {
