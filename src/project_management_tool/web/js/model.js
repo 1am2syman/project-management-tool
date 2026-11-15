@@ -26,6 +26,32 @@ export function parseDate(s, ref) {
   return null;
 }
 
+export const isEmail = (s) => typeof s === 'string' && s.length <= 254 && /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/.test(s);
+export const REM_TPL = {
+  subject: '{{prefix}}: {{task}} · {{when}} · {{project}}',
+  body: 'Hi {{person}},\n\nA quick reminder about the following ({{when}}):\n\n{{details}}\n\nThanks,\n{{sender}}',
+};
+export const REM_DEF = { on: false, auto: false, mode: 'task', offsets: [3, 1, 0], overdue: true, hour: 9, subject: REM_TPL.subject, body: REM_TPL.body, muted: [] };
+// Sharing metadata per sheet. A sheet is either mine (share = what I published) or a read-only copy of someone else's (readOnly + source).
+export function cleanShare(s) {
+  if (!s || typeof s !== 'object' || typeof s.driveId !== 'string' || typeof s.itemId !== 'string') return null;
+  const people = {};
+  if (s.people && typeof s.people === 'object') for (const [k, v] of Object.entries(s.people).slice(0, 500)) if (isEmail(k) && v && typeof v === 'object') people[k.toLowerCase()] = { name: String(v.name || k).slice(0, 80), permId: typeof v.permId === 'string' ? v.permId : '', at: Number(v.at) || 0 };
+  return { driveId: s.driveId.slice(0, 300), itemId: s.itemId.slice(0, 300), webUrl: typeof s.webUrl === 'string' && /^https:\/\//.test(s.webUrl) ? s.webUrl.slice(0, 1000) : '', auto: !!s.auto, publishedAt: Number(s.publishedAt) || 0, people };
+}
+export function cleanSource(s) {
+  if (!s || typeof s !== 'object' || typeof s.driveId !== 'string' || typeof s.itemId !== 'string') return null;
+  return { driveId: s.driveId.slice(0, 300), itemId: s.itemId.slice(0, 300), by: String(s.by || '').slice(0, 120), byEmail: isEmail(s.byEmail) ? s.byEmail : '', fetchedAt: Number(s.fetchedAt) || 0 };
+}
+export function cleanRem(r) {
+  const o = r && typeof r === 'object' ? r : {};
+  const offs = [...new Set((Array.isArray(o.offsets) ? o.offsets : REM_DEF.offsets).map((n) => Math.round(Number(n))).filter((n) => Number.isFinite(n) && n >= 0 && n <= 60))].sort((a, b) => b - a).slice(0, 6);
+  const hour = Math.round(Number(o.hour)); 
+  const str = (v, d, n) => (typeof v === 'string' && v.trim() ? v.slice(0, n) : d);
+  const muted = [...new Set((Array.isArray(o.muted) ? o.muted : []).map((e) => String(e).toLowerCase()).filter(isEmail))].slice(0, 500);
+  return { on: !!o.on, auto: !!o.on && !!o.auto, mode: ['task', 'person', 'project'].includes(o.mode) ? o.mode : 'task', offsets: offs, overdue: o.overdue !== false, hour: Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : REM_DEF.hour, subject: str(o.subject, REM_TPL.subject, 200), body: str(o.body, REM_TPL.body, 4000), muted };
+}
+
 export const LINK_TYPES = ['FS', 'SS', 'FF', 'SF'];
 
 function demo() {
@@ -82,7 +108,7 @@ function sanitize(d) {
     const start = Number.isFinite(Number(r.start)) ? Math.round(Number(r.start)) : today;
     const dur = ms ? 0 : Math.max(1, Math.round(Number(r.dur)) || 1);
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), ms });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -155,7 +181,7 @@ export class Store {
     try {
       const w = JSON.parse(localStorage.getItem(WB));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
-        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data) }));
+        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source) }));
         if (sheets.length) {
           const nextSheet = Math.max(Number(w.nextSheet) || 0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1;
           return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
@@ -164,7 +190,7 @@ export class Store {
     } catch { /* corrupt workbook: fall through */ }
     let data = null;
     try { data = JSON.parse(localStorage.getItem(KEY)); } catch { /* none */ }
-    return { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(data && Array.isArray(data.tasks) ? data : demo()) }] };
+    return { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(data && Array.isArray(data.tasks) ? data : demo()), rem: cleanRem() }] };
   }
   readTpl() {
     try { const t = JSON.parse(localStorage.getItem(TPL)); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
@@ -184,7 +210,7 @@ export class Store {
       localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical }));
     } catch { /* quota / private mode: keep working in memory */ }
   }
-  resetAll() { this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()) }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  resetAll() { this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
 
   // ---- sheets (workbook tabs) ----
@@ -203,9 +229,21 @@ export class Store {
   addSheet(data, name) {
     this.stash();
     const id = `s${this.wb.nextSheet++}`;
-    this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data) });
+    this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data), rem: cleanRem() });
     this.enter(id); return id;
   }
+  // A read-only copy of a project somebody shared with me. Re-importing the same source refreshes it in place.
+  importShared(data, name, source) {
+    const ex = this.wb.sheets.find((s) => s.source && s.source.driveId === source.driveId && s.source.itemId === source.itemId);
+    if (ex) {
+      ex.data = sanitize(data); ex.source = cleanSource(source);
+      if (ex.id === this.wb.active) { this.load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
+      return ex.id;
+    }
+    const id = this.addSheet(data, name), s = this.sheet(id); s.readOnly = true; s.source = cleanSource(source); this.save(); this.emit('sheet'); return id;
+  }
+  // Snapshot of the active sheet for publishing: tasks, links and name only. Reminder settings and sharing state stay private.
+  snapshot(id = this.wb.active) { if (id === this.wb.active) this.save(); const s = this.sheet(id); return { v: 1, name: s.name, data: JSON.parse(JSON.stringify(s.data)) }; }
   newBlank() { return this.addSheet(blank(), `Project ${this.wb.nextSheet}`); }
   renameSheet(id, name) {
     const s = this.sheet(id), n = String(name).trim(); if (!s || !n || n === s.name) return false;
@@ -265,7 +303,9 @@ export class Store {
   }
 
   // ---- transactions / undo ----
+  get readOnly() { return !!this.sheet().readOnly; }
   tx(fn) {
+    if (this.readOnly) { this.emit('denied'); return undefined; } // shared read-only copy
     const before = this.serialize();
     const r = fn();
     this.settle();
@@ -432,7 +472,7 @@ export class Store {
       const idx = f ? f.sub + 1 : this.tasks.length;
       const level = after ? after.level : this.tasks.length ? this.tasks[this.tasks.length - 1].level : 0;
       const start = f ? (f.summary ? f.start : after.start) : today;
-      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level, start, dur: ms ? 0 : 5, progress: 0, owner: '', ms };
+      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level, start, dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms };
       this.tasks.splice(idx, 0, t);
       return t.id;
     });
@@ -473,10 +513,23 @@ export class Store {
   predText(id) {
     return this.incoming(id).map((l) => `${this.rowNum(l.from)}${l.type === 'FS' ? '' : l.type}${l.lag ? (l.lag > 0 ? '+' : '') + l.lag : ''}`).join(', ');
   }
+  setShare(share) { const s = this.sheet(); s.share = cleanShare(share); this.save(); this.emit('meta'); }
+  clearNoRem() { this.tx(() => { for (const t of this.tasks) t.noRem = false; }); }
+  setNoRem(id, v) { this.tx(() => { const t = this.byId.get(id); if (t) t.noRem = !!v; }); }
+  setOwner(id, name, email) { this.tx(() => { const t = this.byId.get(id); if (t) { t.owner = String(name).slice(0, 80); t.email = isEmail(email) ? email : ''; } }); }
+  get rem() { return this.sheet().rem || (this.sheet().rem = cleanRem()); }
+  setRem(patch) { if (this.readOnly) return; this.sheet().rem = cleanRem({ ...this.rem, ...patch }); this.save(); this.emit('meta'); }
   setCell(id, col, raw) {
     const t = this.byId.get(id), f = this.info.get(id), v = String(raw).trim();
     if (col === 'name') { if (!v) return 'Name cannot be empty'; this.tx(() => { t.name = v; }); return null; }
-    if (col === 'owner') { this.tx(() => { t.owner = v; }); return null; }
+    if (col === 'owner') {
+      const m = v.match(/^(.*?)\s*<([^<>]+)>$/); let name = v, email = '';
+      if (m && isEmail(m[2].trim())) { name = m[1].trim(); email = m[2].trim(); } else if (isEmail(v)) { name = v.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()); email = v; }
+      else if (name && name.toLowerCase() === (t.owner || '').toLowerCase()) email = t.email || '';
+      else if (name && this.resolvePerson) { const p = this.resolvePerson(name); if (p) { name = p.name; email = p.email; } }
+      this.tx(() => { t.owner = name; t.email = email; }); return null;
+    }
+    if (col === 'email') { if (v && !isEmail(v)) return 'Not a valid email address'; this.tx(() => { t.email = v; }); return null; }
     if (col === 'start') {
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date (try "Nov 12" or 2026-11-12)';
       this.tx(() => {

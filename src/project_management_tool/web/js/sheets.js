@@ -14,9 +14,9 @@ export function createSheets(ctx) {
   // ---------- tabs ----------
   function render() {
     if (renaming) return;
-    const k = `${store.wb.active}|${store.wb.sheets.map((s) => `${s.id}:${s.name}`).join('|')}`;
+    const k = `${store.wb.active}|${store.wb.sheets.map((s) => `${s.id}:${s.name}:${s.readOnly ? 1 : 0}`).join('|')}`;
     if (k === key) return; key = k;
-    setHTML(tabs, store.wb.sheets.map((s) => `<div class="tab${s.id === store.wb.active ? ' on' : ''}" draggable="true" data-id="${esc(s.id)}" style="--tc:${colorOf(s.id)}" title="${esc(s.name)}"><i class="sd"></i><span class="tn">${esc(s.name)}</span></div>`).join(''));
+    setHTML(tabs, store.wb.sheets.map((s) => `<div class="tab${s.id === store.wb.active ? ' on' : ''}${s.readOnly ? ' ro' : ''}" draggable="true" data-id="${esc(s.id)}" style="--tc:${colorOf(s.id)}" title="${esc(s.name)}"><i class="sd"></i><span class="tn">${esc(s.name)}</span></div>`).join(''));
     tabs.querySelector('.tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 

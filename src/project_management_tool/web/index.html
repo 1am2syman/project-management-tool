@@ -22,11 +22,16 @@
       <button data-act="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 16 16"><path d="M6 3L3 6l3 3M3 6h6a4 4 0 010 8H6"/></svg></button>
       <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
       <span class="sep"></span>
+      <button id="sharebtn" title="Share this project read-only"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg>Share</button>
+      <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden></span></button>
       <button id="expbtn" title="Export to Excel or PDF"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>Export</button>
+      <span class="sep"></span>
+      <button id="m365btn" class="m365" title="Connect Microsoft 365"><span id="m365lbl"></span></button>
       <span class="sep"></span>
       <button data-act="reset" class="ghost" title="Restore the demo workbook (removes all sheets)">Reset all</button>
     </div>
   </header>
+  <div id="robanner" class="robanner" hidden></div>
 
   <main id="main">
     <section class="pane left" id="left">
@@ -89,6 +94,7 @@
 
 <div id="tip" class="tip"></div>
 <div id="expmenu" class="expmenu" hidden></div>
+<div id="m365menu" class="expmenu" hidden></div>
 <div id="tplpop" class="tplpop" hidden></div>
 <div id="ctxmenu" class="ctxmenu" hidden></div>
 <div id="colpop" class="colpop" hidden></div>

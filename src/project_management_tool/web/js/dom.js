@@ -12,3 +12,17 @@ export function setSVG(el, markup) {
   const doc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, 'image/svg+xml');
   el.replaceChildren(...[...doc.documentElement.childNodes].map((n) => document.importNode(n, true)));
 }
+
+// Modal dialog helper: returns { el, body, close }. Esc / backdrop click closes.
+export function openModal(title, bodyMarkup, { wide = false, onClose } = {}) {
+  const back = document.createElement('div'); back.className = 'modal-back';
+  setHTML(back, `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="m-head"><b>${esc(title)}</b><button class="m-x" aria-label="Close">×</button></div><div class="m-body"></div></div>`);
+  const body = back.querySelector('.m-body'); setHTML(body, bodyMarkup);
+  document.body.appendChild(back);
+  const close = () => { document.removeEventListener('keydown', key, true); back.remove(); onClose?.(); };
+  const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', key, true);
+  back.addEventListener('pointerdown', (e) => { if (e.target === back) close(); });
+  back.querySelector('.m-x').addEventListener('click', close);
+  return { el: back, body, close };
+}

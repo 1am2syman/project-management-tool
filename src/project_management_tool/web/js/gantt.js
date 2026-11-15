@@ -300,6 +300,7 @@ export function createGantt(ctx) {
     }
     const id = +bar.dataset.id;
     if (ui.selId !== id || ui.linkId) ctx.select(id, ui.col);
+    if (store.readOnly) { store.emit('denied'); return; } // viewers can look, not touch
     gb.setPointerCapture(e.pointerId);
     if (dot) { drag = { kind: 'link', id, end: dot.classList.contains('f') ? 'f' : 's', moved: true, lastX: e.clientX, lastY: e.clientY, target: null }; root.classList.add('linking'); e.preventDefault(); return; }
     store.beginDrag();

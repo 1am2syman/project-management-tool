@@ -4,6 +4,11 @@ import { createGantt } from './gantt.js';
 import { setHTML } from './dom.js';
 import { createSheets } from './sheets.js';
 import { createExport } from './export.js';
+import { createPeople } from './people.js';
+import { createM365UI } from './m365ui.js';
+import { createReminders } from './reminders.js';
+import { createSharing } from './sharing.js';
+import * as m365 from './m365.js';
 import { initDensity, setDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
@@ -29,6 +34,10 @@ grid = createGrid(ctx);
 gantt = createGantt(ctx);
 sheets = createSheets(ctx);
 createExport(ctx);
+ctx.people = createPeople(ctx);
+ctx.m365ui = createM365UI(ctx);
+const reminders = createReminders(ctx);
+const sharing = createSharing(ctx);
 
 function status() {
   const leaves = store.tasks.filter((t) => !store.info.get(t.id).summary), ms = leaves.filter((t) => t.ms).length, P = store.project;
@@ -40,7 +49,7 @@ function status() {
 
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
-  grid.render(); gantt.render(); status(); sheets.render();
+  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner();
   $('.brand b').textContent = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
@@ -48,6 +57,7 @@ function renderAll() {
   $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto;
 }
 store.on((kind) => {
+  if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
   if (kind === 'drag') renderAll();
   else if (kind === 'sheet') {
     ui.selId = null; ui.linkId = null; gantt.reset(); grid.invalidateHead(); renderAll();
@@ -121,4 +131,5 @@ document.addEventListener('keydown', (e) => {
 addEventListener('resize', () => ctx.requestRender());
 renderAll();
 requestAnimationFrame(() => gantt.initialScroll());
+m365.init().then(() => { reminders.badge(); sharing.fromHash(); });
 void COLS;

@@ -13,6 +13,7 @@ export const COLS = [
   { id: 'trend', letter: 'G', label: 'Trend', w: 100, group: 'prog', spark: true },
   { id: 'pred', letter: 'H', label: 'Depends on', w: 104, group: 'dep' },
   { id: 'owner', letter: 'I', label: 'Owner', w: 112, group: 'dep' },
+  { id: 'email', letter: 'J', label: 'Email', w: 190, group: 'dep' },
 ];
 const GROUPS = [
   { id: 'task', label: 'Task' },
@@ -46,7 +47,7 @@ export function createGrid(ctx) {
   // ---- column visibility (persisted). Hidden columns keep their letters, like a spreadsheet. ----
   const HKEY = 'pm-hidden-cols';
   let hidden = new Set();
-  try { hidden = new Set(JSON.parse(localStorage.getItem(HKEY) || '[]')); } catch { hidden = new Set(); }
+  try { const sv = localStorage.getItem(HKEY); hidden = new Set(sv == null ? ['email'] : JSON.parse(sv)); } catch { hidden = new Set(['email']); }
   hidden.delete('name');
   const VIS = () => COLS.filter((c) => !hidden.has(c.id));
   const edge = (c) => {
@@ -84,6 +85,7 @@ export function createGrid(ctx) {
       case 'float': return f.float == null ? '' : String(f.float);
       case 'pred': return store.predText(id);
       case 'owner': return t.owner;
+      case 'email': return t.email || '';
       default: return '';
     }
   }
@@ -108,9 +110,10 @@ export function createGrid(ctx) {
         break;
       case 'trend': cls += ' spark'; html = spark(f); break;
       case 'pred': html = esc(store.predText(t.id)) || '<span style="color:#cbd5e1">—</span>'; break;
+      case 'email': html = esc(t.email || '') || '<span style="color:#cbd5e1">—</span>'; break;
       case 'owner': if (t.owner) { const h = [...t.owner].reduce((a, ch) => a + ch.charCodeAt(0), 0); html = `<span class="chip"><span class="av" style="background:${AV[h % AV.length]}">${esc(t.owner.split(' ').map((w) => w[0]).join('').slice(0, 2))}</span>${esc(t.owner)}</span>`; } break;
     }
-    return `<div class="${cls}" data-col="${c.id}"${style ? ` style="${style}"` : ''}>${html}</div>`;
+    return `<div class="${cls}" data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
   }
 
   function render() {
@@ -148,6 +151,7 @@ export function createGrid(ctx) {
   // ---- editing ----
   function startEdit(id, col, initial) {
     if (editing) return;
+    if (store.readOnly) { store.emit('denied'); return; }
     const c = COLS.find((x) => x.id === col); if (!c || c.spark || col === 'float') return;
     const f = store.info.get(id);
     if (f.summary && ['end', 'dur', 'progress', 'pred'].includes(col)) { ctx.toast('Computed from child tasks'); return; }
@@ -156,10 +160,12 @@ export function createGrid(ctx) {
     inp.value = initial ?? raw(id, col); el.appendChild(inp); inp.focus();
     if (initial == null) inp.select(); else inp.setSelectionRange(inp.value.length, inp.value.length);
     editing = { id, col, inp };
+    let picked = null, unpick = null;
     const finish = (commit, move) => {
       if (!editing) return; const e = editing; editing = null;
-      const val = e.inp.value; e.inp.remove();
-      if (commit && val !== raw(e.id, e.col)) { const err = store.setCell(e.id, e.col, val); if (err) ctx.toast(err); }
+      const val = e.inp.value; e.inp.remove(); unpick?.();
+      if (commit && picked) store.setOwner(e.id, picked.name, picked.email);
+      else if (commit && val !== raw(e.id, e.col)) { const err = store.setCell(e.id, e.col, val); if (err) ctx.toast(err); }
       if (move) { render(); move(); } else ctx.requestRender();
       if (document.activeElement?.tagName === 'INPUT') document.activeElement.blur();
     };
@@ -169,6 +175,7 @@ export function createGrid(ctx) {
       else if (e.key === 'Tab') { e.preventDefault(); const d = e.shiftKey ? -1 : 1; finish(true, () => moveSel(0, d)); }
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
+    if (col === 'owner' && ctx.people) unpick = ctx.people.attach(inp, (p) => { picked = p; inp.value = p.name; finish(true); });
     inp.addEventListener('blur', () => finish(true));
     inp.addEventListener('input', () => { fxin.value = inp.value; });
   }
@@ -188,6 +195,8 @@ export function createGrid(ctx) {
     const id = +r.dataset.id;
     if (tog) { store.toggle(id); return; }
     const c = e.target.closest('.c'); if (c && c.dataset.col && !c.querySelector('.editor')) ctx.select(id, c.dataset.col === 'rn' ? ui.col : c.dataset.col);
+    // the first click re-renders the rows, which can swallow the browser's dblclick: use the click count instead
+    if (e.detail >= 2 && c && c.dataset.col && c.dataset.col !== 'rn') startEdit(id, c.dataset.col);
   });
   body.addEventListener('dblclick', (e) => {
     const r = e.target.closest('.r[data-id]'), c = e.target.closest('.c[data-col]');
