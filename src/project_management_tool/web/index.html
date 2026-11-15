@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan — project sheet &amp; gantt</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span><b>Launch plan</b><span class="muted">· sheet + gantt</span></div>
+    <div class="tools">
+      <button data-act="add" title="Add task below selection"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Task</button>
+      <button data-act="addms" title="Add milestone"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg>Milestone</button>
+      <span class="sep"></span>
+      <button data-act="outdent" title="Outdent (Alt+←)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M5 5L2 8l3 3"/></svg></button>
+      <button data-act="indent" title="Indent (Alt+→)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M2 5l3 3-3 3"/></svg></button>
+      <button data-act="del" title="Delete selected task or link (Del)"><svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.5 8.5h5l.5-8.5"/></svg></button>
+      <span class="sep"></span>
+      <button data-act="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 16 16"><path d="M6 3L3 6l3 3M3 6h6a4 4 0 010 8H6"/></svg></button>
+      <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
+      <span class="sep"></span>
+      <button data-act="reset" class="ghost" title="Restore the demo project">Reset demo</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="pane left" id="left">
+      <div class="fbar">
+        <div class="namebox" id="namebox">A2</div>
+        <div class="fx">ƒx</div>
+        <input id="fxin" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="gx" id="gx">
+        <div class="ginner" id="ginner">
+          <div class="g-band" id="gband"></div>
+          <div class="g-letters" id="gletters"></div>
+          <div class="g-headrow" id="ghead"></div>
+          <div class="g-body" id="gbody"></div>
+        </div>
+      </div>
+    </section>
+    <div class="split" id="split" title="Drag to resize"></div>
+    <section class="pane right" id="right">
+      <div class="strip">
+        <div class="seg" id="zoomseg">
+          <button data-zoom="10">Month</button><button data-zoom="24">Week</button><button data-zoom="44">Day</button>
+        </div>
+        <button class="icon" data-act="zoomout" title="Zoom out"><svg viewBox="0 0 16 16"><path d="M3 8h10"/></svg></button>
+        <button class="icon" data-act="zoomin" title="Zoom in"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
+        <button data-act="today">Today</button>
+        <span class="grow"></span>
+        <label class="switch crit"><input type="checkbox" id="optCrit"><i></i>Critical path</label>
+        <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
+      </div>
+      <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>
+      <div class="gbody" id="gb">
+        <div class="canvas" id="canvas">
+          <svg class="bg" id="bg"></svg>
+          <div class="todayline" id="todayline"></div>
+          <svg class="links" id="links"></svg>
+          <div class="bars" id="bars"></div>
+          <svg class="linkdrag" id="linkdrag"></svg>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="status">
+    <span id="stat"></span>
+    <span class="grow"></span>
+    <span class="hint">Drag bar · drag edges to resize · drag <i class="dotdemo"></i> onto another bar to link (start/finish → start/finish) · ⌘/Ctrl+wheel zoom · drag background to pan</span>
+  </footer>
+</div>
+
+<div id="tip" class="tip"></div>
+<div id="linkpop" class="linkpop" hidden></div>
+<div id="toast" class="toast"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
