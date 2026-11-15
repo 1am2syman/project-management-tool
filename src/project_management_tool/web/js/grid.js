@@ -43,21 +43,34 @@ export function createGrid(ctx) {
   const namebox = $('#namebox'), fxin = $('#fxin');
   let editing = null, headKey = '';
 
-  const tpl = () => '44px ' + COLS.map((c) => c.w + 'px').join(' ');
-  const applyTpl = () => { inner.style.setProperty('--tpl', tpl()); inner.style.width = 44 + COLS.reduce((a, c) => a + c.w, 0) + 'px'; };
+  // ---- column visibility (persisted). Hidden columns keep their letters, like a spreadsheet. ----
+  const HKEY = 'pm-hidden-cols';
+  let hidden = new Set();
+  try { hidden = new Set(JSON.parse(localStorage.getItem(HKEY) || '[]')); } catch { hidden = new Set(); }
+  hidden.delete('name');
+  const VIS = () => COLS.filter((c) => !hidden.has(c.id));
+  const edge = (c) => {
+    const g = GROUPS.find((x) => x.id === c.group); if (!g || !g.hl) return '';
+    const v = VIS().filter((x) => x.group === c.group);
+    return (v[0] === c ? ' hl-l' : '') + (v[v.length - 1] === c ? ' hl-r' : '');
+  };
+
+  const tpl = () => `44px ${VIS().map((c) => `${c.w}px`).join(' ')}`;
+  const applyTpl = () => { inner.style.setProperty('--tpl', tpl()); inner.style.width = `${44 + VIS().reduce((a, c) => a + c.w, 0)}px`; };
 
   function renderHead() {
-    const key = ui.col;
+    const key = `${ui.col}|${[...hidden].join(',')}`;
     if (key === headKey) return; headKey = key;
     let b = '<div class="c"></div>', ci = 2;
     for (const g of GROUPS) {
-      const n = COLS.filter((c) => c.group === g.id).length;
-      const cls = (g.hl ? ' hl hl-l hl-r' : '');
+      const n = VIS().filter((c) => c.group === g.id).length;
+      if (!n) continue;
+      const cls = g.hl ? ' hl hl-l hl-r' : '';
       b += `<div class="c${cls}" style="grid-column:${ci} / span ${n}">${g.label}</div>`; ci += n;
     }
     setHTML(band, b);
-    setHTML(letters, '<div class="c"></div>' + COLS.map((c, i) => `<div class="c${c.id === ui.col ? ' sel' : ''}" data-i="${i}">${c.letter}<i class="rs" data-i="${i}"></i></div>`).join(''));
-    setHTML(head, '<div class="c rn">1</div>' + COLS.map((c) => `<div class="c${c.num ? ' num' : ''}${c.ctr ? ' ctr' : ''}${c.id === ui.col ? ' sel' : ''}">${c.label}</div>`).join(''));
+    setHTML(letters, '<div class="c"></div>' + VIS().map((c) => `<div class="c${c.id === ui.col ? ' sel' : ''}" data-i="${COLS.indexOf(c)}">${c.letter}<i class="rs" data-i="${COLS.indexOf(c)}"></i></div>`).join(''));
+    setHTML(head, '<div class="c rn">1</div>' + VIS().map((c) => `<div class="c${c.num ? ' num' : ''}${c.ctr ? ' ctr' : ''}${c.id === ui.col ? ' sel' : ''}">${c.label}</div>`).join(''));
   }
 
   function raw(id, col) {
@@ -77,7 +90,7 @@ export function createGrid(ctx) {
 
   function cell(t, f, c, maxDur) {
     const sel = t.id === ui.selId && c.id === ui.col;
-    const hl = c.group === 'sched' ? (c.id === 'start' ? ' hl-l' : c.id === 'dur' ? ' hl-r' : '') : '';
+    const hl = edge(c);
     let cls = 'c' + (sel ? ' sel' : '') + hl + (c.num ? ' num' : '') + (c.ctr ? ' ctr' : ''), style = '', html = '';
     const dur = f.end - f.start;
     switch (c.id) {
@@ -108,13 +121,13 @@ export function createGrid(ctx) {
     let h = '';
     for (const t of rows) {
       const f = store.info.get(t.id);
-      h += `<div class="r${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${COLS.map((c) => cell(t, f, c, maxDur)).join('')}</div>`;
+      h += `<div class="r${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`;
     }
     const P = store.project, pd = P.end - P.start;
     let tot = '<div class="c rn">Σ</div>';
     const allProg = (() => { let w = 0, s = 0; for (const t of store.tasks) { const f = store.info.get(t.id); if (f.summary) continue; const wt = Math.max(t.dur, 0.0001); w += wt; s += wt * t.progress; } return w ? s / w : 0; })();
-    for (const c of COLS) {
-      let v = '', st = '', cl = 'c' + (c.num ? ' num' : '') + (c.ctr ? ' ctr' : '') + (c.group === 'sched' ? (c.id === 'start' ? ' hl-l' : c.id === 'dur' ? ' hl-r' : '') : '');
+    for (const c of VIS()) {
+      let v = '', st = '', cl = `c${c.num ? ' num' : ''}${c.ctr ? ' ctr' : ''}${edge(c)}`;
       if (c.id === 'name') v = 'Project total';
       else if (c.id === 'start') v = fmtDate(P.start);
       else if (c.id === 'end') v = fmtDate(P.end - 1);
@@ -164,9 +177,10 @@ export function createGrid(ctx) {
   function moveSel(dr, dc) {
     const rows = store.rows; if (!rows.length) return;
     let ri = rows.findIndex((t) => t.id === ui.selId); if (ri < 0) ri = 0;
-    let ci = COLS.findIndex((c) => c.id === ui.col); if (ci < 0) ci = 0;
-    ri = Math.max(0, Math.min(rows.length - 1, ri + dr)); ci = Math.max(0, Math.min(COLS.length - 1, ci + dc));
-    ctx.select(rows[ri].id, COLS[ci].id, true);
+    const vc = VIS();
+    let ci = vc.findIndex((c) => c.id === ui.col); if (ci < 0) ci = 0;
+    ri = Math.max(0, Math.min(rows.length - 1, ri + dr)); ci = Math.max(0, Math.min(vc.length - 1, ci + dc));
+    ctx.select(rows[ri].id, vc[ci].id, true);
   }
 
   // ---- events ----
@@ -200,6 +214,36 @@ export function createGrid(ctx) {
     else if (e.key === 'Escape') { fxin.blur(); render(); }
     e.stopPropagation();
   });
+
+  // ---- column picker ----
+  const colbtn = $('#colbtn'), colpop = $('#colpop');
+  function fillColPop() {
+    const rows = COLS.map((c) => {
+      const locked = c.id === 'name', on = !hidden.has(c.id);
+      return `<label class="ci${locked ? ' lock' : ''}"><input type="checkbox" data-c="${c.id}"${on ? ' checked' : ''}${locked ? ' disabled' : ''}><i></i><span class="cl">${c.letter}</span><span class="cn">${esc(c.label)}</span></label>`;
+    }).join('');
+    setHTML(colpop, `<div class="ttl"><b>Columns</b><button data-all="1">Show all</button></div>${rows}<div class="ttl foot">${VIS().length} of ${COLS.length} shown</div>`);
+  }
+  function applyCols() {
+    try { localStorage.setItem(HKEY, JSON.stringify([...hidden])); } catch { /* storage unavailable */ }
+    if (hidden.has(ui.col)) ui.col = 'name';
+    headKey = ''; fillColPop(); render(); ctx.requestRender();
+  }
+  colbtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!colpop.hidden) { colpop.hidden = true; return; }
+    fillColPop(); colpop.hidden = false;
+    const r = colbtn.getBoundingClientRect();
+    colpop.style.left = `${Math.max(8, Math.min(r.right - 220, innerWidth - 232))}px`; colpop.style.top = `${r.bottom + 6}px`;
+  });
+  colpop.addEventListener('change', (e) => {
+    const id = e.target.dataset.c; if (!id) return;
+    if (e.target.checked) hidden.delete(id); else hidden.add(id);
+    applyCols();
+  });
+  colpop.addEventListener('click', (e) => { if (e.target.dataset.all) { hidden.clear(); applyCols(); } });
+  document.addEventListener('pointerdown', (e) => { if (!colpop.hidden && !colpop.contains(e.target) && !colbtn.contains(e.target)) colpop.hidden = true; }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') colpop.hidden = true; });
 
   return { render, startEdit, moveSel, setScrollTop: (v) => { body.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
 }
