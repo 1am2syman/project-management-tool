@@ -116,15 +116,35 @@ export function createGrid(ctx) {
     return `<div class="${cls}" data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
   }
 
+  // Rows are diffed against what is already on screen: while dragging a bar only the few rows whose text changed are re-parsed,
+  // instead of rebuilding (and re-laying-out) the whole grid on every pointer move.
+  let shown = new Map(), shownIds = '', shownKey = '', totEl = null, totShown = '';
+  const scratch = document.createElement('div');
+  function parseRows(list) { setHTML(scratch, list.join('')); return [...scratch.children]; }
+  function paintRows(rowHtml, totHtml) {
+    const key = `${VIS().map((c) => c.id).join()}`, ids = rowHtml.map((r) => r[0]).join();
+    if (key !== shownKey || ids !== shownIds || !totEl || !totEl.isConnected) { // structure changed: rebuild everything
+      setHTML(body, rowHtml.map((r) => r[1]).join('') + totHtml + '<div class="pad"></div>');
+      shown = new Map(); body.querySelectorAll(':scope > .r[data-id]').forEach((el, i) => shown.set(rowHtml[i][0], { el, html: rowHtml[i][1] }));
+      totEl = body.querySelector(':scope > .r.tot'); totShown = totHtml; shownKey = key; shownIds = ids; return;
+    }
+    const changed = rowHtml.filter(([id, html]) => shown.get(id).html !== html);
+    if (changed.length) {
+      const fresh = parseRows(changed.map((c) => c[1]));
+      changed.forEach(([id, html], i) => { const o = shown.get(id); o.el.replaceWith(fresh[i]); shown.set(id, { el: fresh[i], html }); });
+    }
+    if (totHtml !== totShown) { const [el] = parseRows([totHtml]); totEl.replaceWith(el); totEl = el; totShown = totHtml; }
+  }
+
   function render() {
     if (editing) return;
     applyTpl(); renderHead();
     const rows = store.rows;
     let maxDur = 1; for (const t of store.tasks) { const f = store.info.get(t.id); if (!f.summary) maxDur = Math.max(maxDur, f.end - f.start); }
-    let h = '';
+    const rowHtml = [];
     for (const t of rows) {
       const f = store.info.get(t.id);
-      h += `<div class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`;
+      rowHtml.push([t.id, `<div class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`]);
     }
     const P = store.project, pd = P.end - P.start;
     let tot = '<div class="c rn">Σ</div>';
@@ -140,8 +160,8 @@ export function createGrid(ctx) {
       else if (c.id === 'owner') v = new Set(store.tasks.map((t) => t.owner).filter(Boolean)).size + ' people';
       tot += `<div class="${cl}"${st ? ` style="${st}"` : ''}>${v}</div>`;
     }
-    h += `<div class="r tot">${tot}</div><div class="pad"></div>`;
-    setHTML(body, h);
+    const totHtml = `<div class="r tot">${tot}</div>`;
+    paintRows(rowHtml, totHtml);
     // name box + formula bar
     const col = COLS.find((c) => c.id === ui.col), has = ui.selId != null && store.info.has(ui.selId);
     namebox.textContent = has ? col.letter + store.rowNum(ui.selId) : 'A1';

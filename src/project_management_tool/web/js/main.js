@@ -71,7 +71,7 @@ function renderAll() {
 }
 store.on((kind) => {
   if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
-  if (kind === 'drag') renderAll();
+  if (kind === 'drag') ctx.requestRender(); // coalesced to one render per frame, however many pointer events arrive
   else if (kind === 'sheet') {
     ui.selId = null; ui.linkId = null; gantt.reset(); grid.invalidateHead(); renderAll();
     requestAnimationFrame(() => gantt.initialScroll());

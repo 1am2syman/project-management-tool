@@ -55,6 +55,8 @@ export function createGantt(ctx) {
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
   let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, layoutKey = '';
   const barEls = new Map();
+  let vwCache = 0;
+  if (window.ResizeObserver) new ResizeObserver(() => { const w = gb.clientWidth; if (w !== vwCache) { vwCache = w; if (origin != null) ctx.requestRender(); } }).observe(gb);
   let drag = null, raf = 0, popLink = null, bgDefs = '', bgBody = '', pendShift = 0;
 
   ppdNow = () => ppd;
@@ -65,7 +67,7 @@ export function createGantt(ctx) {
     const P = store.project;
     if (origin == null) origin = monday(P.start - 14);
     else if (P.start - 7 < origin) { const no = monday(P.start - 14); pendShift += (origin - no) * ppd; origin = no; layoutKey = ''; } // tasks moved earlier than the timeline: grow it leftwards
-    const vw = gb.clientWidth || 800;
+    const vw = vwCache || gb.clientWidth || 800; // cached: reading clientWidth after the grid's DOM writes would force a layout every frame
     const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
     W = (endDay - origin) * ppd;
@@ -141,6 +143,19 @@ export function createGantt(ctx) {
     return el;
   }
 
+  // The bar under the pointer follows it by fractions of a day (the dates snap, the bar glides); it settles onto the day grid on release.
+  function nudged(t, f, x1, x2) {
+    if (!drag || drag.id !== t.id || !drag.frac || f.summary) return [x1, x2];
+    const d = drag.frac * ppd;
+    return drag.kind === 'move' ? [x1 + d, x2 + d] : drag.kind === 'rl' ? [Math.min(x1 + d, x2 - 6), x2] : drag.kind === 'rr' ? [x1, Math.max(x2 + d, x1 + 6)] : [x1, x2];
+  }
+  function nudge() { // cheap per-pointer-move update of just the dragged bar
+    const el = barEls.get(drag.id), t = store.byId.get(drag.id), f = store.info.get(drag.id); if (!el || !t || !f || f.summary) return;
+    let [x1, x2] = nudged(t, f, xOf(f.start), xOf(f.end));
+    const ms = t.ms; el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${el.style.transform.split(',')[1] || '0px'},0)`;
+    if (!ms) el.style.width = Math.max(6, x2 - x1 - 2) + 'px';
+  }
+
   // focus mode: classes for the selected task's parents/children and predecessor/successor chains
   const relClass = (id) => ctx.relClass(id);
   function renderBars() {
@@ -149,7 +164,8 @@ export function createGantt(ctx) {
       const f = store.info.get(t.id); let el = barEls.get(t.id);
       if (!el) { el = makeBar(t.id); barEls.set(t.id, el); barsEl.appendChild(el); }
       seen.add(t.id);
-      const x1 = xOf(f.start), x2 = xOf(f.end), y = i * dims.row + (dims.row - dims.bar) / 2;
+      let x1 = xOf(f.start), x2 = xOf(f.end); const y = i * dims.row + (dims.row - dims.bar) / 2;
+      [x1, x2] = nudged(t, f, x1, x2);
       const ms = t.ms && !f.summary;
       const rc = relClass(t.id);
       const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
@@ -175,10 +191,21 @@ export function createGantt(ctx) {
     if (t.ms && !f.summary) return [xOf(f.start) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
     return [end === 's' ? xOf(f.start) + 1 : xOf(f.end) - 1, y];
   }
+  // Link paths are keyed by id and only re-parsed when their geometry or state changed, so a drag touches a handful of paths, not all of them.
+  const linkEls = new Map(), linkScratch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  function paintLinks(want) {
+    const keep = new Set(want.map((w) => w[0]));
+    for (const [id, o] of linkEls) if (!keep.has(id)) { o.el.remove(); linkEls.delete(id); }
+    const changed = want.filter(([id, html]) => !linkEls.has(id) || linkEls.get(id).html !== html);
+    if (!changed.length) return;
+    setSVG(linkScratch, changed.map((c) => c[1]).join(''));
+    const fresh = [...linkScratch.children];
+    changed.forEach(([id, html], i) => { const o = linkEls.get(id); if (o) o.el.replaceWith(fresh[i]); else linksEl.appendChild(fresh[i]); linkEls.set(id, { el: fresh[i], html }); });
+  }
   function renderLinks() {
     const idx = new Map(store.rows.map((t, i) => [t.id, i]));
     linksEl.setAttribute('width', W); linksEl.setAttribute('height', H);
-    let h = '';
+    const want = [];
     for (const l of store.links) {
       const a = idx.get(l.from), b = idx.get(l.to); if (a == null || b == null) continue;
       const fe = l.type[0] === 'F' ? 'f' : 's', te = l.type[1] === 'F' ? 'f' : 's';
@@ -194,9 +221,9 @@ export function createGantt(ctx) {
         arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
       }
       const rl = ctx.rel ? (ctx.rel.upL.has(l.id) ? ' r-up' : ctx.rel.downL.has(l.id) ? ' r-down' : ' dim') : '';
-      h += `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`;
+      want.push([l.id, `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`]);
     }
-    setSVG(linksEl, h);
+    paintLinks(want);
   }
 
   // ---------- render ----------
@@ -210,7 +237,8 @@ export function createGantt(ctx) {
     const tx = xOf(today) + ppd / 2;
     todayline.style.display = tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
     renderBars(); renderLinks();
-    syncHead(); updateSeg();
+    if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
+    updateSeg();
   }
   function syncHead() { ghdin.style.transform = `translateX(${-gb.scrollLeft}px)`; }
   function updateSeg() {
@@ -343,8 +371,9 @@ export function createGantt(ctx) {
       const f = store.info.get(id), x1 = xOf(f.start), w = xOf(f.end) - x1;
       store.dragApply(() => store.dragProgress(id, ((cx - x1) / w) * 100));
     } else {
-      const delta = Math.round((cx - drag.cx0) / ppd);
-      if (delta === drag.delta) { dragTip(); return; }
+      const rawD = (cx - drag.cx0) / ppd, delta = Math.round(rawD);
+      drag.frac = rawD - delta;
+      if (delta === drag.delta) { nudge(); dragTip(); return; }
       drag.delta = delta;
       store.dragApply(() => { if (kind === 'move') store.dragMove(id, delta); else store.dragResize(id, kind === 'rl' ? 'l' : 'r', delta); });
     }
