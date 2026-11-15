@@ -66,26 +66,203 @@ function demo() {
 
 const KEY = 'pm-proto-v2';
 
+const WB = 'pm-workbook-v1', TPL = 'pm-templates-v1';
+const LINK_SET = new Set(LINK_TYPES);
+
+// Coerce arbitrary (possibly corrupt / hand-edited) saved data into a valid project.
+function sanitize(d) {
+  const src = Array.isArray(d && d.tasks) ? d.tasks : [];
+  const seen = new Set(); const tasks = [];
+  for (const r of src) {
+    if (!r || typeof r !== 'object') continue;
+    let id = Number(r.id); if (!Number.isFinite(id) || seen.has(id)) id = Math.max(0, ...seen) + 1;
+    seen.add(id);
+    const ms = !!r.ms, prev = tasks[tasks.length - 1];
+    const level = Math.max(0, Math.min(prev ? prev.level + 1 : 0, Math.floor(Number(r.level)) || 0));
+    const start = Number.isFinite(Number(r.start)) ? Math.round(Number(r.start)) : today;
+    const dur = ms ? 0 : Math.max(1, Math.round(Number(r.dur)) || 1);
+    const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), ms });
+  }
+  const ids = new Set(tasks.map((t) => t.id)), links = [];
+  let ln = 0;
+  for (const l of Array.isArray(d && d.links) ? d.links : []) {
+    if (!l || !ids.has(l.from) || !ids.has(l.to) || !LINK_SET.has(l.type)) continue;
+    const n = parseInt(String(l.id).replace(/\D/g, ''), 10) || 0; ln = Math.max(ln, n);
+    links.push({ id: `l${n || ++ln}`, from: l.from, to: l.to, type: l.type, lag: Math.round(Number(l.lag)) || 0 });
+  }
+  const uniq = new Set(); const clean = links.filter((l) => { if (uniq.has(l.id)) return false; uniq.add(l.id); return true; });
+  const collapsed = (Array.isArray(d && d.collapsed) ? d.collapsed : []).filter((x) => ids.has(x));
+  return { tasks, links: clean, collapsed, nextId: Math.max(Number(d && d.nextId) || 0, ...ids, 0) + 1, nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
+}
+
+function blank() {
+  const t = (id, name, level, dur) => ({ id, name, level, start: today, dur, progress: 0, owner: '', ms: false });
+  return { tasks: [t(1, 'Phase 1', 0, 5), t(2, 'First task', 1, 5)], links: [], collapsed: [], nextId: 3, nextLink: 1 };
+}
+
+// Built-in templates: rows are [name, level, days, owner, isMilestone]; links are [from, to, type, lag] (1-based rows).
+function spec(id, name, desc, rows, links) {
+  const tasks = rows.map((r, i) => ({ id: i + 1, name: r[0], level: r[1], start: 0, dur: r[4] ? 0 : r[2] || 5, progress: 0, owner: r[3] || '', ms: !!r[4] }));
+  return {
+    id, name, desc, builtin: true, tasks,
+    links: links.map((l, i) => ({ id: `l${i + 1}`, from: l[0], to: l[1], type: l[2] || 'FS', lag: l[3] || 0 })),
+    nextId: rows.length + 1, nextLink: links.length + 1,
+  };
+}
+let builtinCache = null;
+function builtins() {
+  if (builtinCache) return builtinCache;
+  const d = demo(), base = Math.min(...d.tasks.map((t) => t.start));
+  builtinCache = [
+    { id: 'b-launch', name: 'Product launch', desc: 'Discovery → design → build → launch, with SS/FF links', builtin: true, tasks: d.tasks.map((t) => ({ ...t, start: t.start - base, progress: 0 })), links: d.links, nextId: d.nextId, nextLink: d.nextLink },
+    spec('b-marketing', 'Marketing campaign', 'Strategy, creative, channels, go-live and reporting', [
+      ['Campaign', 0], ['Strategy', 1], ['Audience research', 2, 6, 'Analyst'], ['Messaging & positioning', 2, 5, 'Lead'], ['Budget approval', 2, 0, 'Lead', 1],
+      ['Creative', 1], ['Copywriting', 2, 7, 'Writer'], ['Design assets', 2, 9, 'Designer'], ['Video production', 2, 12, 'Producer'], ['Creative review', 2, 0, 'Lead', 1],
+      ['Channels', 1], ['Landing page', 2, 8, 'Web'], ['Email sequences', 2, 6, 'CRM'], ['Paid media setup', 2, 5, 'Media'], ['Social calendar', 2, 4, 'Social'], ['Go live', 2, 0, 'Lead', 1],
+      ['Measure', 1], ['Campaign running', 2, 21, 'Media'], ['Performance report', 2, 4, 'Analyst'],
+    ], [[3, 4], [4, 5], [5, 7], [5, 8], [8, 9, 'SS', 3], [7, 10], [9, 10], [8, 10], [10, 12], [10, 13], [12, 14, 'SS', 2], [10, 15], [12, 16], [13, 16], [14, 16], [15, 16], [16, 18], [18, 19]]),
+    spec('b-web', 'Website redesign', 'IA, design, build in parallel, QA and go-live', [
+      ['Website redesign', 0], ['Discovery', 1], ['Stakeholder workshop', 2, 3, 'PM'], ['Content audit', 2, 5, 'Content'], ['Sitemap & IA', 2, 4, 'UX'],
+      ['Design', 1], ['Wireframes', 2, 6, 'UX'], ['UI design', 2, 8, 'Designer'], ['Design sign-off', 2, 0, 'PM', 1],
+      ['Development', 1], ['Component library', 2, 7, 'Dev'], ['Page templates', 2, 10, 'Dev'], ['CMS integration', 2, 8, 'Dev'], ['Content migration', 2, 6, 'Content'],
+      ['Launch', 1], ['QA & accessibility', 2, 5, 'QA'], ['Staging review', 2, 3, 'PM'], ['Go live', 2, 0, 'PM', 1],
+    ], [[3, 5], [4, 5], [5, 7], [7, 8], [8, 9], [9, 11], [11, 12], [11, 13, 'SS', 3], [12, 14, 'SS', 4], [12, 16], [13, 16], [14, 16], [16, 17], [17, 18]]),
+    spec('b-event', 'Event planning', 'Venue, logistics, promotion and event day', [
+      ['Event', 0], ['Plan', 1], ['Define goals & budget', 2, 3, 'Lead'], ['Venue shortlist', 2, 5, 'Ops'], ['Venue booked', 2, 0, 'Ops', 1],
+      ['Logistics', 1], ['Speakers & agenda', 2, 10, 'Lead'], ['Catering', 2, 6, 'Ops'], ['Registration site', 2, 7, 'Web'], ['Promotion', 2, 14, 'Marketing'], ['Run of show', 2, 4, 'Lead'],
+      ['Event day', 1], ['Setup', 2, 1, 'Ops'], ['Event', 2, 2, 'Lead'], ['Teardown & wrap-up', 2, 2, 'Ops'],
+    ], [[3, 4], [4, 5], [5, 7], [5, 8], [5, 9], [9, 10, 'SS', 2], [7, 11], [8, 11], [10, 11], [11, 13], [13, 14], [14, 15]]),
+    { id: 'b-blank', name: 'Blank project', desc: 'One phase, one task — start from scratch', builtin: true, ...(() => { const b = blank(); b.tasks.forEach((t) => { t.start = 0; }); return b; })() },
+  ];
+  return builtinCache;
+}
+
 export class Store {
   constructor() {
-    this.listeners = []; this.undoStack = []; this.redoStack = [];
+    this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map();
     this.auto = true; this.critical = true;
-    try { const p = JSON.parse(localStorage.getItem(KEY + ':prefs') || '{}'); if ('auto' in p) this.auto = p.auto; if ('critical' in p) this.critical = p.critical; } catch {}
-    let data = null;
-    try { data = JSON.parse(localStorage.getItem(KEY)); } catch {}
-    this.load(data && data.tasks ? data : demo());
+    try { const p = JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}'); if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; } catch { /* corrupt prefs */ }
+    this.wb = this.readWB();
+    this.templates = this.readTpl();
+    this.load(this.sheet().data);
   }
   on(fn) { this.listeners.push(fn); }
   emit(kind = 'change') { for (const f of this.listeners) f(kind); }
+
+  // ---- persistence ----
+  readWB() {
+    try {
+      const w = JSON.parse(localStorage.getItem(WB));
+      if (w && Array.isArray(w.sheets) && w.sheets.length) {
+        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data) }));
+        if (sheets.length) {
+          const nextSheet = Math.max(Number(w.nextSheet) || 0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1;
+          return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
+        }
+      }
+    } catch { /* corrupt workbook: fall through */ }
+    let data = null;
+    try { data = JSON.parse(localStorage.getItem(KEY)); } catch { /* none */ }
+    return { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(data && Array.isArray(data.tasks) ? data : demo()) }] };
+  }
+  readTpl() {
+    try { const t = JSON.parse(localStorage.getItem(TPL)); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
+    return [];
+  }
+  sheet(id = this.wb.active) { return this.wb.sheets.find((s) => s.id === id); }
   load(d) {
-    this.tasks = d.tasks; this.links = d.links; this.collapsed = new Set(d.collapsed || []);
-    this.nextId = d.nextId; this.nextLink = d.nextLink;
+    const c = sanitize(d);
+    this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
     this.settle();
   }
   serialize() { return JSON.stringify({ tasks: this.tasks, links: this.links, collapsed: [...this.collapsed], nextId: this.nextId, nextLink: this.nextLink }); }
-  save() { try { localStorage.setItem(KEY, this.serialize()); localStorage.setItem(KEY + ':prefs', JSON.stringify({ auto: this.auto, critical: this.critical })); } catch {} }
-  reset() { this.undoStack = []; this.redoStack = []; this.load(demo()); this.save(); this.emit(); }
+  save() {
+    try {
+      this.sheet().data = JSON.parse(this.serialize());
+      localStorage.setItem(WB, JSON.stringify(this.wb));
+      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical }));
+    } catch { /* quota / private mode: keep working in memory */ }
+  }
+  resetAll() { this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()) }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
+
+  // ---- sheets (workbook tabs) ----
+  uniqueName(base, ignoreId) {
+    const b = String(base).trim().slice(0, 60) || 'Sheet', taken = new Set(this.wb.sheets.filter((s) => s.id !== ignoreId).map((s) => s.name.toLowerCase()));
+    if (!taken.has(b.toLowerCase())) return b;
+    for (let n = 2; ; n++) { const c = `${b} (${n})`; if (!taken.has(c.toLowerCase())) return c; }
+  }
+  stash() { this.save(); this.hist.set(this.wb.active, { u: this.undoStack, r: this.redoStack }); }
+  enter(id) {
+    this.wb.active = id;
+    const h = this.hist.get(id); this.undoStack = h ? h.u : []; this.redoStack = h ? h.r : [];
+    this.load(this.sheet().data); this.save(); this.emit('sheet');
+  }
+  switchSheet(id) { if (id === this.wb.active || !this.sheet(id)) return; this.stash(); this.enter(id); }
+  addSheet(data, name) {
+    this.stash();
+    const id = `s${this.wb.nextSheet++}`;
+    this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data) });
+    this.enter(id); return id;
+  }
+  newBlank() { return this.addSheet(blank(), `Project ${this.wb.nextSheet}`); }
+  renameSheet(id, name) {
+    const s = this.sheet(id), n = String(name).trim(); if (!s || !n || n === s.name) return false;
+    s.name = this.uniqueName(n, id); this.save(); this.emit('meta'); return true;
+  }
+  duplicateSheet(id) {
+    if (id === this.wb.active) this.save();
+    const s = this.sheet(id); if (!s) return null;
+    return this.addSheet(JSON.parse(JSON.stringify(s.data)), `${s.name} copy`);
+  }
+  deleteSheet(id) {
+    const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
+    if (i < 0 || ws.length < 2) return false;
+    ws.splice(i, 1); this.hist.delete(id);
+    if (id === this.wb.active) { this.undoStack = []; this.redoStack = []; this.enter(ws[Math.min(i, ws.length - 1)].id); } else { this.save(); this.emit('meta'); }
+    return true;
+  }
+  moveSheet(id, to) {
+    const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id); if (i < 0) return;
+    const [s] = ws.splice(i, 1); ws.splice(Math.max(0, Math.min(ws.length, to)), 0, s); this.save(); this.emit('meta');
+  }
+
+  // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
+  view(id) {
+    const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
+    Object.assign(v, { listeners: [], auto: this.auto, critical: this.critical, tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
+    v.settle(); return v;
+  }
+
+  // ---- templates ----
+  allTemplates() { return [...builtins(), ...this.templates]; }
+  saveTpl() { try { localStorage.setItem(TPL, JSON.stringify(this.templates)); } catch { /* storage unavailable */ } }
+  saveTemplate(name) {
+    const n = String(name).trim().slice(0, 60); if (!n) return null;
+    const base = Math.min(...this.tasks.map((t) => t.start));
+    const t = {
+      id: `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: n, builtin: false, savedAt: Date.now(),
+      desc: `Saved from "${this.sheet().name}"`,
+      tasks: this.tasks.map((x) => ({ ...x, start: x.start - base, progress: 0 })),
+      links: this.links.map(({ id, from, to, type, lag }) => ({ id, from, to, type, lag })), nextId: this.nextId, nextLink: this.nextLink,
+    };
+    const i = this.templates.findIndex((x) => x.name.toLowerCase() === n.toLowerCase());
+    if (i >= 0) { this.templates[i] = t; } else this.templates.push(t);
+    this.saveTpl(); this.emit('meta'); return { tpl: t, updated: i >= 0 };
+  }
+  deleteTemplate(id) { this.templates = this.templates.filter((t) => t.id !== id); this.saveTpl(); this.emit('meta'); }
+  instantiate(tpl, startDay, name) {
+    const data = { tasks: tpl.tasks.map((t) => ({ ...t, start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
+    const id = this.addSheet(data, name || tpl.name);
+    this.recalc(); this.propagate(); this.recalc(); this.save(); this.emit('sheet'); // always resolve links once, even with auto-schedule off
+    return id;
+  }
+  static summaryOf(tpl) {
+    const leaves = tpl.tasks.filter((t, i, a) => !(a[i + 1] && a[i + 1].level > t.level));
+    const s = Math.min(...tpl.tasks.map((t) => t.start)), e = Math.max(...tpl.tasks.map((t) => t.start + t.dur));
+    return { tasks: leaves.filter((t) => !t.ms).length, ms: leaves.filter((t) => t.ms).length, span: Number.isFinite(e - s) ? e - s : 0 };
+  }
 
   // ---- transactions / undo ----
   tx(fn) {

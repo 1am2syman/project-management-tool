@@ -2,13 +2,15 @@ import { Store, fmtDate } from './model.js';
 import { createGrid, COLS } from './grid.js';
 import { createGantt } from './gantt.js';
 import { setHTML } from './dom.js';
+import { createSheets } from './sheets.js';
+import { createExport } from './export.js';
 import { initDensity, setDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
 initDensity();
 const store = new Store();
 const ui = { selId: null, col: 'name', linkId: null };
-let raf = 0, toastT = 0, grid, gantt;
+let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
   store, ui,
@@ -25,6 +27,8 @@ const ctx = {
 };
 grid = createGrid(ctx);
 gantt = createGantt(ctx);
+sheets = createSheets(ctx);
+createExport(ctx);
 
 function status() {
   const leaves = store.tasks.filter((t) => !store.info.get(t.id).summary), ms = leaves.filter((t) => t.ms).length, P = store.project;
@@ -36,12 +40,20 @@ function status() {
 
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
-  grid.render(); gantt.render(); status();
+  grid.render(); gantt.render(); status(); sheets.render();
+  $('.brand b').textContent = store.sheet().name;
+  document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
   $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto;
 }
-store.on((kind) => { if (kind === 'drag') { renderAll(); } else ctx.requestRender(); });
+store.on((kind) => {
+  if (kind === 'drag') renderAll();
+  else if (kind === 'sheet') {
+    ui.selId = null; ui.linkId = null; gantt.reset(); grid.invalidateHead(); renderAll();
+    requestAnimationFrame(() => gantt.initialScroll());
+  } else ctx.requestRender();
+});
 
 const act = {
   add: () => { const id = store.addTask(ui.selId); ctx.select(id, 'name', true); setTimeout(() => grid.startEdit(id, 'name'), 30); },
@@ -53,7 +65,7 @@ const act = {
     else if (ui.selId != null) { const rows = store.rows, i = rows.findIndex((t) => t.id === ui.selId); store.deleteTask(ui.selId); const n = store.rows[Math.min(i, store.rows.length - 1)]; ui.selId = n ? n.id : null; }
   },
   undo: () => store.undo(), redo: () => store.redo(),
-  reset: () => { ui.selId = null; store.reset(); },
+  reset: () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) store.resetAll(); },
   density: () => { setDensity(dims.name === 'compact' ? 'roomy' : 'compact'); ctx.requestRender(); },
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
@@ -69,6 +81,10 @@ document.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
   if (e.key === 'Escape') { if (gantt.isDragging()) gantt.cancelDrag(); else if (gantt.popOpen()) gantt.closePop(); else { ui.linkId = null; ctx.select(null); } return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { if (ui.linkId || ui.selId != null) { e.preventDefault(); act.del(); } return; }
+  if (e.altKey && (e.key === 'PageDown' || e.key === 'PageUp')) {
+    e.preventDefault(); const ws = store.wb.sheets, i = ws.findIndex((s) => s.id === store.wb.active), n = ws.length;
+    store.switchSheet(ws[(i + (e.key === 'PageDown' ? 1 : n - 1)) % n].id); return;
+  }
   if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); act.indent(); return; }
   if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); act.outdent(); return; }
   if (ui.selId == null) { if (e.key.startsWith('Arrow')) { e.preventDefault(); ctx.select(store.rows[0]?.id, 'name'); } return; }

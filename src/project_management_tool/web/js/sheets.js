@@ -1,0 +1,146 @@
+// Excel-style sheet tabs (one project per sheet) + template picker / saver.
+import { Store, fmtISO, parseDate, today } from './model.js';
+import { esc, setHTML } from './dom.js';
+
+const PALETTE = ['#5b7cfa', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#ef4444', '#84cc16'];
+const colorOf = (id) => PALETTE[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
+
+export function createSheets(ctx) {
+  const { store } = ctx;
+  const $ = (s) => document.querySelector(s);
+  const tabs = $('#tabs'), tplbtn = $('#tplbtn'), tplpop = $('#tplpop'), menu = $('#ctxmenu');
+  let key = '', renaming = false, dragId = null, startVal = fmtISO(today), menuId = null;
+
+  // ---------- tabs ----------
+  function render() {
+    if (renaming) return;
+    const k = `${store.wb.active}|${store.wb.sheets.map((s) => `${s.id}:${s.name}`).join('|')}`;
+    if (k === key) return; key = k;
+    setHTML(tabs, store.wb.sheets.map((s) => `<div class="tab${s.id === store.wb.active ? ' on' : ''}" draggable="true" data-id="${esc(s.id)}" style="--tc:${colorOf(s.id)}" title="${esc(s.name)}"><i class="sd"></i><span class="tn">${esc(s.name)}</span></div>`).join(''));
+    tabs.querySelector('.tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  function rename(id) {
+    const tab = tabs.querySelector(`.tab[data-id="${id}"]`); if (!tab) return;
+    const s = store.sheet(id); renaming = true;
+    const inp = document.createElement('input'); inp.value = s.name; inp.maxLength = 60;
+    tab.querySelector('.tn').replaceWith(inp); tab.draggable = false; inp.focus(); inp.select();
+    let done = false;
+    const end = (commit) => {
+      if (done) return; done = true; renaming = false;
+      if (commit && !store.renameSheet(id, inp.value)) { key = ''; render(); }
+      else if (!commit) { key = ''; render(); }
+      ctx.requestRender();
+    };
+    inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') end(true); else if (e.key === 'Escape') end(false); });
+    inp.addEventListener('blur', () => end(true));
+    inp.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+
+  tabs.addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (t && !e.target.matches('input')) store.switchSheet(t.dataset.id); });
+  tabs.addEventListener('dblclick', (e) => { const t = e.target.closest('.tab'); if (t) rename(t.dataset.id); });
+  tabs.addEventListener('contextmenu', (e) => { const t = e.target.closest('.tab'); if (!t) return; e.preventDefault(); openMenu(t.dataset.id, e.clientX, e.clientY); });
+  tabs.addEventListener('wheel', (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { tabs.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+
+  // drag to reorder
+  const clearDrop = () => tabs.querySelectorAll('.drop-l,.drop-r').forEach((t) => t.classList.remove('drop-l', 'drop-r'));
+  tabs.addEventListener('dragstart', (e) => { const t = e.target.closest('.tab'); if (!t) return; dragId = t.dataset.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); t.classList.add('dragging'); });
+  tabs.addEventListener('dragover', (e) => {
+    const t = e.target.closest('.tab'); if (!dragId || !t) return; e.preventDefault();
+    const r = t.getBoundingClientRect(), left = e.clientX < r.left + r.width / 2;
+    clearDrop(); if (t.dataset.id !== dragId) t.classList.add(left ? 'drop-l' : 'drop-r');
+  });
+  tabs.addEventListener('drop', (e) => {
+    const t = e.target.closest('.tab'); if (!dragId || !t || t.dataset.id === dragId) return; e.preventDefault();
+    const r = t.getBoundingClientRect(), left = e.clientX < r.left + r.width / 2;
+    const ws = store.wb.sheets, from = ws.findIndex((s) => s.id === dragId); let to = ws.findIndex((s) => s.id === t.dataset.id) + (left ? 0 : 1);
+    if (from < to) to--;
+    store.moveSheet(dragId, to);
+  });
+  tabs.addEventListener('dragend', () => { dragId = null; clearDrop(); tabs.querySelectorAll('.dragging').forEach((t) => t.classList.remove('dragging')); });
+
+  $('#addsheet').addEventListener('click', () => { store.newBlank(); ctx.toast('New blank project — use Templates to start from a template'); });
+
+  // ---------- context menu ----------
+  function openMenu(id, x, y) {
+    menuId = id; const s = store.sheet(id), i = store.wb.sheets.indexOf(s), n = store.wb.sheets.length;
+    const item = (a, label, dis, cls = '') => `<button data-a="${a}" class="${cls}"${dis ? ' disabled' : ''}>${label}</button>`;
+    setHTML(menu, item('rename', 'Rename') + item('dup', 'Duplicate') + item('tpl', 'Save as template…') + '<hr>' + item('left', 'Move left', i === 0) + item('right', 'Move right', i === n - 1) + '<hr>' + item('del', 'Delete', n < 2, 'danger'));
+    menu.hidden = false;
+    const r = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`; menu.style.top = `${Math.max(8, y - r.height - 4)}px`;
+  }
+  const closeMenu = () => { menu.hidden = true; };
+  menu.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-a]'); if (!b || b.disabled) return;
+    const id = menuId, a = b.dataset.a, ws = store.wb.sheets, i = ws.findIndex((s) => s.id === id); closeMenu();
+    if (a === 'rename') { if (id !== store.wb.active) store.switchSheet(id); setTimeout(() => rename(id), 30); }
+    else if (a === 'dup') store.duplicateSheet(id);
+    else if (a === 'tpl') { if (id !== store.wb.active) store.switchSheet(id); setTimeout(() => openTpl(true), 30); }
+    else if (a === 'left') store.moveSheet(id, i - 1);
+    else if (a === 'right') store.moveSheet(id, i + 1);
+    else if (a === 'del') {
+      const s = store.sheet(id);
+      if (window.confirm(`Delete "${s.name}"? This cannot be undone.`)) store.deleteSheet(id);
+    }
+  });
+
+  // ---------- templates ----------
+  function tplList() {
+    return store.allTemplates().map((t) => {
+      const sm = Store.summaryOf(t);
+      return `<div class="tcard" data-t="${esc(t.id)}" tabindex="0"><div class="tt"><b>${esc(t.name)}</b>${t.builtin ? '' : '<em>saved</em>'}</div><div class="td">${esc(t.desc || '')}</div><div class="tm">${sm.tasks} tasks · ${sm.ms} milestones · ${sm.span} days</div>${t.builtin ? '' : `<button class="tx" data-del="${esc(t.id)}" title="Delete template">✕</button>`}</div>`;
+    }).join('');
+  }
+  function fillTpl(focusName) {
+    const cur = store.sheet().name;
+    const keep = tplpop.querySelector('#tplname')?.value;
+    setHTML(tplpop, `<div class="ttl"><b>Start a new sheet from a template</b></div>` +
+      `<label class="trow"><span>Start date</span><input type="date" id="tplstart" value="${esc(startVal)}"></label>` +
+      `<div class="tlist">${tplList()}</div>` +
+      `<div class="ttl sv"><b>Save “${esc(cur)}” as a template</b></div>` +
+      `<div class="trow"><input id="tplname" placeholder="Template name" maxlength="60" value="${esc(keep ?? cur)}"><button id="tplsave" class="pri">Save</button></div>` +
+      `<div class="note">Saved templates keep tasks, durations, owners and links (relative dates, progress reset).</div>`);
+    if (focusName) { const i = tplpop.querySelector('#tplname'); i.focus(); i.select(); }
+  }
+  function openTpl(focusName) {
+    closeMenu(); fillTpl(focusName); tplpop.hidden = false;
+    const r = tplbtn.getBoundingClientRect(), pr = tplpop.getBoundingClientRect();
+    tplpop.style.left = `${Math.max(8, Math.min(r.right - pr.width, innerWidth - pr.width - 8))}px`;
+    tplpop.style.top = `${Math.max(8, r.top - pr.height - 8)}px`;
+  }
+  const closeTpl = () => { tplpop.hidden = true; };
+  tplbtn.addEventListener('click', (e) => { e.stopPropagation(); if (tplpop.hidden) openTpl(false); else closeTpl(); });
+  tplpop.addEventListener('input', (e) => { if (e.target.id === 'tplstart') startVal = e.target.value || startVal; });
+  tplpop.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del]');
+    if (del) { e.stopPropagation(); store.deleteTemplate(del.dataset.del); fillTpl(false); ctx.toast('Template deleted'); return; }
+    if (e.target.id === 'tplsave') return saveTpl();
+    const card = e.target.closest('.tcard');
+    if (card) useTpl(card.dataset.t);
+  });
+  tplpop.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') closeTpl();
+    else if (e.key === 'Enter') { if (e.target.id === 'tplname') saveTpl(); else if (e.target.classList?.contains('tcard')) useTpl(e.target.dataset.t); }
+  });
+  function useTpl(id) {
+    const t = store.allTemplates().find((x) => x.id === id); if (!t) return;
+    const day = parseDate(startVal || '', today) ?? today;
+    store.instantiate(t, day); closeTpl(); ctx.toast(`Created “${store.sheet().name}” from template`);
+  }
+  function saveTpl() {
+    const name = tplpop.querySelector('#tplname').value, r = store.saveTemplate(name);
+    if (!r) { ctx.toast('Give the template a name'); return; }
+    fillTpl(false); ctx.toast(r.updated ? `Template “${r.tpl.name}” updated` : `Saved template “${r.tpl.name}”`);
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!tplpop.hidden && !tplpop.contains(e.target) && !tplbtn.contains(e.target)) closeTpl();
+    if (!menu.hidden && !menu.contains(e.target)) closeMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  addEventListener('blur', closeMenu);
+
+  return { render, rename, openTemplates: () => openTpl(false), closeAll: () => { closeMenu(); closeTpl(); } };
+}

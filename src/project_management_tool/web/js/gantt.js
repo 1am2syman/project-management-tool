@@ -216,6 +216,11 @@ export function createGantt(ctx) {
     ppd = clamp(vw / (P.end - origin + 7), 1.2, 90); render();
     gb.scrollLeft = 0; syncHead();
   }
+  function reset() {
+    origin = null; layoutKey = '';
+    for (const el of barEls.values()) el.remove();
+    barEls.clear(); gb.scrollTop = 0; gb.scrollLeft = 0; closePop();
+  }
   function initialScroll() { gb.scrollLeft = Math.max(0, xOf(store.project.start) - 36); syncHead(); }
   function goToday() { gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
   function reveal(id, horizontal) {
@@ -367,7 +372,7 @@ export function createGantt(ctx) {
   seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom); });
 
   return {
-    render, setPpd, goToday, reveal, closePop, fit, initialScroll,
+    render, setPpd, goToday, reveal, closePop, fit, initialScroll, reset,
     zoomStep: (dir) => setPpd(ppd * (dir > 0 ? 1.3 : 1 / 1.3)),
     cancelDrag: () => finish(false),
     isDragging: () => !!drag && drag.moved,
