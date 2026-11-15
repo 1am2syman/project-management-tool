@@ -3,7 +3,8 @@
 import { DAY, MONTHS, dow, today, fmtDate, ymd } from './model.js';
 import { setHTML, setSVG, esc } from './dom.js';
 
-export const ROW = 34, BAR_H = 22, TOTAL_H = 38, PAD_B = 40;
+import { dims } from './dims.js';
+const PAD_B = 40;
 const monday = (d) => d - ((dow(d) + 6) % 7);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const LETTER = 'SMTWTFS';
@@ -17,15 +18,16 @@ function isoWeek(d) {
 
 // Build an orthogonal path with rounded corners. dA: exit direction at A (+1 right / -1 left),
 // dF: direction of travel on the final segment into B (+1 = enters a start edge, -1 = a finish edge).
+let ppdNow = () => 16;
 function route(ax, ay, dA, bx, by, dF) {
-  const g = 11;
+  const g = ppdNow() < 5 ? 4 : 11;
   let lo = -Infinity, hi = Infinity;
   if (dA > 0) lo = Math.max(lo, ax + g); else hi = Math.min(hi, ax - g);
   if (dF > 0) hi = Math.min(hi, bx - g); else lo = Math.max(lo, bx + g);
   let pts;
   if (lo <= hi) { const xm = dA > 0 ? lo : hi; pts = [[ax, ay], [xm, ay], [xm, by], [bx, by]]; }
   else {
-    const a1 = ax + dA * g, b1 = bx - dF * g, my = by > ay ? ay + ROW / 2 : ay - ROW / 2 + (by === ay ? ROW : 0);
+    const a1 = ax + dA * g, b1 = bx - dF * g, my = by > ay ? ay + dims.row / 2 : ay - dims.row / 2 + (by === ay ? dims.row : 0);
     pts = [[ax, ay], [a1, ay], [a1, my], [b1, my], [b1, by], [bx, by]];
   }
   // dedupe + drop collinear points
@@ -48,10 +50,11 @@ export function createGantt(ctx) {
   const root = $('#app'), gb = $('#gb'), canvas = $('#canvas'), bg = $('#bg'), linksEl = $('#links'), barsEl = $('#bars'), linkdrag = $('#linkdrag');
   const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), pop = $('#linkpop'), seg = $('#zoomseg');
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
-  let ppd = 28, origin = null, endDay = 0, W = 0, H = 0, layoutKey = '';
+  let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, layoutKey = '';
   const barEls = new Map();
-  let drag = null, raf = 0, popLink = null;
+  let drag = null, raf = 0, popLink = null, bgDefs = '', bgBody = '';
 
+  ppdNow = () => ppd;
   const xOf = (d) => (d - origin) * ppd;
 
   // ---------- layout / header / background ----------
@@ -62,42 +65,67 @@ export function createGantt(ctx) {
     const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
     W = (endDay - origin) * ppd;
-    H = store.rows.length * ROW + TOTAL_H + PAD_B;
+    H = store.rows.length * dims.row + dims.row + 4 + PAD_B;
     const key = `${origin}|${endDay}|${ppd}|${H}`;
     if (key === layoutKey) return;
     layoutKey = key;
     buildHead(); buildBg();
   }
 
+  // Views collapse the timeline: quarter / month / week / day. Mode is derived from px-per-day so
+  // ctrl+wheel zooming flows continuously between them.
+  const modeOf = (p) => (p < 3.8 ? 'quarter' : p < 10 ? 'month' : p < 26 ? 'week' : 'day');
+  const TIERS = { quarter: ['year', 'quarter', 'month'], month: ['quarter', 'month', 'week'], week: ['month', 'week', 'day'], day: ['month', 'week', 'day'] };
+  const FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const utc = (y, m, d) => Date.UTC(y, m, d) / DAY;
+  function nextBoundary(unit, d) {
+    const [y, m] = ymd(d);
+    if (unit === 'year') return utc(y + 1, 0, 1);
+    if (unit === 'quarter') return utc(y, (Math.floor(m / 3) + 1) * 3, 1);
+    if (unit === 'month') return utc(y, m + 1, 1);
+    if (unit === 'week') return monday(d) + 7;
+    return d + 1;
+  }
+  function spanLabel(unit, d, w, last) {
+    const [y, m, dd] = ymd(d);
+    if (unit === 'year') return w >= 40 ? String(y) : '';
+    if (unit === 'quarter') return w >= 90 ? `Q${Math.floor(m / 3) + 1} · ${y}` : w >= 26 ? `Q${Math.floor(m / 3) + 1}` : '';
+    if (unit === 'month') return w >= 130 ? `${FULL[m]} ${y}` : w >= 58 ? MONTHS[m] : w >= 24 ? MONTHS[m][0] : last === 'x' ? '' : '';
+    if (unit === 'week') return w >= 96 ? `W${isoWeek(d)} · ${fmtDate(d)}` : w >= 36 ? `W${isoWeek(d)}` : w >= 20 ? String(dd) : '';
+    return '';
+  }
   function buildHead() {
+    const tiers = TIERS[modeOf(ppd)];
     let h = '';
-    for (let d = origin; d < endDay;) {
-      const [y, m] = ymd(d), next = Math.min(Date.UTC(y, m + 1, 1) / DAY, endDay), w = (next - d) * ppd;
-      h += `<div class="t1" style="left:${xOf(d)}px;width:${w}px">${w > 90 ? `${MONTHS[m]} ${y}` : w > 34 ? MONTHS[m] : ''}</div>`;
-      d = next;
-    }
-    for (let d = origin; d < endDay; d += 7) {
-      const w = 7 * ppd;
-      h += `<div class="t2" style="left:${xOf(d)}px;width:${w}px">${w >= 84 ? `W${isoWeek(d)} · ${fmtDate(d)}` : w >= 40 ? `W${isoWeek(d)}` : ''}</div>`;
-    }
-    if (ppd >= 16) {
-      for (let d = origin; d < endDay; d++) {
-        const wd = dow(d), we = wd === 0 || wd === 6;
-        h += `<div class="t3${we ? ' we' : ''}${d === today ? ' td' : ''}" style="left:${xOf(d)}px;width:${ppd}px">${ppd >= 26 ? `<small>${LETTER[wd]}</small>` : ''}${ymd(d)[2]}</div>`;
+    tiers.forEach((unit, ti) => {
+      for (let d = unit === 'week' ? monday(origin) : origin; d < endDay;) {
+        const nb = nextBoundary(unit, d), s = Math.max(d, origin), e = Math.min(nb, endDay), w = (e - s) * ppd;
+        const dow0 = dow(d), we = unit === 'day' && (dow0 === 0 || dow0 === 6);
+        const cur = today >= d && today < nb;
+        let inner = '';
+        if (unit === 'day') { if (ppd >= 14) inner = `${ppd >= 26 ? `<small>${LETTER[dow0]}</small>` : ''}${ymd(d)[2]}`; }
+        else inner = spanLabel(unit, d, w);
+        h += `<div class="t${ti + 1}${we ? ' we' : ''}${cur ? (unit === 'day' ? ' td' : ' tdu') : ''}" style="left:${xOf(s)}px;width:${w}px">${inner}</div>`;
+        d = nb;
       }
-    }
-    ghdin.style.width = W + 'px';
+    });
+    ghdin.style.width = `${W}px`;
     setHTML(ghdin, h);
   }
 
   function buildBg() {
-    const sat = (6 - dow(origin) + 7) % 7, s1 = sat, s2 = (sat + 1) % 7;
-    const lines = ppd >= 20
-      ? `<pattern id="dl" width="${ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,.045)"/></pattern>`
-      : `<pattern id="dl" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,.07)"/></pattern>`;
+    if (ppd >= 5) {
+      const sat = (6 - dow(origin) + 7) % 7;
+      const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="${sat * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/><rect x="${((sat + 1) % 7) * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/></pattern>`;
+      const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.045 : 0.07;
+      bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,${a})"/></pattern></defs>`;
+      bgBody = `<rect width="${W}" height="${H}" fill="url(#wk)"/><rect width="${W}" height="${H}" fill="url(#dl)"/>`;
+    } else { bgDefs = ''; bgBody = ''; }
+    // explicit month / quarter boundaries in the coarse views
+    let lines = '';
+    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${H}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
     bg.setAttribute('width', W); bg.setAttribute('height', H);
-    setSVG(bg, `<defs><pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="${s1 * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/><rect x="${s2 * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/></pattern>${lines}</defs>` +
-      `<rect width="${W}" height="${H}" fill="url(#wk)"/><rect width="${W}" height="${H}" fill="url(#dl)"/>`);
+    setSVG(bg, bgDefs + bgBody + lines);
   }
 
   // ---------- bars ----------
@@ -115,7 +143,7 @@ export function createGantt(ctx) {
       const f = store.info.get(t.id); let el = barEls.get(t.id);
       if (!el) { el = makeBar(t.id); barEls.set(t.id, el); barsEl.appendChild(el); }
       seen.add(t.id);
-      const x1 = xOf(f.start), x2 = xOf(f.end), y = i * ROW + (ROW - BAR_H) / 2;
+      const x1 = xOf(f.start), x2 = xOf(f.end), y = i * dims.row + (dims.row - dims.bar) / 2;
       const ms = t.ms && !f.summary;
       const cls = 'bar' + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
@@ -135,8 +163,8 @@ export function createGantt(ctx) {
 
   // ---------- links ----------
   function anchor(id, end, rowIdx) {
-    const f = store.info.get(id), t = store.byId.get(id), y = rowIdx * ROW + ROW / 2;
-    if (t.ms && !f.summary) return [xOf(f.start) + (end === 's' ? -12 : 12), y];
+    const f = store.info.get(id), t = store.byId.get(id), y = rowIdx * dims.row + dims.row / 2;
+    if (t.ms && !f.summary) return [xOf(f.start) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
     return [end === 's' ? xOf(f.start) + 1 : xOf(f.end) - 1, y];
   }
   function renderLinks() {
@@ -161,7 +189,7 @@ export function createGantt(ctx) {
     root.classList.toggle('crit-on', store.critical);
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     const si = store.rows.findIndex((t) => t.id === ui.selId);
-    rowsel.style.display = si >= 0 ? '' : 'none'; rowsel.style.top = si * ROW + 'px';
+    rowsel.style.display = si >= 0 ? '' : 'none'; rowsel.style.top = si * dims.row + 'px';
     const tx = xOf(today) + ppd / 2;
     todayline.style.display = tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
     renderBars(); renderLinks();
@@ -170,22 +198,29 @@ export function createGantt(ctx) {
   function syncHead() { ghdin.style.transform = `translateX(${-gb.scrollLeft}px)`; }
   function updateSeg() {
     let best = null, bd = Infinity;
-    seg.querySelectorAll('button').forEach((b) => { const d = Math.abs(Math.log(+b.dataset.zoom / ppd)); if (d < bd) { bd = d; best = b; } });
-    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === best && bd < 0.35));
+    seg.querySelectorAll('button[data-zoom]').forEach((b) => { const d = Math.abs(Math.log(+b.dataset.zoom / ppd)); if (d < bd) { bd = d; best = b; } });
+    seg.querySelectorAll('button[data-zoom]').forEach((b) => b.classList.toggle('on', b === best && bd < 0.45));
   }
 
   // ---------- zoom / navigation ----------
   function setPpd(np, clientX) {
-    np = clamp(np, 5, 90); if (Math.abs(np - ppd) < 0.01) return;
+    np = clamp(np, 1.2, 90); if (Math.abs(np - ppd) < 0.01) return;
     const rect = gb.getBoundingClientRect(), ax = clientX != null ? clientX - rect.left : rect.width / 2;
     const day = origin + (gb.scrollLeft + ax) / ppd;
     ppd = np; render();
     gb.scrollLeft = (day - origin) * ppd - ax; syncHead();
   }
+  function fit() {
+    const P = store.project, vw = gb.clientWidth - 40;
+    origin = monday(P.start - 7); layoutKey = '';
+    ppd = clamp(vw / (P.end - origin + 7), 1.2, 90); render();
+    gb.scrollLeft = 0; syncHead();
+  }
+  function initialScroll() { gb.scrollLeft = Math.max(0, xOf(store.project.start) - 36); syncHead(); }
   function goToday() { gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
   function reveal(id, horizontal) {
     const i = store.rows.findIndex((t) => t.id === id); if (i < 0) return;
-    const top = i * ROW, bot = top + ROW, vh = gb.clientHeight - 12;
+    const top = i * dims.row, bot = top + dims.row, vh = gb.clientHeight - 12;
     if (top < gb.scrollTop) gb.scrollTop = top; else if (bot > gb.scrollTop + vh) gb.scrollTop = bot - vh;
     if (horizontal) {
       const f = store.info.get(id), x1 = xOf(f.start), x2 = xOf(f.end);
@@ -289,7 +324,7 @@ export function createGantt(ctx) {
     const cx = contentX(drag.lastX), cy = contentY(drag.lastY), rows = store.rows;
     const fi = rows.findIndex((t) => t.id === drag.id), [ax, ay] = anchor(drag.id, drag.end, fi);
     let target = null, bad = false;
-    const ri = Math.floor(cy / ROW), t = rows[ri];
+    const ri = Math.floor(cy / dims.row), t = rows[ri];
     if (t && t.id !== drag.id) {
       const f = store.info.get(t.id);
       if (!f.summary) {
@@ -316,7 +351,7 @@ export function createGantt(ctx) {
       setSVG(linkdrag, '');
       barEls.forEach((el) => el.querySelectorAll('.dot').forEach((x) => x.classList.remove('target')));
       if (commit && d.target) { const err = store.addLink(d.id, d.end, d.target.id, d.target.end); if (err) ctx.toast(err); }
-      else if (commit && d.moved) { const ri = Math.floor(contentY(d.lastY) / ROW), t = store.rows[ri]; if (t && t.id !== d.id) { const err = store.canLink(d.id, t.id); if (err) ctx.toast(err); } }
+      else if (commit && d.moved) { const ri = Math.floor(contentY(d.lastY) / dims.row), t = store.rows[ri]; if (t && t.id !== d.id) { const err = store.canLink(d.id, t.id); if (err) ctx.toast(err); } }
     } else store.endDrag(commit && d.moved);
     ctx.requestRender();
   }
@@ -329,10 +364,10 @@ export function createGantt(ctx) {
   }, { passive: false });
   gb.addEventListener('scroll', () => { syncHead(); ctx.syncV(gb.scrollTop); });
 
-  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setPpd(+b.dataset.zoom); });
+  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom); });
 
   return {
-    render, setPpd, goToday, reveal, closePop,
+    render, setPpd, goToday, reveal, closePop, fit, initialScroll,
     zoomStep: (dir) => setPpd(ppd * (dir > 0 ? 1.3 : 1 / 1.3)),
     cancelDrag: () => finish(false),
     isDragging: () => !!drag && drag.moved,

@@ -1,9 +1,11 @@
-import { Store, today, fmtDate } from './model.js';
+import { Store, fmtDate } from './model.js';
 import { createGrid, COLS } from './grid.js';
 import { createGantt } from './gantt.js';
 import { setHTML } from './dom.js';
+import { initDensity, setDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
+initDensity();
 const store = new Store();
 const ui = { selId: null, col: 'name', linkId: null };
 let raf = 0, toastT = 0, grid, gantt;
@@ -52,6 +54,7 @@ const act = {
   },
   undo: () => store.undo(), redo: () => store.redo(),
   reset: () => { ui.selId = null; store.reset(); },
+  density: () => { setDensity(dims.name === 'compact' ? 'roomy' : 'compact'); ctx.requestRender(); },
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
@@ -91,5 +94,5 @@ document.addEventListener('keydown', (e) => {
 
 addEventListener('resize', () => ctx.requestRender());
 renderAll();
-requestAnimationFrame(() => { $('#gb').scrollLeft = Math.max(0, (today - store.project.start + 12) * 28 - $('#gb').clientWidth * 0.35); });
+requestAnimationFrame(() => gantt.initialScroll());
 void COLS;

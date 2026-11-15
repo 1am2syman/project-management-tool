@@ -46,11 +46,13 @@
     <section class="pane right" id="right">
       <div class="strip">
         <div class="seg" id="zoomseg">
-          <button data-zoom="10">Month</button><button data-zoom="24">Week</button><button data-zoom="44">Day</button>
+          <button data-zoom="2.2">Quarter</button><button data-zoom="6">Month</button><button data-zoom="16">Week</button><button data-zoom="40">Day</button><button data-fit="1" class="fit" title="Fit the whole project">Fit</button>
         </div>
         <button class="icon" data-act="zoomout" title="Zoom out"><svg viewBox="0 0 16 16"><path d="M3 8h10"/></svg></button>
         <button class="icon" data-act="zoomin" title="Zoom in"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
         <button data-act="today">Today</button>
+        <span class="sep"></span>
+        <button data-act="density" title="Toggle row density">Density</button>
         <span class="grow"></span>
         <label class="switch crit"><input type="checkbox" id="optCrit"><i></i>Critical path</label>
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
