@@ -173,12 +173,14 @@ svg.linkdrag{pointer-events:none;z-index:6;overflow:visible}
 .crit-on .bar.critical{background:var(--crit)}.crit-on .bar.critical .fill{background:var(--crit-d)}
 .crit-on .bar.critical{box-shadow:0 1px 2px rgba(190,18,60,.3),inset 0 1px 0 rgba(255,255,255,.25)}
 .crit-on .bar.critical:hover{box-shadow:0 3px 10px rgba(190,18,60,.35),inset 0 1px 0 rgba(255,255,255,.25)}
-.bar .h{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:2}
+.bar .h{position:absolute;top:0;bottom:0;width:var(--hw,8px);cursor:ew-resize;z-index:2}
 .bar .h.l{left:0}.bar .h.r{right:0}
 .bar .h::after{content:"";position:absolute;top:4px;bottom:4px;width:2px;border-radius:2px;background:rgba(255,255,255,.0);transition:background .12s}
 .bar .h.l::after{left:3px}.bar .h.r::after{right:3px}
 .bar:hover .h::after{background:rgba(255,255,255,.7)}
 .bar .dot{position:absolute;top:50%;width:9px;height:9px;margin-top:-4.5px;border-radius:50%;background:#fff;border:1.5px solid #64748b;opacity:0;transition:opacity .12s,transform .12s;z-index:4;cursor:crosshair}
+.bar .dot,.bar .prog{pointer-events:none}
+.bar:hover .dot,.bar.selected .dot,.linking .bar .dot,.bar:hover .prog,.bar.dragging .prog{pointer-events:auto}
 .bar .dot.s{left:-14px}.bar .dot.f{right:-14px}
 .bar:hover .dot,.bar.selected .dot,.linking .bar .dot{opacity:1}
 .bar .dot:hover,.bar .dot.target{transform:scale(1.35);background:var(--blue);border-color:var(--blue)}

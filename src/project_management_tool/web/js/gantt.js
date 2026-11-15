@@ -30,6 +30,9 @@ function route(ax, ay, dA, bx, by, dF) {
     const a1 = ax + dA * g, b1 = bx - dF * g, my = by > ay ? ay + dims.row / 2 : ay - dims.row / 2 + (by === ay ? dims.row : 0);
     pts = [[ax, ay], [a1, ay], [a1, my], [b1, my], [b1, by], [bx, by]];
   }
+  return roundPath(pts);
+}
+function roundPath(pts) {
   // dedupe + drop collinear points
   const q = [pts[0]];
   for (let i = 1; i < pts.length; i++) { const p = pts[i], l = q[q.length - 1]; if (Math.abs(p[0] - l[0]) > 0.01 || Math.abs(p[1] - l[1]) > 0.01) q.push(p); }
@@ -52,7 +55,7 @@ export function createGantt(ctx) {
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
   let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, layoutKey = '';
   const barEls = new Map();
-  let drag = null, raf = 0, popLink = null, bgDefs = '', bgBody = '';
+  let drag = null, raf = 0, popLink = null, bgDefs = '', bgBody = '', pendShift = 0;
 
   ppdNow = () => ppd;
   const xOf = (d) => (d - origin) * ppd;
@@ -61,6 +64,7 @@ export function createGantt(ctx) {
   function layout() {
     const P = store.project;
     if (origin == null) origin = monday(P.start - 14);
+    else if (P.start - 7 < origin) { const no = monday(P.start - 14); pendShift += (origin - no) * ppd; origin = no; layoutKey = ''; } // tasks moved earlier than the timeline: grow it leftwards
     const vw = gb.clientWidth || 800;
     const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
@@ -154,6 +158,7 @@ export function createGantt(ctx) {
       if (el._lt !== t.name) { el._label.textContent = t.name; el._lt = t.name; }
       const out = !f.summary && !ms && w < 78;
       el._label.classList.toggle('out', out);
+      const hw = ms || f.summary ? 8 : clamp(w * 0.22, 3, 8); if (el._hw !== hw) { el._hw = hw; el.style.setProperty('--hw', hw + 'px'); }
       const p = f.progress;
       el._fill.style.width = p + '%'; el._fill.classList.toggle('full', p >= 100);
       el._prog.style.left = p + '%';
@@ -176,8 +181,15 @@ export function createGantt(ctx) {
       const fe = l.type[0] === 'F' ? 'f' : 's', te = l.type[1] === 'F' ? 'f' : 's';
       const [ax, ay] = anchor(l.from, fe, a), [bx, by] = anchor(l.to, te, b);
       const dA = fe === 'f' ? 1 : -1, dF = te === 's' ? 1 : -1;
-      const d = route(ax, ay, dA, bx, by, dF);
-      const arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
+      let d, arrow;
+      const tt = store.byId.get(l.to);
+      if (l.type === 'FS' && by !== ay && !(tt.ms) && bx - ax < 2 * (ppd < 5 ? 4 : 11)) { // back-to-back: drop into the top/bottom edge of the successor instead of looping around it
+        const s = by > ay ? 1 : -1, xv = Math.max(ax + 3, bx + 5), ty = by - s * dims.bar / 2;
+        d = roundPath([[ax, ay], [xv, ay], [xv, ty]]); arrow = `${xv},${ty} ${xv - 4},${ty - s * 7} ${xv + 4},${ty - s * 7}`;
+      } else {
+        d = route(ax, ay, dA, bx, by, dF);
+        arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
+      }
       h += `<g class="lk${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`;
     }
     setSVG(linksEl, h);
@@ -188,6 +200,7 @@ export function createGantt(ctx) {
     layout();
     root.classList.toggle('crit-on', store.critical);
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    if (pendShift) { gb.scrollLeft += pendShift; if (drag && drag.cx0 != null) drag.cx0 += pendShift; pendShift = 0; }
     const si = store.rows.findIndex((t) => t.id === ui.selId);
     rowsel.style.display = si >= 0 ? '' : 'none'; rowsel.style.top = si * dims.row + 'px';
     const tx = xOf(today) + ppd / 2;
@@ -203,10 +216,15 @@ export function createGantt(ctx) {
   }
 
   // ---------- zoom / navigation ----------
-  function setPpd(np, clientX) {
+  function anchorDay() { // what the presets should keep in view: the selection, else today (if inside the project), else the project start
+    const P = store.project, f = ui.selId != null ? store.info.get(ui.selId) : null;
+    return f ? f.start : today >= P.start && today <= P.end ? today : P.start;
+  }
+  function setPpd(np, clientX, preset) {
     np = clamp(np, 1.2, 90); if (Math.abs(np - ppd) < 0.01) return;
-    const rect = gb.getBoundingClientRect(), ax = clientX != null ? clientX - rect.left : rect.width / 2;
-    const day = origin + (gb.scrollLeft + ax) / ppd;
+    const rect = gb.getBoundingClientRect();
+    let ax = clientX != null ? clientX - rect.left : rect.width / 2, day = origin + (gb.scrollLeft + ax) / ppd;
+    if (preset) { day = anchorDay(); ax = Math.min(rect.width * 0.3, 160); }
     ppd = np; render();
     gb.scrollLeft = (day - origin) * ppd - ax; syncHead();
   }
@@ -271,7 +289,9 @@ export function createGantt(ctx) {
   const contentY = (clientY) => clientY - gb.getBoundingClientRect().top + gb.scrollTop;
 
   gb.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || drag) return;
+    const gr = gb.getBoundingClientRect();
+    if (e.clientX - gr.left >= gb.clientWidth || e.clientY - gr.top >= gb.clientHeight) return; // scrollbar
     const dot = e.target.closest('.dot'), prog = e.target.closest('.prog'), hnd = e.target.closest('.h'), bar = e.target.closest('.bar'), lk = e.target.closest('.lk');
     if (lk) { ctx.selectLink(lk.dataset.id); openPop(lk.dataset.id, e.clientX, e.clientY); return; }
     if (!bar) {
@@ -302,7 +322,10 @@ export function createGantt(ctx) {
     const r = gb.getBoundingClientRect(), zone = 56; let v = 0;
     if (drag.lastX > r.right - zone) v = ((drag.lastX - (r.right - zone)) / zone) * 22;
     else if (drag.lastX < r.left + zone) v = -((r.left + zone - drag.lastX) / zone) * 22;
-    if (drag.kind !== 'pan' && v) { gb.scrollLeft += v; step(); raf = requestAnimationFrame(loop); }
+    let vy = 0;
+    if (drag.lastY > r.bottom - zone) vy = ((drag.lastY - (r.bottom - zone)) / zone) * 18;
+    else if (drag.lastY < r.top + zone) vy = -((r.top + zone - drag.lastY) / zone) * 18;
+    if (drag.kind !== 'pan' && (v || vy)) { gb.scrollLeft += v; gb.scrollTop += vy; step(); raf = requestAnimationFrame(loop); }
   }
 
   function step() {
@@ -316,11 +339,9 @@ export function createGantt(ctx) {
       store.dragApply(() => store.dragProgress(id, ((cx - x1) / w) * 100));
     } else {
       const delta = Math.round((cx - drag.cx0) / ppd);
-      if (delta === drag.delta) { return; }
+      if (delta === drag.delta) { dragTip(); return; }
       drag.delta = delta;
       store.dragApply(() => { if (kind === 'move') store.dragMove(id, delta); else store.dragResize(id, kind === 'rl' ? 'l' : 'r', delta); });
-      const f = store.info.get(id);
-      if (f.start < origin + 2) { const s = 28; origin -= s; gb.scrollLeft += s * ppd; drag.cx0 += s * ppd; layoutKey = ''; }
     }
     dragTip();
   }
@@ -369,7 +390,7 @@ export function createGantt(ctx) {
   }, { passive: false });
   gb.addEventListener('scroll', () => { syncHead(); ctx.syncV(gb.scrollTop); });
 
-  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom); });
+  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom, null, true); });
 
   return {
     render, setPpd, goToday, reveal, closePop, fit, initialScroll, reset,
