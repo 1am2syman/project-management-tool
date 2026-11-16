@@ -1,4 +1,4 @@
-// Gantt: timeline header, keyed DOM bars (transform-positioned), SVG orthogonal dependency routing,
+// Gantt: timeline header, keyed DOM bars, SVG orthogonal dependency routing,
 // pointer-driven move / resize / progress / link-create / pan, wheel zoom, edge auto-scroll.
 import { DAY, MONTHS, dow, today, fmtDate, ymd } from './model.js';
 import { setHTML, setSVG, esc } from './dom.js';
@@ -166,11 +166,17 @@ export function createGantt(ctx) {
     const d = drag.frac * ppd;
     return drag.kind === 'move' ? [x1 + d, x2 + d] : drag.kind === 'rl' ? [Math.min(x1 + d, x2 - 6), x2] : drag.kind === 'rr' ? [x1, Math.max(x2 + d, x1 + 6)] : [x1, x2];
   }
+  // Snap painted bounds without rounding dates or the timeline's zoom scale.
+  const pixel = (v) => { const scale = window.devicePixelRatio || 1; return Math.round(v * scale) / scale; };
+  function positionBar(el, ms, x1, x2) {
+    const left = pixel(ms ? x1 : x1 + 1);
+    el.style.left = left + 'px';
+    if (!ms) el.style.width = Math.max(6, pixel(x2 - 1) - left) + 'px';
+  }
   function nudge() { // cheap per-pointer-move update of just the dragged bar
     const el = barEls.get(drag.id), t = store.byId.get(drag.id), f = store.info.get(drag.id); if (!el || !t || !f || f.summary) return;
-    let [x1, x2] = nudged(t, f, xOf(f.start), xOf(f.end));
-    const ms = t.ms; el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${el.style.transform.split(',')[1] || '0px'},0)`;
-    if (!ms) el.style.width = Math.max(6, x2 - x1 - 2) + 'px';
+    const [x1, x2] = nudged(t, f, xOf(f.start), xOf(f.end));
+    positionBar(el, t.ms, x1, x2);
   }
 
   const tctx = document.createElement('canvas').getContext('2d'), twCache = new Map(); let twKey = '';
@@ -198,8 +204,8 @@ export function createGantt(ctx) {
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
       if (el._cls !== cls) { el.className = cls; el._cls = cls; }
       let w = ms ? 18 : Math.max(6, x2 - x1 - 2);
-      el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${y}px,0)`;
-      if (!ms) el.style.width = w + 'px';
+      positionBar(el, ms, x1, x2);
+      el.style.top = pixel(y) + 'px';
       if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
       el.title = `${t.name} · ${schedule.label}: ${schedule.detail}`;
       // Keep readable bars self-contained; only very short bars need an external label.
@@ -218,8 +224,8 @@ export function createGantt(ctx) {
   // ---------- links ----------
   function anchor(id, end, rowIdx) {
     const f = store.info.get(id), t = store.byId.get(id), y = rowIdx * dims.row + dims.row / 2;
-    if (t.ms && !f.summary) return [xOf(f.start) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
-    return [end === 's' ? xOf(f.start) + 1 : xOf(f.end) - 1, y];
+    if (t.ms && !f.summary) return [pixel(xOf(f.start)) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
+    return [end === 's' ? pixel(xOf(f.start) + 1) : Math.max(pixel(xOf(f.start) + 1) + 6, pixel(xOf(f.end) - 1)), y];
   }
   // Link paths are keyed by id and only re-parsed when their geometry or state changed, so a drag touches a handful of paths, not all of them.
   const linkEls = new Map(), linkScratch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -271,7 +277,7 @@ export function createGantt(ctx) {
     if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
     updateSeg();
   }
-  function syncHead() { ghdin.style.transform = `translateX(${-gb.scrollLeft}px)`; }
+  function syncHead() { ghdin.style.left = -gb.scrollLeft + 'px'; }
   function updateSeg() {
     let best = null, bd = Infinity;
     seg.querySelectorAll('button[data-zoom]').forEach((b) => { const d = Math.abs(Math.log(+b.dataset.zoom / ppd)); if (d < bd) { bd = d; best = b; } });

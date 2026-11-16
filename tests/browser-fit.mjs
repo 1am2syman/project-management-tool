@@ -63,7 +63,9 @@ try {
   let g = await geometry(); assert(Math.abs(g.center - g.barCenter) < 2); assert(Math.abs(g.body - g.canvas) < g.rows + 2, JSON.stringify(g)); const tall = g.row;
   await page.setViewportSize({ width: 1920, height: 740 }); await settle(); g = await geometry(); assert(g.row < tall); assert(Math.abs(g.body - g.canvas) < g.rows + 2);
   await row(2).locator('.tog:not(.sp)').click(); await settle(); const collapsed = await geometry(); assert(collapsed.row > g.row); await row(2).locator('.tog:not(.sp)').click();
-  await page.locator('[data-act=density]').click(); await settle(); assert.equal((await geometry()).row, 24); await page.locator('[data-act=density]').click();
+  const density = page.getByRole('combobox', { name: 'Row density' });
+  await density.selectOption('compact'); await settle(); assert.equal((await geometry()).row, 24);
+  await density.selectOption('auto');
   console.log('PASS Fit includes actual bar/summary/milestone labels; header/footer and adaptive geometry resize and collapse correctly');
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto paused');
   const paused = (await data()).tasks.find((t) => t.id === 5).start;
@@ -125,6 +127,8 @@ try {
         toolbar: rect(document.querySelector('.topbar')),
         toolsOverflow: document.querySelector('.tools').scrollWidth - document.querySelector('.tools').clientWidth,
         auto: rect(document.querySelector('#optAuto').closest('label')),
+        zoom: rect(document.querySelector('#zoomseg')),
+        density: rect(document.querySelector('#density')),
         switches: [...strip.querySelectorAll('label.switch')].map(rect),
         strip: rect(strip), overflow: strip.scrollWidth - strip.clientWidth,
         formula: rect(document.querySelector('.fbar')),
@@ -143,8 +147,15 @@ try {
       assert(label.top >= measured.strip.top && label.bottom <= measured.strip.bottom + 1, description);
     }
     assert(Math.abs(measured.formula.bottom - measured.strip.bottom) < 1, description);
+    if (width === 1630 && zoom === 1) {
+      assert(Math.abs(measured.auto.top - measured.zoom.top) < 1, `Auto-schedule must stay on the first row: ${description}`);
+      assert(Math.abs(measured.density.top - measured.zoom.top) <= 1, description);
+    }
     assert(Math.abs((measured.row.top + measured.row.bottom) / 2 - (measured.bar.top + measured.bar.bottom) / 2) < 2 * zoom, description);
   }
+  // A 789px timeline matches the cropped toolbar in the wrapping regression.
+  for (const mode of ['compact', 'auto']) { await density.selectOption(mode); await responsiveLayout(1630); }
+  await page.screenshot({ path: join(evidence, 'density-single-row.png') });
   for (const width of [1920, 1440, 1280, 1000, 760]) await responsiveLayout(width);
   await page.screenshot({ path: join(evidence, 'toolbar-760.png') });
   for (const zoom of [1.25, 1.5, 2]) await responsiveLayout(1440, zoom);

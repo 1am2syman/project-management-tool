@@ -36,7 +36,7 @@ Both suites start their own server on an available local port, use a temporary S
 | Suite | Coverage |
 |---|---|
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
-| `browser-fit.mjs` | Measured Fit label bounds, single-row responsive toolbar and accessible icon actions, full switch labels at 125–200% zoom and narrow pane splits, sheet/Gantt alignment, adaptive density on resize/collapse, scheduling actions and sheet-only badges, undo/redo, saving an active edit, connected file reuse after refresh and Save As. |
+| `browser-fit.mjs` | Measured Fit label bounds, single-row responsive toolbar and accessible icon actions, Compact/Adaptive density selection and Auto-schedule staying on the first row in a 789px timeline pane, full switch labels at 125–200% zoom and narrow pane splits, sheet/Gantt alignment, adaptive density on resize/collapse, scheduling actions and sheet-only badges, undo/redo, saving an active edit, connected file reuse after refresh and Save As. |
 
 ### Browser and Python selection
 
@@ -50,6 +50,12 @@ $env:PLAYWRIGHT_CHROMIUM = "C:\Program Files\Google\Chrome\Application\chrome.ex
 node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 ```
+
+### Visual rendering checks
+
+When changing Gantt positioning or styling, also review the chart at 100%, 150% and 200% display scaling in both Compact and Adaptive density. Include task bars with internal and external labels, parent summaries, milestones, critical paths and rounded dependency connectors. Check Fit and timeline zoom, then move and resize a bar and cancel a drag with Escape. Labels should remain centered, bar edges should stay defined, and connectors should meet their bars.
+
+Display scaling changes the browser's device pixel ratio; this is separate from the CSS zoom exercised by `browser-fit.mjs`. The suite checks layout and interactions, but does not automatically judge visual sharpness.
 
 ### Optional screenshots
 
@@ -70,7 +76,7 @@ PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-structure.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-fit.mjs
 ```
 
-These optional outputs can be deleted after review. Generated screenshots, logs, databases and local agent/check ledgers do not belong in commits.
+These optional outputs can be deleted after review. Generated screenshots, logs, databases and local agent/check ledgers do not belong in commits. Keep one-off comparison scripts and source snapshots outside the checkout and remove them with their screenshots after validation. The existing regression suites are maintained development tools and stay in the repository.
 
 ## Verification limits
 

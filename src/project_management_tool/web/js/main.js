@@ -89,9 +89,7 @@ function renderAll() {
   $('#app').classList.toggle('focusing', !!ctx.rel);
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
   fitDensity($('#gb').clientHeight, store.rows.length);
-  const densityButton = $('[data-act=density]'); densityButton.textContent = dims.name === 'auto' ? 'Density: Adaptive' : 'Density: Compact';
-  densityButton.title = 'Toggle compact rows or adaptive rows that fill the available height';
-  densityButton.setAttribute('aria-pressed', String(dims.name === 'auto'));
+  $('#density').value = dims.name;
   grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render();
   $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
@@ -128,10 +126,10 @@ const act = {
   },
   undo: () => store.undo(), redo: () => store.redo(),
   reset: () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) store.resetAll(); },
-  density: () => { setDensity(dims.name === 'compact' ? 'auto' : 'compact'); ctx.requestRender(); },
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
+$('#density').addEventListener('change', (e) => { setDensity(e.target.value); ctx.requestRender(); });
 $('#optFocus').checked = ui.focus;
 $('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { appState.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
 $('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));

@@ -114,7 +114,11 @@ Task names show **A** (green, automatic), **M** (orange, manual) or **D** (amber
 - **Use manual dates** keeps the chosen dates even if a connection is violated. Violated links are marked. Moving/resizing an automatic task or editing its start/finish switches it to manual; progress and duration edits retain its scheduling mode.
 - **Use date anchor** keeps a chosen date but allows Auto-schedule to delay it when a dependency requires it. This is an explicit choice, retained when saving and reopening the project. Summary dates always roll up from their children.
 
-**Fit** measures visible task, summary and milestone labels as well as bars. **Density** toggles compact rows and adaptive rows; adaptive sizing fills the available height and recalculates when the window, visible row count or collapsed groups change, with compact scrolling for large plans. Header actions stay on one row and use icons with tooltips when space is tight. Timeline controls wrap with full switch labels, keeping sheet and Gantt rows aligned; save status appears in the bottom bar.
+**Fit** measures visible task, summary and milestone labels as well as bars. The **Row density** dropdown selects **Compact** or **Adaptive**; adaptive sizing fills the available height and recalculates when the window, visible row count or collapsed groups change, with compact scrolling for large plans. Your density choice is saved with the app's layout settings.
+
+Header actions stay on one row and use icons with tooltips when space is tight. The compact density dropdown and timeline spacing keep Auto-schedule alongside the other controls at normal desktop pane widths. Narrow panes wrap with full switch labels, keeping sheet and Gantt rows aligned; save status appears in the bottom bar.
+
+Gantt bars and labels use sharper positioning without soft outer shadows or label text shadows. Grid lines have crisp edges, and dependency connectors use a stronger stroke while retaining rounded elbows. Hover and drag feedback still use shadows.
 
 ## Project calendar
 

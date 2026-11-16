@@ -66,7 +66,10 @@
         <button class="icon" data-act="zoomin" title="Zoom in"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
         <button data-act="today">Today</button>
         <span class="sep"></span>
-        <button data-act="density" title="Toggle row density">Density</button>
+        <select id="density" aria-label="Row density" title="Row density: compact rows or adaptive rows that fill the available height">
+          <option value="compact">Compact</option>
+          <option value="auto">Adaptive</option>
+        </select>
         <button id="reviewlinks" hidden>Review relationships</button>
         <span class="grow"></span>
         <label class="switch" title="Highlight the selected task's parents, children, predecessors and successors"><input type="checkbox" id="optFocus"><i></i>Focus</label>
