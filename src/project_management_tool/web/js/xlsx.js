@@ -84,14 +84,11 @@ const WK = { n: '5B7CFA', d: '3A5BDC', cn: 'F43F5E', cd: 'E11D48', sum: '334155'
 function tasksSheet(S, st, name, tab) {
   const sh = new Sheet(name, tab); sh.freeze = [2, 1];
   const head = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', h: 'center', wrap: 1, bb: '0F172A' });
-  const heads = ['#', 'Task', 'Type', 'Start', 'End', 'Days', '% done', 'Float (d)', 'Critical', 'Depends on', 'Owner', 'Email'];
-  heads.forEach((h, c) => sh.set(0, c, h, head)); sh.heights.set(0, 22);
-  sh.widths = [5, 38, 10, 13, 13, 7, 9, 9, 9, 16, 18, 30];
+  const heads = ['#', 'Task', 'Type', 'Start', 'End', 'Days', '% done', 'Total slack (workdays)', 'Free slack (workdays)', 'Critical', 'Depends on', 'Owner', 'Email'];
+  heads.forEach((h, c) => sh.set(0, c, h, head)); sh.heights.set(0, 32);
+  sh.widths = [5, 38, 10, 13, 13, 7, 9, 16, 16, 9, 16, 18, 30, 23, 38];
   const target = st.criticalTarget();
-  if (target) {
-    sh.widths.push(23, 38);
-    sh.set(0, 12, 'Critical-path target', head); sh.set(0, 13, target.name, head);
-  }
+  sh.set(0, 13, 'Critical-path target', head); sh.set(0, 14, target?.name || 'Project completion', head);
   st.tasks.forEach((t, i) => {
     const f = st.info.get(t.id), r = i + 1, sum = f.summary, ms = t.ms && !sum, crit = f.critical && st.critical;
     const base = { b: sum ? 1 : 0, fill: sum ? 'F1F5F9' : null, bb: 'E2E8F0', color: crit && !sum ? 'BE123C' : '0F172A' };
@@ -104,10 +101,11 @@ function tasksSheet(S, st, name, tab) {
     sh.set(r, 5, ms ? 0 : st.duration(t.id), fl({ fmt: '0', h: 'center' }));
     sh.set(r, 6, Math.round(f.progress) / 100, fl({ fmt: '0%', h: 'center' }));
     sh.set(r, 7, f.float == null ? '' : f.float, fl({ fmt: '0', h: 'center', color: f.float === 0 ? 'BE123C' : f.float > 0 ? '15803D' : base.color, b: f.float === 0 ? 1 : base.b }));
-    sh.set(r, 8, f.critical && !sum ? 'Yes' : '', fl({ h: 'center', color: 'BE123C', b: 1 }));
-    sh.set(r, 9, st.predText(t.id), fl({ color: '475569' }));
-    sh.set(r, 10, t.owner, fl({}));
-    sh.set(r, 11, t.email || '', fl({ color: '475569' }));
+    sh.set(r, 8, f.freeFloat == null ? '' : f.freeFloat, fl({ fmt: '0', h: 'center', color: f.freeFloat <= 0 ? 'BE123C' : '15803D' }));
+    sh.set(r, 9, f.critical && !sum ? 'Yes' : '', fl({ h: 'center', color: 'BE123C', b: 1 }));
+    sh.set(r, 10, st.predText(t.id), fl({ color: '475569' }));
+    sh.set(r, 11, t.owner, fl({}));
+    sh.set(r, 12, t.email || '', fl({ color: '475569' }));
     if (t.level > 0) sh.outline.set(r, Math.min(7, t.level));
   });
   sh.filter = `A1:${colL(heads.length - 1)}${st.tasks.length + 1}`;

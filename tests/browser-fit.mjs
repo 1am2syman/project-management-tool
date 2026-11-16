@@ -237,7 +237,7 @@ try {
     const disk = (await (await fetch('/api/projects')).json()).state, s = new Store(disk), view = s.view(s.wb.active);
     const sheets = await readSpreadsheet(new File([await buildXlsx([{ name: 'Targeted plan', store: view }])], 'targeted.xlsx'));
     const rows = sheets[0].rows, mapped = mapSheet(sheets[0]);
-    return { label: rows[0][12], target: rows[0][13], productionCritical: rows.find((r) => r[1] === 'Production setup')[8], licenceCritical: rows.find((r) => r[1] === 'Licence processing')[8], licenceFloat: rows.find((r) => r[1] === 'Licence processing')[7], importedNames: mapped.data.tasks.map((t) => t.name), pdfLabeled: (await buildPdf([{ name: 'Targeted plan', store: view }]).text()).includes('Critical-path target: FG Production Readiness') };
+    return { label: rows[0][13], target: rows[0][14], productionCritical: rows.find((r) => r[1] === 'Production setup')[9], licenceCritical: rows.find((r) => r[1] === 'Licence processing')[9], licenceFloat: rows.find((r) => r[1] === 'Licence processing')[7], importedNames: mapped.data.tasks.map((t) => t.name), pdfLabeled: (await buildPdf([{ name: 'Targeted plan', store: view }]).text()).includes('Critical-path target: FG Production Readiness') };
   });
   assert.equal(exportCheck.label, 'Critical-path target'); assert.equal(exportCheck.target, 'FG Production Readiness');
   assert.equal(exportCheck.productionCritical, 'Yes'); assert(!exportCheck.licenceCritical); assert(!exportCheck.licenceFloat);

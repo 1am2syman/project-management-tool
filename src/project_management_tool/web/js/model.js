@@ -3,6 +3,7 @@
 // Milestones have dur 0.
 import { appState } from './appstate.js';
 import { WorkingCalendar, cleanCalendar, calendarError } from './calendar.js';
+import { latestAllowedStart } from './slack.js';
 
 export const DAY = 86400000;
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -521,36 +522,26 @@ export class Store {
     const latestStarts = new Map();
     for (let k = order.length - 1; k >= 0; k--) {
       const t = this.byId.get(order[k]), f = info.get(t.id);
-      if (scope && !scope.has(t.id)) { f.float = null; f.critical = false; continue; }
-      let latest = target ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      if (scope && !scope.has(t.id)) { f.float = null; f.latestStart = f.latestEnd = null; f.totalLimiters = []; f.critical = false; continue; }
+      const boundary = target ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
       const outgoing = this.outgoing(t.id).filter((link) => !scope || scope.has(link.to));
-      // Invert the same endpoint constraints used by forward scheduling. Searching actual
-      // workday starts also handles milestones and finishes beside weekends/holidays.
-      const fits = (day) => {
-        const start = this.work.next(day, -1), end = this.work.finish(start, t.dur);
-        return outgoing.every((l) => {
-          const successor = this.byId.get(l.to), ss = latestStarts.get(l.to) ?? successor.start;
-          const source = l.type[0] === 'F' ? end : start;
-          const required = l.type[1] === 'S' ? this.work.shift(source, l.lag) : this.work.shiftEnd(source, l.lag);
-          return required <= (l.type[1] === 'S' ? ss : this.work.finish(ss, successor.dur));
-        });
-      };
-      // SS/SF links and negative lag can allow an ancestor to finish after the target.
-      // Find a genuine upper bound instead of capping every finish at the milestone date.
-      if (target && t.id !== target.id) {
-        let step = 7;
-        while (fits(latest)) { latest += step; step *= 2; }
-      }
-      if (!fits(latest)) {
-        let lo = Math.min(t.start, latest), hi = latest, step = 7;
-        while (!fits(lo)) { lo -= step; step *= 2; }
-        while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (fits(mid)) lo = mid; else hi = mid - 1; }
-        latest = this.work.next(lo, -1);
-      }
-      latestStarts.set(t.id, latest);
-      f.float = this.work.count(t.start, latest); f.critical = f.float <= 0 && t.progress < 100;
+      const latest = latestAllowedStart(this.work, t, outgoing, this.byId, latestStarts, boundary, !!target && t.id !== target.id);
+      latestStarts.set(t.id, latest.start);
+      f.latestStart = latest.start; f.latestEnd = latest.end; f.totalLimiters = latest.limiters;
+      f.float = this.work.count(t.start, latest.start); f.critical = f.float <= 0 && t.progress < 100;
     }
-    for (const t of T) { const f = info.get(t.id); if (f.summary) { f.float = null; f.critical = false; } }
+    // Free slack holds every immediate successor at its current dates, independently
+    // of the chosen total-slack scope. Terminal tasks use the project's finish;
+    // the selected target itself stays fixed at its current date.
+    for (const t of T) {
+      const f = info.get(t.id);
+      if (f.summary) { f.float = f.freeFloat = f.latestStart = f.latestEnd = f.freeStart = f.freeEnd = null; f.totalLimiters = f.freeLimiters = []; f.critical = false; continue; }
+      const outgoing = this.outgoing(t.id), fixedTarget = target?.id === t.id;
+      const boundary = fixedTarget ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      const free = latestAllowedStart(this.work, t, fixedTarget ? [] : outgoing, this.byId, null, boundary, !fixedTarget && outgoing.length > 0);
+      f.freeStart = free.start; f.freeEnd = free.end; f.freeLimiters = free.limiters;
+      f.freeFloat = this.work.count(t.start, free.start);
+    }
     // a summary is "critical" if any of its children is
     for (const t of T) { const f = info.get(t.id); if (f.summary) for (let j = f.i + 1; j <= f.sub; j++) if (info.get(T[j].id).critical) { f.critical = true; break; } }
     for (const l of this.links) {

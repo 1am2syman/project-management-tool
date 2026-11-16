@@ -50,13 +50,14 @@ function route(ax, ay, dA, bx, by, dF, g, rowH) {
   return [[ax, ay], [a1, ay], [a1, my], [b1, my], [b1, by], [bx, by]];
 }
 
-function projectPages(st, name, pages) {
+function projectPages(st, name, pages, slack) {
   const crit = st.critical, P = st.project, tasks = st.tasks, n = tasks.length;
   const t0 = monday(P.start) - 1, t1 = P.end + 3, span = t1 - t0;
   const cols = [['#', 16, 'r'], ['Task', 170, 'l'], ['Start', 40, 'c'], ['End', 40, 'c'], ['Days', 24, 'r'], ['Done', 28, 'r']];
+  if (slack) cols.push(['Total', 32, 'r'], ['Free', 32, 'r']);
   const tableW = cols.reduce((a, c) => a + c[1], 0), gx0 = M + tableW + 8, gw = PW - M - gx0, sc = gw / span;
   const target = st.criticalTarget();
-  const topBlock = M + (target ? 52 : 38), hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
+  const topBlock = M + (target ? 52 : 38) + (slack ? 13 : 0), hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
   const rowH = Math.max(11, Math.min(18, avail / Math.max(n, 1))), perPage = Math.max(1, Math.floor(avail / rowH));
   const count = Math.max(1, Math.ceil(n / perPage));
   const X = (d) => gx0 + (d - t0) * sc;
@@ -69,6 +70,7 @@ function projectPages(st, name, pages) {
     p.text(`${ymd(P.start)[0]}${ymd(P.start)[0] !== ymd(P.end - 1)[0] ? `\u2013${ymd(P.end - 1)[0]}` : ''}`, PW - M, M + 12, 10, '94A3B8', true, 'r');
 
     if (target) p.text(fit(`Critical-path target: ${target.name}`, PW - 2 * M, 8.5), M, M + 39, 8.5, 'BE123C');
+    if (slack) p.text('Total / Free slack: working days; blank = summary or outside target. Target: ' + (target ? 'see above' : 'Project completion'), M, M + (target ? 52 : 39), 8, '475569');
 
     // header band
     p.rect(M, topBlock, tableW, hdrH, '1E293B'); p.rect(gx0, topBlock, gw, hdrH, 'F6F7FA');
@@ -98,6 +100,10 @@ function projectPages(st, name, pages) {
       x += cols[1][1];
       put(fmtDate(f.start), cols[2][1], 'c', '475569'); put(fmtDate(ms ? t.start : f.end - 1), cols[3][1], 'c', '475569');
       put(ms ? '-' : st.duration(t.id), cols[4][1], 'r', '475569'); put(`${Math.round(f.progress)}%`, cols[5][1], 'r', f.progress >= 100 ? '15803D' : '475569');
+      if (slack) {
+        put(f.float ?? '', cols[6][1], 'r', f.float <= 0 ? 'BE123C' : '15803D');
+        put(f.freeFloat ?? '', cols[7][1], 'r', f.freeFloat <= 0 ? 'BE123C' : '15803D');
+      }
     }
     // Nonworking dates follow this project's calendar, including custom holidays.
     if (sc >= 1) for (let d = t0; d < t1; d++) if (!st.work.isWork(d)) p.rect(X(d), y0, sc, (i1 - i0) * rowH, 'EEF1F6');
@@ -132,9 +138,9 @@ function projectPages(st, name, pages) {
   }
 }
 
-export function buildPdf(projects) {
+export function buildPdf(projects, { slack = false } = {}) {
   const pages = [];
-  for (const pr of projects) projectPages(pr.store, pr.name, pages);
+  for (const pr of projects) projectPages(pr.store, pr.name, pages, slack);
   const objs = [];
   const add = (s) => objs.push(s) && objs.length;
   add('<< /Type /Catalog /Pages 2 0 R >>');

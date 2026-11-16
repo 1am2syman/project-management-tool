@@ -3,6 +3,7 @@ import { appState } from './appstate.js';
 // sparklines, frozen columns, inline editing, resizable columns.
 import { fmtDate, fmtISO, today } from './model.js';
 import { esc, setHTML } from './dom.js';
+import { slackLabel } from './slackui.js';
 
 export const COLS = [
   { id: 'name', letter: 'A', label: 'Task', w: 230, group: 'task' },
@@ -10,16 +11,19 @@ export const COLS = [
   { id: 'end', letter: 'C', label: 'End', w: 72, group: 'sched', ctr: true },
   { id: 'dur', letter: 'D', label: 'Days', w: 58, group: 'sched', num: true },
   { id: 'progress', letter: 'E', label: 'Done', w: 66, group: 'prog', num: true },
-  { id: 'float', letter: 'F', label: 'Float', w: 58, group: 'prog', num: true },
-  { id: 'trend', letter: 'G', label: 'Trend', w: 100, group: 'prog', spark: true },
-  { id: 'pred', letter: 'H', label: 'Depends on', w: 104, group: 'dep' },
-  { id: 'owner', letter: 'I', label: 'Owner', w: 112, group: 'dep' },
-  { id: 'email', letter: 'J', label: 'Email', w: 190, group: 'dep' },
+  { id: 'float', letter: 'F', label: 'Total slack', w: 104, group: 'slack', num: true },
+  { id: 'freeFloat', letter: 'G', label: 'Free slack', w: 100, group: 'slack', num: true },
+  { id: 'trend', letter: 'H', label: 'Trend', w: 100, group: 'trend', spark: true },
+  { id: 'pred', letter: 'I', label: 'Depends on', w: 104, group: 'dep' },
+  { id: 'owner', letter: 'J', label: 'Owner', w: 112, group: 'dep' },
+  { id: 'email', letter: 'K', label: 'Email', w: 190, group: 'dep' },
 ];
 const GROUPS = [
   { id: 'task', label: 'Task' },
   { id: 'sched', label: 'Schedule · days', hl: true },
   { id: 'prog', label: 'Progress' },
+  { id: 'slack', label: 'Slack · working days' },
+  { id: 'trend', label: 'Trend' },
   { id: 'dep', label: 'Dependencies & team' },
 ];
 const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
@@ -94,6 +98,7 @@ export function createGrid(ctx) {
       case 'dur': return String(store.duration(id));
       case 'progress': return String(Math.round(f.progress));
       case 'float': return f.float == null ? '' : String(f.float);
+      case 'freeFloat': return f.freeFloat == null ? '' : String(f.freeFloat);
       case 'pred': return store.predText(id);
       case 'owner': return t.owner;
       case 'email': return t.email || '';
@@ -115,16 +120,20 @@ export function createGrid(ctx) {
       case 'end': html = fmtDate(t.ms && !f.summary ? t.start : f.end - 1); break;
       case 'dur': if (t.ms && !f.summary) { html = '◆'; cls += ' dim'; } else { cls += ' heat'; style = heat(dur / maxDur * 0.9); html = dur; } break;
       case 'progress': { const p = Math.round(f.progress); cls += ' heat'; style = p ? heat(p / 100) : ''; html = p ? p + '%' : '<span style="color:#b6c0d0">·</span>'; break; }
-      case 'float':
-        if (f.float == null) { cls += ' dim'; html = '·'; }
-        else { cls += f.float < 0 ? ' neg' : f.float === 0 ? ' zero' : ' pos'; html = f.float; }
+      case 'float': case 'freeFloat': {
+        const value = c.id === 'float' ? f.float : f.freeFloat;
+        cls += ' slack-cell';
+        if (value == null) { cls += ' dim'; html = '·'; }
+        else { cls += value < 0 ? ' neg' : value === 0 ? ' zero' : ' pos'; html = value; }
         break;
+      }
       case 'trend': cls += ' spark'; html = spark(f); break;
       case 'pred': html = esc(store.predText(t.id)) || '<span style="color:#cbd5e1">—</span>'; break;
       case 'email': html = esc(t.email || '') || '<span style="color:#cbd5e1">—</span>'; break;
       case 'owner': if (t.owner) { const h = [...t.owner].reduce((a, ch) => a + ch.charCodeAt(0), 0); html = `<span class="chip"><span class="av" style="background:${AV[h % AV.length]}">${esc(t.owner.split(' ').map((w) => w[0]).join('').slice(0, 2))}</span>${esc(t.owner)}</span>`; } break;
     }
-    return `<div class="${cls}" role="gridcell"${sel ? ' aria-selected="true"' : ''} data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
+    const slack = c.id === 'float' || c.id === 'freeFloat';
+    return `<div class="${cls}"${slack ? ` title="${esc(c.label + ': ' + slackLabel(f, c.id === 'freeFloat') + '. Click or press Enter for details.')}" aria-haspopup="dialog"` : ''} role="gridcell"${sel ? ' aria-selected="true"' : ''} data-col="${c.id}"${style ? ` style="${style}"` : ''}${c.id === 'owner' && t.email ? ` title="${esc(t.email)}"` : ''}>${html}</div>`;
   }
 
   // Rows are diffed against what is already on screen: while dragging a bar only the few rows whose text changed are re-parsed,
@@ -176,14 +185,16 @@ export function createGrid(ctx) {
     // name box + formula bar
     const col = COLS.find((c) => c.id === ui.col), has = ui.selId != null && store.info.has(ui.selId);
     namebox.textContent = has ? col.letter + store.rowNum(ui.selId) : 'A1';
+    fxin.readOnly = ui.col === 'float' || ui.col === 'freeFloat';
     if (document.activeElement !== fxin) fxin.value = has ? raw(ui.selId, ui.col) : '';
   }
 
   // ---- editing ----
   function startEdit(id, col, initial) {
     if (editing) return;
+    if (col === 'float' || col === 'freeFloat') { if (initial == null) ctx.slack.open(id); return; }
     if (store.readOnly) { store.emit('denied'); return; }
-    const c = COLS.find((x) => x.id === col); if (!c || c.spark || col === 'float') return;
+    const c = COLS.find((x) => x.id === col); if (!c || c.spark) return;
     const f = store.info.get(id);
     if (f.summary && ['end', 'dur', 'progress', 'pred'].includes(col)) { ctx.toast('Computed from child tasks'); return; }
     const el = body.querySelector(`.r[data-id="${id}"] .c[data-col="${col}"]`); if (!el) return;
@@ -231,6 +242,7 @@ export function createGrid(ctx) {
     const id = +r.dataset.id;
     if (tog) { store.toggle(id); return; }
     const c = e.target.closest('.c'); if (c && c.dataset.col && !c.querySelector('.editor')) { gx.focus({ preventScroll: true }); ctx.select(id, c.dataset.col === 'rn' ? ui.col : c.dataset.col); }
+    if (c && (c.dataset.col === 'float' || c.dataset.col === 'freeFloat')) { ctx.slack.open(id); return; }
     // the first click re-renders the rows, which can swallow the browser's dblclick: use the click count instead
     if (e.detail >= 2 && c && c.dataset.col && c.dataset.col !== 'rn') startEdit(id, c.dataset.col);
   });

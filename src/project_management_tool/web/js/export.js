@@ -2,10 +2,12 @@
 import { buildXlsx } from './xlsx.js';
 import { buildPdf } from './pdf.js';
 import { setHTML } from './dom.js';
+import { appState } from './appstate.js';
 
 export function createExport(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#expbtn'), menu = document.querySelector('#expmenu');
+  let pdfSlack = appState.getItem('pm-pdf-slack') !== '0';
 
   const stamp = () => new Date().toISOString().slice(0, 10);
   const fname = (s) => String(s).replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'project';
@@ -23,7 +25,7 @@ export function createExport(ctx) {
     const ps = projects(all), base = all ? `workbook-${stamp()}` : `${fname(ps[0].name)}-${stamp()}`;
     try {
       if (kind === 'xlsx') download(await buildXlsx(ps), `${base}.xlsx`);
-      else download(buildPdf(ps), `${base}.pdf`);
+      else download(buildPdf(ps, { slack: pdfSlack }), `${base}.pdf`);
       ctx.toast(`Exported ${all ? `${ps.length} sheet${ps.length > 1 ? 's' : ''}` : `“${ps[0].name}”`} as ${kind === 'xlsx' ? 'Excel' : 'PDF'}`);
     } catch (err) { console.error(err); ctx.toast(`Export failed: ${err.message}`); }
   }
@@ -31,7 +33,7 @@ export function createExport(ctx) {
   const item = (k, a, label, hint) => `<button data-k="${k}" data-all="${a}"><b>${label}</b><span>${hint}</span></button>`;
   function open() {
     const n = store.wb.sheets.length;
-    setHTML(menu, '<div class="ttl">Export</div>' +
+    setHTML(menu, '<div class="ttl">Export</div>' + `<label class="export-option"><input type="checkbox" id="pdf-slack"${pdfSlack ? ' checked' : ''}> Include slack columns in PDF</label>` +
       item('xlsx', 0, 'Excel · this sheet', 'Tasks + Gantt, styled, filters, grouping') +
       (n > 1 ? item('xlsx', 1, `Excel · all ${n} sheets`, 'One workbook, two tabs per project') : '') +
       item('pdf', 0, 'PDF · this sheet', 'Vector Gantt with links, A4 landscape') +
@@ -42,6 +44,7 @@ export function createExport(ctx) {
   }
   const close = () => { menu.hidden = true; };
   btn.addEventListener('click', (e) => { e.stopPropagation(); if (menu.hidden) open(); else close(); });
+  menu.addEventListener('change', (e) => { if (e.target.id === 'pdf-slack') { pdfSlack = e.target.checked; appState.setItem('pm-pdf-slack', pdfSlack ? '1' : '0'); } });
   menu.addEventListener('click', (e) => { const b = e.target.closest('button[data-k]'); if (!b) return; close(); run(b.dataset.k, b.dataset.all === '1'); });
   document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target) && !btn.contains(e.target)) close(); }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });

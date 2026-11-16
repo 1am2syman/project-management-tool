@@ -136,6 +136,21 @@ Header actions stay on one row and use icons with tooltips when space is tight. 
 
 Gantt bars and labels use sharper positioning without soft outer shadows or label text shadows. Grid lines have crisp edges, and dependency connectors use a stronger stroke while retaining rounded elbows. Hover and drag feedback still use shadows. Sheet and chart scrollbars use slim tracks; Chromium-based browsers show 6px scrollbars without arrow buttons.
 
+## Per-task slack
+
+The sheet shows **Total slack** (formerly Float) and **Free slack**, both calculated in project working days. Click either value, select a slack cell and press Enter, use **Slack** beside Columns, or right-click a task and choose **Inspect task slack**. The dialog explains the values, latest start/finish dates, limiting successors and the current analysis target. Both values are read-only.
+
+- **Total slack** is the delay allowed before project completion or the selected critical-path milestone moves, allowing downstream tasks to move within their slack.
+- **Free slack** holds immediate successors at their currently scheduled dates. Tasks without successors use project completion; the selected milestone itself stays fixed. Free slack is local, so it remains available outside the selected milestone’s total-slack scope.
+
+For example, 5 working days of total slack and 2 working days of free slack means a three-day delay requires downstream schedule changes but can still meet the target. Where both limits apply, neither may be negative; use the smaller allowance to protect both; free slack can exceed total slack when the completion boundary is tighter. Slack along a chain is shared, not an independent allowance for every task. Manual and date-anchor scheduling choices still apply.
+
+Zero means no allowance remains. Negative values indicate how much earlier a task must move to meet that limit. A dot means no total-slack analysis for an unrelated branch, or no calculation for a summary row; the tooltip and details distinguish these cases. The dialog warns when the schedule contains violated dependencies, since positive slack does not establish that an inconsistent schedule is safe. Completed tasks retain calculated values but are not highlighted as critical.
+
+In **Slack → Show slack on Gantt**, choose **Off**, **Selected task** (the initial setting), or **All tasks**. Positive slack appears as a thin tail continuing from the task’s finish (or milestone): the thick part reaches the latest finish allowed by free slack, the thin dashed part continues to the latest finish allowed by total slack, and caps mark the limits. Tails are thin, square-ended and 50% black so they stay visible without competing with task bars. Tails show room to slip, not extra duration. Only the selected task’s tail is labelled (for example **5d total · 2d free**); in **All tasks** mode other tails are unlabelled, and with **Focus** on, unrelated tasks’ tails fade with their bars. **Fit** includes visible tails and the label. Overlay controls remain separate from task editing and work in read-only projects.
+
+Excel task tables include both slack values and the total-slack target. The Export menu’s **Include slack columns in PDF** option adds Total/Free columns with working-day units. Display and PDF preferences survive refresh and local database restoration. Calculated slack and latest dates are recomputed from existing project data, so portable `.plan` files retain their current format; the critical-path target remains a local view choice.
+
 ## Project calendar
 
 **Calendar** opens settings for the active project. Choose any working weekdays, use the Mon–Fri / Sun–Thu / Every day presets, and add or remove custom holidays by date with an optional name. At least one weekday must remain a workday. Holiday dates cannot repeat.

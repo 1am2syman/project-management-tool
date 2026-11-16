@@ -7,6 +7,7 @@ import { createGrid, COLS } from './grid.js';
 import { createTaskUI } from './taskui.js';
 import { createCalendarUI } from './calendarui.js';
 import { createCriticalUI } from './criticalui.js';
+import { createSlackUI } from './slackui.js';
 import { createGantt } from './gantt.js';
 import { createRelationshipEditor } from './relationships.js';
 import { esc, setHTML } from './dom.js';
@@ -79,6 +80,7 @@ ctx.m365ui = createM365UI(ctx);
 const reminders = createReminders(ctx);
 const sharing = createSharing(ctx);
 const criticalUI = createCriticalUI(ctx, grid);
+ctx.slack = createSlackUI(ctx, grid);
 
 function status() {
   const target = store.criticalTarget();
@@ -97,7 +99,7 @@ function renderAll() {
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
   fitDensity($('#gb').clientHeight, store.rows.length);
   $('#density').value = dims.name;
-  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render();
+  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render(); ctx.slack.render();
   $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;

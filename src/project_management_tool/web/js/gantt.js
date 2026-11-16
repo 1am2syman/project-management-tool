@@ -53,6 +53,14 @@ export function createGantt(ctx) {
   const root = $('#app'), gb = $('#gb'), canvas = $('#canvas'), bg = $('#bg'), linksEl = $('#links'), barsEl = $('#bars'), linkdrag = $('#linkdrag');
   const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), seg = $('#zoomseg');
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
+  const slackEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  slackEl.classList.add('slack-overlay'); slackEl.setAttribute('aria-hidden', 'true'); canvas.insertBefore(slackEl, barsEl);
+  const slackRows = () => store.rows.filter((t) => ui.slackMode !== 'off' && (ui.slackMode === 'all' || ui.selId === t.id) && !store.info.get(t.id).summary);
+  function slackEnd() {
+    let end = store.project.end;
+    for (const t of slackRows()) { const f = store.info.get(t.id); if (f.float > 0) end = Math.max(end, f.latestEnd); if (f.freeFloat > 0) end = Math.max(end, f.freeEnd); }
+    return end;
+  }
   let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, taskH = 0, layoutKey = '';
   const barEls = new Map();
   let vwCache = 0;
@@ -84,7 +92,7 @@ export function createGantt(ctx) {
     if (origin == null) origin = monday(P.start - 14);
     else if (P.start < origin) { const no = monday(P.start - 14); pendShift += (origin - no) * ppd; origin = no; layoutKey = ''; } // tasks moved earlier than the timeline: grow it leftwards
     const vw = vwCache || gb.clientWidth || 800; // cached: reading clientWidth after the grid's DOM writes would force a layout every frame
-    const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
+    const target = Math.max(slackEnd() + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
     W = (endDay - origin) * ppd;
     taskH = store.rows.length * dims.row;
@@ -207,7 +215,7 @@ export function createGantt(ctx) {
       positionBar(el, ms, x1, x2);
       el.style.top = pixel(y) + 'px';
       if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
-      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}`;
+      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days` : ''}`;
       // Keep readable bars self-contained; only very short bars need an external label.
       const out = !f.summary && !ms && w < 80 && textW(t.name) + 16 > w;
       el._label.classList.toggle('out', out);
@@ -262,6 +270,34 @@ export function createGantt(ctx) {
     paintLinks(want);
   }
 
+  function renderSlack() {
+    slackEl.setAttribute('width', W); slackEl.setAttribute('height', taskH);
+    const indices = new Map(store.rows.map((task, i) => [task.id, i]));
+    // A slack tail continues from the task's finish: the thick part reaches the free-slack
+    // limit, the thin dashed part continues to the total-slack limit. Only the selected task gets a label.
+    const markup = slackRows().map((task) => {
+      const f = store.info.get(task.id), total = f.float > 0 ? f.float : 0, free = f.freeFloat > 0 ? f.freeFloat : 0;
+      if (!total && !free) return '';
+      const cy = pixel(indices.get(task.id) * dims.row + dims.row / 2), h = Math.max(3, Math.round(dims.bar * 0.18)), y = cy - h / 2;
+      const edge = (day) => pixel(task.ms ? xOf(day) : xOf(day) - 1); // milestone centre or bar's right edge
+      const x0 = task.ms ? pixel(xOf(f.start) + dims.msz * 0.72) : edge(f.end);
+      const xTotal = total ? edge(task.ms ? f.latestStart : f.latestEnd) : x0, xFree = free ? edge(task.ms ? f.freeStart : f.freeEnd) : x0, xEnd = Math.max(xTotal, xFree);
+      // Segments never overlap, so the translucent fill stays one even tone.
+      const thin = Math.max(1, Math.round(h / 2)), from = free ? xFree : x0;
+      let shapes = free ? `<rect class="slack-free" x="${x0}" y="${y}" width="${Math.max(2, xFree - x0)}" height="${h}"/>` : '';
+      if (total && xTotal > from) shapes += `<line class="slack-total" x1="${from}" y1="${cy}" x2="${xTotal}" y2="${cy}" stroke-width="${thin}"/>`;
+      const cap = (x) => `<line class="slack-cap" x1="${x}" y1="${pixel(cy - dims.bar * 0.32)}" x2="${x}" y2="${pixel(cy + dims.bar * 0.32)}"/>`;
+      shapes += cap(xEnd) + (total && xTotal < xEnd ? cap(xTotal) : '');
+      if (ui.selId === task.id) {
+        const text = !total ? `${free}d free` : total === free ? `${total}d slack` : `${total}d total · ${free}d free`;
+        shapes += `<text x="${xEnd + 7}" y="${pixel(cy + 4)}">${text}</text>`;
+      }
+      const dim = ctx.rel && relClass(task.id).includes('dim') ? ' dim' : '';
+      return `<g class="slack-item${dim}" data-task="${task.id}">${shapes}</g>`;
+    }).join('');
+    if (slackEl._markup !== markup) { setSVG(slackEl, markup); slackEl._markup = markup; }
+  }
+
   // ---------- render ----------
   function render() {
     layout();
@@ -273,7 +309,7 @@ export function createGantt(ctx) {
     const tx = xOf(today) + ppd / 2;
     todayline.style.height = taskH + 'px';
     todayline.style.display = taskH > 0 && tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
-    renderBars(); renderLinks();
+    renderBars(); renderLinks(); renderSlack();
     if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
     updateSeg();
   }
@@ -303,13 +339,13 @@ export function createGantt(ctx) {
     // Measure labels, milestone diamonds, connection handles and routed elbows together.
     // Their bounds change with zoom, so measure again after each adjustment.
     let padding = 20;
-    ppd = Math.min(90, (vw - 40) / Math.max(1, P.end - P.start));
+    ppd = Math.min(90, (vw - 40) / Math.max(1, slackEnd() - P.start));
     for (let i = 0; i < 12; i++) {
       origin = P.start - Math.ceil(padding / ppd); layoutKey = ''; render();
       const left = canvas.getBoundingClientRect().left;
       let first = Infinity, right = 0;
       const elements = [...barEls.values()].flatMap((el) => [el, el._label, ...el.querySelectorAll('.dot')]);
-      elements.push(...linksEl.querySelectorAll('.vis,.ah'));
+      elements.push(...linksEl.querySelectorAll('.vis,.ah'), ...slackEl.querySelectorAll('.slack-item'));
       for (const el of elements) {
         const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) continue;
         const diamond = el.classList.contains('ms') ? dims.msz * (Math.SQRT2 - 1) / 2 : 0;

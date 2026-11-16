@@ -168,7 +168,7 @@ try {
   await restored.reload(); await restored.locator('#gbody .r[data-id="8"]').waitFor();
   assert.equal(await restored.locator('.row-handle').count(), 0);
   await restored.locator('.r[data-id="8"] [data-col=name]').click({ button: 'right' });
-  assert.equal(await restored.locator('.task-menu button:not(:disabled)').count(), 0); await restored.keyboard.press('Escape');
+  assert.equal(await restored.locator('.task-menu button:not(:disabled)').count(), 1); assert(await restored.getByRole('menuitem', { name: 'Inspect task slack', exact: true }).isEnabled()); await restored.keyboard.press('Escape');
   await restored.locator('.r[data-id="8"] [data-col=name]').click(); await restored.keyboard.press('Control+Enter');
   assert.equal(JSON.stringify((await data(restored)).tasks), locked);
   await restored.locator('#calendarbtn').click(); assert(await restored.getByRole('button', { name: 'Apply calendar', exact: true }).isDisabled());
