@@ -87,6 +87,8 @@ Serving only the `web` directory with a static server is still supported, but sh
 
 ## Microsoft 365 (optional)
 
+The native Windows background reminder agent is in its first feasibility milestone. It is not enabled by normal startup: project reminders still use the existing browser/deferred-mail workflow described below. Maintainers can exercise the separate native sign-in, protected cache and scheduled-task harness using the [isolated feasibility runbook](docs/native-reminder-feasibility.md). Its application registration and real Windows/corporate-mail checks remain release blockers; automatic background project scheduling, catch-up and legacy migration are outstanding.
+
 Project planning and local saves work offline from the first launch. To enable the Microsoft 365 features, connect to the internet and register the app once:
 
 1. Entra admin centre › App registrations › **New registration** (this organisation only).

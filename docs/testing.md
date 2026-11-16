@@ -96,6 +96,14 @@ These optional outputs can be deleted after review. Generated screenshots, logs,
 
 For a clean folder copy to another user, use GitHub's repository ZIP or `git archive --format=zip --output=../plan.zip HEAD` from the committed checkout. Both include the bundled Windows runtime and maintained tests while excluding ignored local caches, virtual environments, agent notes and validation output. When cleaning a working checkout, stop any processes using its virtual environment before removing `.venv`; remove generated `__pycache__`, `.ruff_cache`, `.pytest_cache` and completed local validation output as needed. Keep the entire `runtime/windows-x64` directory, its license, manifest and SPDX metadata together.
 
+## Native Windows reminder feasibility
+
+Run `python3 -B -m unittest discover -s tests -p "test_reminder_*.py" -v` for the isolated native regressions. They exercise authorization/account binding, alias differences, protected-state serialization using a test-only protector, Graph outcome classification, task configuration/repair, transactional self-test claims, crash uncertainty, source fencing, control endpoint origin/allowlist checks, and bundled dependency hashes/licenses/native architecture. The full Python discovery command above includes this suite.
+
+The [native feasibility runbook](native-reminder-feasibility.md) documents maintainer app registration, dependency reproduction, an isolated Windows profile/task, test-mail receipt checks, relocation, restart and cleanup. Normal startup does not enable this harness or change scheduler ownership. Its worker never reads or initializes project storage; every mail test is explicitly requested and addressed only to the connected test mailbox.
+
+These automated checks have run on Linux. Actual bundled-interpreter MSAL imports and DPAPI are Windows-only tests and remain skipped here; no Task Scheduler registration, managed-device approval, corporate sign-in or live test-mail receipt has been verified. The native application ID is not provisioned. The phase-one feasibility gate and all remaining production rollout gates in [the plan](windows-reminder-agent-plan.md) remain unresolved. Keep private test state and any uncertain submissions for review; stop/remove the isolated task before deleting its checkout.
+
 ## Verification limits
 
 Automated native picker results are supplied by the tests. The file-handle suite uses real browser-private file handles to exercise writes and persistence across refresh; it does not operate the OS Open/Save As dialogs. Permission, external-edit conflicts, cancellation and uncertain save outcomes also have unit coverage. A separate manual check on Linux used an isolated database/profile and the real native chooser to open the reported `.plan` file, then clicked Log → Download log and verified all Open/IndexedDB stages in the actual download. This does not verify the Windows chooser.

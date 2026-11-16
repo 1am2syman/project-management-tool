@@ -1,6 +1,6 @@
 # Windows background reminder agent: implementation plan
 
-Status: proposed; application implementation has not started.
+Status: phase-one native feasibility components implemented behind an explicit maintainer test flag; Windows/corporate-account feasibility is unverified. The native deployment application ID is not provisioned. The existing scheduler remains authoritative. Project planning, production delivery/retries/catch-up, shared people/OneDrive integration, automatic launcher setup and legacy-message migration remain outstanding. See [the feasibility runbook](native-reminder-feasibility.md). The completion criteria below remain release requirements.
 
 ## Goal and user experience
 

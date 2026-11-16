@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Plan · Native Windows feasibility</title>
+  <style>
+    :root { font: 16px/1.5 system-ui, sans-serif; color: #17233b; background: #f4f6fa; }
+    main { max-width: 860px; margin: 3rem auto; padding: 2rem; background: white; border-radius: 12px; }
+    h1 { line-height: 1.2; }
+    .notice { border-left: 4px solid #bd6f00; padding: 1rem; background: #fff6df; }
+    .actions { display: flex; flex-wrap: wrap; gap: .7rem; margin: 1.2rem 0; }
+    button { padding: .7rem 1rem; background: #edf2fa; color: inherit; border: 1px solid #b7c4d8; border-radius: 6px; cursor: pointer; font: inherit; }
+    button:disabled { opacity: .5; cursor: wait; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f6fa; padding: 1rem; }
+    #message { min-height: 1.5em; }
+  </style>
+  <script type="module" src="js/reminder-feasibility.js"></script>
+</head>
+<body>
+<main>
+  <h1>Native Windows reminder feasibility</h1>
+  <p class="notice">Maintainer test harness for an isolated data directory and a dedicated Microsoft test mailbox. Project reminders still use the existing scheduler. This task sends only a test email that you explicitly queue below.</p>
+  <p>Connect using Microsoft's sign-in page. The release maintainer must supply a registered native application before sign-in can work. Organization consent and device policy still apply; no administrator elevation or Windows password is requested.</p>
+  <div class="actions">
+    <button data-action="connect">Connect / reconnect Microsoft 365</button>
+    <button data-action="disconnect">Disconnect native connection</button>
+    <button data-action="install">Install / repair test task</button>
+    <button data-action="remove">Stop and remove test task</button>
+    <button data-action="send-test">Queue one test email to my mailbox</button>
+    <button id="refresh">Refresh status</button>
+  </div>
+  <p>After queuing a test, close the browser and server. Leave Windows awake, signed in and connected. The task checks once per minute; verify receipt, sender, timestamp and Sent Items. HTTP acceptance does not prove delivery.</p>
+  <p>An interrupted submission remains uncertain and is never automatically repeated. Preserve the test profile and inspect the mailbox before resolving an unknown outcome.</p>
+  <p id="message" role="status" aria-live="polite"></p>
+  <h2>Task, native authorization and worker</h2>
+  <pre id="status" aria-label="Native reminder feasibility status">Loading…</pre>
+  <a href="/">Open Plan</a>
+</main>
+</body>
+</html>

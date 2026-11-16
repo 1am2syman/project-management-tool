@@ -11,6 +11,7 @@ import struct
 import sys
 import webbrowser
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
@@ -49,8 +50,9 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       ".js": "text/javascript", ".css": "text/css", ".json": "application/json"}
 
-    def __init__(self, *args, storage, **kwargs):
+    def __init__(self, *args, storage, reminder_feasibility=None, **kwargs):
         self.storage = storage
+        self.reminder_feasibility = reminder_feasibility
         super().__init__(*args, directory=str(WEB), **kwargs)
 
     def end_headers(self):
@@ -66,15 +68,63 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def feasibility_request(self, path, mutation=False):
+        """Opt-in test harness with stricter local-origin controls and no Graph proxy."""
+        from .reminder_agent import AgentError
+
+        if self.reminder_feasibility is None:
+            self.send_json(404, {"error": "Feasibility mode is not enabled"})
+            return
+        if urlsplit(self.path).query:
+            self.send_json(400, {"error": "Feasibility operations do not accept query parameters"})
+            return
+        port = cast(http.server.HTTPServer, self.server).server_port
+        allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        host = self.headers.get("Host", "")
+        if host not in allowed_hosts or (mutation and self.headers.get("Origin") != f"http://{host}"):
+            self.send_json(403, {"error": "Native operations require this app's local origin"})
+            return
+        try:
+            if mutation:
+                action = path.removeprefix("/api/reminder-feasibility/")
+                if action not in {"connect", "disconnect", "install", "remove", "send-test"}:
+                    self.send_json(404, {"error": "Unknown feasibility operation"})
+                    return
+                if self.headers.get_content_type() != "application/json":
+                    self.send_json(415, {"error": "Expected application/json"})
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
+                    self.send_json(413, {"error": "Invalid feasibility request size"})
+                    return
+                if json.loads(self.rfile.read(length), parse_constant=reject_constant) != {}:
+                    self.send_json(400, {"error": "This operation accepts an empty object only"})
+                    return
+                result = self.reminder_feasibility.action(action)
+            elif path == "/api/reminder-feasibility/status":
+                result = self.reminder_feasibility.status()
+            else:
+                self.send_json(404, {"error": "Unknown feasibility operation"})
+                return
+            self.send_json(200, result)
+        except AgentError as error:
+            self.send_json(409, error.status())
+        except (ValueError, UnicodeError, RecursionError):
+            self.send_json(400, {"error": "Invalid feasibility request"})
+        except (OSError, sqlite3.Error):
+            self.send_json(503, {"state": "state_unavailable", "message": "Cannot access native feasibility state. Local project planning remains available."})
+
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if parsed.path == "/api/diagnostics":
+        if parsed.path.startswith("/api/reminder-feasibility/"):
+            self.feasibility_request(parsed.path)
+        elif parsed.path == "/api/diagnostics":
             try:
                 self.send_json(200, runtime_diagnostics())
             except OSError:
                 self.send_json(503, {"error": "Cannot inspect the installed app source"})
         elif parsed.path == "/api/health":
-            self.send_json(200, {"app": "plan-local", "dataFile": str(self.storage.path)})
+            self.send_json(200, {"app": "plan-local", "dataFile": str(self.storage.path), "reminderFeasibility": self.reminder_feasibility is not None})
         elif parsed.path == "/api/projects" or parsed.path.startswith("/api/history"):
             try:
                 if parsed.path == "/api/projects":
@@ -102,6 +152,9 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if urlsplit(self.path).path.startswith("/api/reminder-feasibility/"):
+            self.feasibility_request(urlsplit(self.path).path, mutation=True)
+            return
         if urlsplit(self.path).path != "/api/projects":
             self.send_json(404, {"error": "Unknown endpoint"})
             return
@@ -133,9 +186,13 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": f"Could not save app state. Check free space and folder permissions. ({e})"})
 
 
-def create_server(port, data_dir):
+def create_server(port, data_dir, *, reminder_feasibility=False):
     storage = ProjectStorage(data_dir)
-    return http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(ProjectHandler, storage=storage))
+    service = None
+    if reminder_feasibility:
+        from .reminder_agent.service import FeasibilityService
+        service = FeasibilityService(data_dir)
+    return http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(ProjectHandler, storage=storage, reminder_feasibility=service))
 
 
 def main():
@@ -143,7 +200,10 @@ def main():
     ap.add_argument("-p", "--port", type=int, default=5173)
     ap.add_argument("--data-dir", type=Path, help="Folder for plan.db (default: Documents/Plan)")
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser window")
+    ap.add_argument("--reminder-feasibility", action="store_true", help="Maintainer-only native Windows feasibility page (requires an isolated --data-dir)")
     a = ap.parse_args()
+    if a.reminder_feasibility and a.data_dir is None:
+        ap.error("--reminder-feasibility requires an explicit isolated --data-dir")
     if not 0 <= a.port <= 65535:
         ap.error("port must be between 0 and 65535")
     try:
@@ -151,23 +211,23 @@ def main():
     except OSError as e:
         ap.exit(1, f"Cannot locate Documents: {e}\n")
     try:
-        srv = create_server(a.port, directory)
+        srv = create_server(a.port, directory, reminder_feasibility=a.reminder_feasibility)
     except OSError as e:
         # Double-clicking again reuses the running server for this database.
         try:
             with urlopen(f"http://127.0.0.1:{a.port}/api/health", timeout=2) as response:
                 health = json.load(response)
-            if health.get("app") != "plan-local" or health.get("dataFile") != str((directory / "plan.db").resolve()):
-                raise ValueError("Different app or database")
+            if health.get("app") != "plan-local" or health.get("dataFile") != str((directory / "plan.db").resolve()) or bool(health.get("reminderFeasibility", False)) != a.reminder_feasibility:
+                raise ValueError("Different app, database or feasibility mode")
         except (OSError, ValueError):
             ap.exit(1, f"Cannot start Plan on port {a.port}: {e}\nClose the other server or choose --port 5174.\n")
-        url = f"http://127.0.0.1:{a.port}/"
+        url = f"http://127.0.0.1:{a.port}/" + ("reminder-feasibility.html" if a.reminder_feasibility else "")
         print(f"Plan is already running: {url}", flush=True)
         if not a.no_open:
             webbrowser.open(url)
         return
     with srv:
-        url = f"http://127.0.0.1:{srv.server_port}/"
+        url = f"http://127.0.0.1:{srv.server_port}/" + ("reminder-feasibility.html" if a.reminder_feasibility else "")
         print(f"Plan is running: {url}\nApp state: {(directory / 'plan.db').resolve()}\nKeep this window open. Press Ctrl+C to stop.", flush=True)
         if not a.no_open:
             webbrowser.open(url)
