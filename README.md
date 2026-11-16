@@ -1,8 +1,8 @@
 # Plan: project sheet + Gantt
 
 Spreadsheet-style task grid on the left, fully draggable Gantt on the right (FS/SS/FF/SF links, critical path,
-milestones, quarter/month/week/day views), multi-project sheet tabs, templates, Excel and PDF export, and Microsoft 365
-integration (people directory, deadline reminders, read-only sharing). Vanilla ES modules, no build step.
+milestones, quarter/month/week/day views), multi-project sheet tabs, templates, native `.plan` project files, Excel and PDF export,
+and Microsoft 365 integration (people directory, deadline reminders, read-only sharing). Vanilla ES modules, no build step.
 
 ## Run on Windows
 
@@ -32,6 +32,16 @@ The standard-library source launcher, `python start.py`, is also available if yo
 
 Stop Plan, open a terminal in the cloned folder, and run `git pull --ff-only`. Then run `start.bat` again. uv updates the environment as needed. Saved work stays in Documents/Plan, separate from the repository.
 
+## Project files: Save As and Open
+
+- **Save As…** saves the active project to a dedicated **`.plan`** file. In Chrome and Edge on localhost or HTTPS, a native Save As dialog lets you choose its name and folder. The browser confirms before replacing an existing file. Other browsers download the same `.plan` file using their download settings.
+- **Open…** opens a native file chooser for `.plan` files and adds the selected project as a new editable tab. Existing projects stay in place; duplicate names get a numbered suffix. Opening a file does not connect that tab to the original file: use **Save As…** again to write later edits.
+- **Ctrl/⌘+O** opens a project; **Ctrl/⌘+Shift+S** or **Ctrl/⌘+S** saves it as a project file.
+
+A project file preserves tasks, hierarchy, dates, durations, all four relationship types and lag, milestones, progress, owners and email addresses, collapsed groups, scheduling/critical-path preferences, and reminder configuration. Opening applies the file's scheduling/critical-path preferences to the editor. Reminders start **off** in the opened copy; enable them in **Remind** when ready. Live Microsoft 365 sharing links, permissions, scheduled-message records, sign-in credentials, undo/redo history, and app layout settings stay outside project files. Saving a shared read-only project creates a portable editable copy when opened, with auto-schedule off to preserve the published dates.
+
+Files use versioned JSON with a `.plan` extension and a 64 MB size limit. Invalid, incomplete or unsupported files show an error before any project is added. Cancelling a file dialog leaves your work in place. Automatic saves and History continue to use the app's database; a `.plan` file contains the single project as it was when you chose **Save As…**. See the [project file format](docs/project-files.md) for the version 1 structure and validation rules.
+
 ## Automatic local saves
 
 The launcher automatically creates **Plan/plan.db inside your Documents folder**. On Windows it asks Windows for the actual Documents location, including redirected or OneDrive Documents folders. You do not need to create the folder or choose a file. This one SQLite database contains the machine's saved Plan state:
@@ -45,7 +55,7 @@ SQLite transactions commit current state and history together. Repeated values a
 
 To back up or move your work, **stop Plan**, then copy **Documents/Plan/plan.db**. On another machine, put it in that machine's Documents/Plan folder before launching. To restore a backup, stop Plan, keep a copy of the current database, and replace it with your backup. Computers do not sync automatically. Unreadable databases are preserved and reported in the save indicator; they are never silently replaced with an empty project.
 
-On the first launch, an empty database adopts projects, templates and settings already saved in the same browser and URL. Later launches load the database, including in a fresh browser profile. Projects from another URL or computer can also be moved with Excel export/import. Microsoft sign-in credentials stay in Microsoft's browser cache, so a new browser profile or computer requires sign-in again; the database stores app configuration and activity, without passwords or sign-in tokens.
+On the first launch, an empty database adopts projects, templates and settings already saved in the same browser and URL. Later launches load the database, including in a fresh browser profile. Projects from another URL or computer can also be moved with `.plan` files or Excel export/import. Microsoft sign-in credentials stay in Microsoft's browser cache, so a new browser profile or computer requires sign-in again; the database stores app configuration and activity, without passwords or sign-in tokens.
 
 Serving only the `web` directory with a static server is still supported, but shows **Saved in this browser** and uses browser storage only. Use the launcher for integrated disk saves and history. `start.bat --data-dir "D:\My Plan Data"` (or `python start.py --data-dir "D:\My Plan Data"`) selects another folder for `plan.db`.
 
@@ -82,10 +92,10 @@ Run storage and launcher tests with uv:
 uv run --locked python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-The JavaScript model and import regression tests require Node.js, which is only needed for development:
+The JavaScript model, import and project-file regression tests require Node.js, which is only needed for development:
 
 ```bash
-node --test tests/persistence.test.mjs tests/relationships.test.mjs
+node --test tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs
 ```
 
-Browser validation covers relationship confirmation, Gantt layout and restoring SQLite state into a fresh browser profile after a server restart. Microsoft 365 flows have been checked with a mocked Graph API, not a live tenant. The Windows batch launcher has been reviewed; automated launcher checks run on Linux with uv-managed Python.
+Browser validation covers relationship confirmation, Gantt layout and restoring SQLite state into a fresh browser profile after a server restart. Project-file checks cover the toolbar, keyboard save during an edit, file round-trips, cancellation and invalid files, a real download/file-input fallback, layout at several viewport widths, and restoring opened files in a fresh browser profile. Native picker results are mocked for automation; the OS Save As dialog itself is not driven by these tests. Microsoft 365 flows have been checked with a mocked Graph API, not a live tenant. The Windows batch launcher has been reviewed; automated launcher checks run on Linux with uv-managed Python.
