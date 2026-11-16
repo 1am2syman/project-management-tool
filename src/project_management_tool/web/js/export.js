@@ -18,8 +18,11 @@ export function createExport(ctx) {
   }
   function projects(all) {
     store.save();
-    const sheets = all ? store.wb.sheets : [store.sheet()];
-    return sheets.map((s) => ({ name: s.name, store: store.view(s.id) }));
+    const sheets = all ? store.wb.sheets : [store.sheet()], shown = store.previewing;
+    // A saved version on screen exports as shown; every other project exports its current plan.
+    return sheets.map((s) => (shown && s.id === store.wb.active
+      ? { name: `${s.name} v${shown.n}`.slice(0, 60), store: store.versionView(shown.id) }
+      : { name: s.name, store: store.view(s.id) }));
   }
   async function run(kind, all) {
     const ps = projects(all), base = all ? `workbook-${stamp()}` : `${fname(ps[0].name)}-${stamp()}`;

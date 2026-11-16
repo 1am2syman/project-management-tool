@@ -42,6 +42,28 @@ export function cleanShare(s) {
   if (s.people && typeof s.people === 'object') for (const [k, v] of Object.entries(s.people).slice(0, 500)) if (isEmail(k) && v && typeof v === 'object') people[k.toLowerCase()] = { name: String(v.name || k).slice(0, 80), permId: typeof v.permId === 'string' ? v.permId : '', uid: typeof v.uid === 'string' ? v.uid.slice(0, 100) : '', at: Number(v.at) || 0 };
   return { driveId: s.driveId.slice(0, 300), itemId: s.itemId.slice(0, 300), webUrl: typeof s.webUrl === 'string' && /^https:\/\//.test(s.webUrl) ? s.webUrl.slice(0, 1000) : '', auto: !!s.auto, publishedAt: Number(s.publishedAt) || 0, people };
 }
+// Explicit, named snapshots of one project. Each keeps its plan as an immutable JSON string
+// (like undo snapshots), so a version is never edited in place and costs one stored value.
+export const MAX_VERSIONS = 200;
+export const PREVIEW_LOCK = 'You are viewing a saved version. Return to Current to edit.';
+export function cleanVersions(list) {
+  const out = [], ids = new Set();
+  for (const v of Array.isArray(list) ? list : []) {
+    if (!v || typeof v !== 'object' || typeof v.data !== 'string' || !Number.isSafeInteger(v.n) || v.n < 1) continue;
+    const id = `v${v.n}`; if (ids.has(id)) continue;
+    try { const d = JSON.parse(v.data); if (!d || !Array.isArray(d.tasks) || !Array.isArray(d.links)) continue; } catch { continue; }
+    const target = Number.isSafeInteger(v.target) && v.target > 0 ? v.target : null;
+    ids.add(id);
+    out.push({ id, n: v.n, name: String(v.name ?? '').trim().slice(0, 80) || `Version ${v.n}`, note: String(v.note ?? '').slice(0, 1000), at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0, by: String(v.by ?? '').slice(0, 120), auto: v.auto !== false, target, data: v.data });
+  }
+  return out.sort((a, b) => a.n - b.n).slice(-MAX_VERSIONS);
+}
+// Sheets without versions keep their previous saved shape.
+function versionFields(s) {
+  const versions = cleanVersions(s.versions);
+  if (!versions.length && !(Number.isSafeInteger(s.nextVersion) && s.nextVersion > 1)) return {};
+  return { versions, nextVersion: Math.max(Number.isSafeInteger(s.nextVersion) ? s.nextVersion : 1, (versions.at(-1)?.n || 0) + 1) };
+}
 export function cleanSource(s) {
   if (!s || typeof s !== 'object' || typeof s.driveId !== 'string' || typeof s.itemId !== 'string') return null;
   return { driveId: s.driveId.slice(0, 300), itemId: s.itemId.slice(0, 300), by: String(s.by || '').slice(0, 120), byEmail: isEmail(s.byEmail) ? s.byEmail : '', fetchedAt: Number(s.fetchedAt) || 0 };
@@ -126,6 +148,8 @@ function sanitize(d) {
   return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
 }
 
+function planText(data) { const plan = sanitize(data); delete plan.collapsed; return JSON.stringify(plan); }
+
 function blank() {
   const t = (id, name, level, dur) => ({ id, name, level, start: today, dur, progress: 0, owner: '', ms: false });
   return { tasks: [t(1, 'Phase 1', 0, 5), t(2, 'First task', 1, 5)], links: [], collapsed: [], nextId: 3, nextLink: 1 };
@@ -170,7 +194,7 @@ function builtins() {
 
 export class Store {
   constructor(saved) {
-    this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map();
+    this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map(); this.preview = null;
     this.auto = true; this.critical = true; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
     try {
       const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
@@ -199,7 +223,7 @@ export class Store {
     try {
       const w = saved ?? JSON.parse(localStorage.getItem(WB));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
-        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source) }));
+        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source), ...versionFields(s) }));
         if (sheets.length) {
           const nextSheet = Math.max(Number(w.nextSheet) || 1, Math.max(0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1);
           return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
@@ -236,23 +260,25 @@ export class Store {
   }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
-    this.sheet().data = JSON.parse(this.serialize());
+    // While a saved version is on screen, the loaded tasks are that version: never write them over the live project.
+    if (!this.preview) this.sheet().data = JSON.parse(this.serialize());
     try {
       localStorage.setItem(WB, JSON.stringify(this.wb));
       localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalTargets: this.criticalTargets }));
     } catch { /* disk saving can still work when browser storage is full */ }
     this.persist?.(this.savedState());
   }
-  resetAll() { this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
 
   criticalTarget() {
-    const id = this.wb ? this.criticalTargets?.[this.wb.active] : this.criticalTargetId;
+    const id = this.preview ? this.preview.target : this.wb ? this.criticalTargets?.[this.wb.active] : this.criticalTargetId;
     const task = this.byId?.get(id);
     return task?.ms && !this.info.get(id).summary ? task : null;
   }
   setCriticalTarget(id = null) {
     if (this.stale) return 'This project changed in another tab. Reload before changing the view.';
+    if (this.preview) return PREVIEW_LOCK;
     if (id !== null && (!this.byId.get(id)?.ms || this.info.get(id).summary)) return 'Choose an existing milestone as the critical-path target';
     if (id === null) delete this.criticalTargets[this.wb.active];
     else this.criticalTargets[this.wb.active] = id;
@@ -269,6 +295,7 @@ export class Store {
   }
   stash() { this.save(); this.hist.set(this.wb.active, { u: this.undoStack, r: this.redoStack }); }
   enter(id) {
+    this.preview = null;
     this.wb.active = id;
     const h = this.hist.get(id); this.undoStack = h ? h.u : []; this.redoStack = h ? h.r : [];
     this.load(this.sheet().data); this.save(); this.emit('sheet');
@@ -285,7 +312,7 @@ export class Store {
     const ex = this.wb.sheets.find((s) => s.source && s.source.driveId === source.driveId && s.source.itemId === source.itemId);
     if (ex) {
       ex.data = sanitize(data); ex.source = cleanSource(source);
-      if (ex.id === this.wb.active) { this.load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
+      if (ex.id === this.wb.active) { this.preview = null; this.load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
       return ex.id;
     }
     const id = this.addSheet(data, name, { readOnly: true, source: cleanSource(source) }); this.save(); this.emit('sheet'); return id;
@@ -324,6 +351,86 @@ export class Store {
     Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
     v.settle(); return v;
   }
+  // Computed, frozen copy of a saved version: dates exactly as they were when it was taken.
+  versionView(vid, sheetId = this.wb.active) {
+    const version = this.version(vid, sheetId); if (!version) return null;
+    const v = Object.create(Store.prototype), c = sanitize(JSON.parse(version.data));
+    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink });
+    v.settle(); return v;
+  }
+
+  // ---- versions: explicit snapshots of the active project ----
+  versions(sheetId = this.wb.active) { return this.sheet(sheetId)?.versions || []; }
+  version(vid, sheetId = this.wb.active) { return this.versions(sheetId).find((v) => v.id === vid) || null; }
+  get previewing() { return this.preview ? this.version(this.preview.id) : null; }
+  versionError() { return this.stale ? 'This project changed in another tab; reload before managing versions' : null; }
+  // Canonical plan text (no view state), so equal plans compare equal regardless of how they were saved.
+  livePlan() { if (!this.preview) this.save(); return planText(this.sheet().data); }
+  // True when the live plan matches the newest version, so another snapshot would record no change.
+  unchangedSinceLatest() { const latest = this.versions().at(-1); return !!latest && planText(JSON.parse(latest.data)) === this.livePlan(); }
+  snapshotVersion({ name = '', note = '', by = '' } = {}) {
+    const error = this.versionError(); if (error) return { error };
+    const sheet = this.sheet(), list = sheet.versions || [];
+    if (list.length >= MAX_VERSIONS) return { error: `A project keeps at most ${MAX_VERSIONS} versions; delete an older version first` };
+    const data = this.livePlan(); // always the live plan, also while another version is on screen
+    const n = Math.max(sheet.nextVersion || 1, (list.at(-1)?.n || 0) + 1);
+    const [version] = cleanVersions([{ n, name: String(name).trim() || `Version ${n}`, note, by, at: Date.now(), auto: this.auto, target: this.criticalTargets[sheet.id] ?? null, data }]);
+    sheet.versions = [...list, version]; sheet.nextVersion = n + 1;
+    this.save(); this.emit('versions');
+    return { version };
+  }
+  updateVersion(vid, { name, note } = {}) {
+    const error = this.versionError(); if (error) return error;
+    const v = this.version(vid); if (!v) return 'That version no longer exists';
+    if (name !== undefined) { const n = String(name).trim().slice(0, 80); if (!n) return 'Give the version a name'; v.name = n; }
+    if (note !== undefined) v.note = String(note).slice(0, 1000);
+    this.save(); this.emit('versions'); return null;
+  }
+  // Numbers are never reused, so a deleted version cannot be confused with a later one.
+  deleteVersion(vid) {
+    const error = this.versionError(); if (error) return error;
+    const sheet = this.sheet(); if (!this.version(vid)) return 'That version no longer exists';
+    if (this.preview?.id === vid) this.exitPreview();
+    sheet.versions = sheet.versions.filter((v) => v.id !== vid);
+    this.save(); this.emit('versions'); return null;
+  }
+  previewVersion(vid) {
+    if (this._orig) return 'Finish the current drag first';
+    const v = this.version(vid); if (!v) return 'That version no longer exists';
+    if (!this.preview) this.save();
+    this.preview = { id: v.id, target: v.target };
+    this.load({ ...JSON.parse(v.data), collapsed: [...this.collapsed] });
+    this.emit('version'); return null;
+  }
+  exitPreview() {
+    if (!this.preview) return;
+    this.preview = null; this.load(this.sheet().data); this.emit('version');
+  }
+  // Replaces the live plan with a version in one undoable step. Task and relationship
+  // counters never move backwards, so new items cannot reuse IDs seen by later versions.
+  restoreVersion(vid) {
+    const v = this.version(vid); if (!v) return 'That version no longer exists';
+    if (this.sheet().readOnly) return 'This project is read-only';
+    if (this.stale) return 'This project changed in another tab; reload before restoring a version';
+    this.exitPreview();
+    const c = sanitize(JSON.parse(v.data)), ids = new Set(c.tasks.map((t) => t.id)), sheetId = this.wb.active;
+    this.tx(() => {
+      this.calendar = c.calendar; this.work = new WorkingCalendar(c.calendar);
+      this.tasks = c.tasks; this.links = c.links;
+      this.nextId = Math.max(this.nextId, c.nextId); this.nextLink = Math.max(this.nextLink, c.nextLink);
+      this.collapsed = new Set([...this.collapsed].filter((id) => ids.has(id)));
+    });
+    if (v.target && this.byId.get(v.target)?.ms) this.criticalTargets[sheetId] = v.target; else delete this.criticalTargets[sheetId];
+    this.recalc(); this.save(); this.emit();
+    return null;
+  }
+  copyVersionAsProject(vid) {
+    const v = this.version(vid); if (!v) return { error: 'That version no longer exists' };
+    if (this.stale) return { error: 'This project changed in another tab; reload before copying a version' };
+    const id = this.addSheet(JSON.parse(v.data), `${this.sheet().name.slice(0, 30)} · ${v.name}`);
+    if (v.target && this.byId.get(v.target)?.ms) { this.criticalTargets[id] = v.target; this.recalc(); this.save(); this.emit('critical-target'); }
+    return { id };
+  }
 
   // ---- templates ----
   allTemplates() { return [...builtins(), ...this.templates]; }
@@ -360,7 +467,7 @@ export class Store {
   }
 
   // ---- transactions / undo ----
-  get readOnly() { const s = this.wb && this.sheet(); return !!(s && s.readOnly); } // detached views (export) have no workbook
+  get readOnly() { const s = this.wb && this.sheet(); return !!(s && s.readOnly) || !!this.preview; } // detached views (export) have no workbook
   tx(fn) {
     if (this.readOnly) { this.emit('denied'); return undefined; } // shared read-only copy
     const before = this.snap();
@@ -592,6 +699,7 @@ export class Store {
 
   // ---- structure ----
   structureError() {
+    if (this.preview) return PREVIEW_LOCK;
     if (this.readOnly) return 'This project is read-only';
     if (this.stale) return 'This project changed in another tab; reload before editing';
     return null;
@@ -698,7 +806,7 @@ export class Store {
     return null;
   }
   addLink(from, fromEnd, to, toEnd) {
-    if (this.readOnly) return 'This project is read-only';
+    if (this.readOnly) return this.preview ? PREVIEW_LOCK : 'This project is read-only';
     if (this.stale) return 'This project changed in another tab; reload before editing relationships';
     const type = (fromEnd === 'f' ? 'F' : 'S') + (toEnd === 'f' ? 'F' : 'S');
     const err = this.canLink(from, to); if (err) return err;
@@ -707,7 +815,7 @@ export class Store {
     return null;
   }
   updateLink(id, patch, { resolvePair = false } = {}) {
-    if (this.readOnly) return 'This project is read-only';
+    if (this.readOnly) return this.preview ? PREVIEW_LOCK : 'This project is read-only';
     if (this.stale) return 'This project changed in another tab; reload before editing relationships';
     const link = this.links.find((l) => l.id === id); if (!link) return 'Relationship no longer exists';
     if ('from' in patch || 'to' in patch) return 'Relationship endpoints cannot be changed';

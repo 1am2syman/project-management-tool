@@ -192,6 +192,8 @@ class ProjectStorage:
                 summary = "Edited tasks"
             elif any("/links/" in path for path in changes):
                 summary = "Edited relationships"
+            elif any(path.startswith("/workbook/sheets/") and "/versions" in path for path in changes):
+                summary = "Updated project versions"
             elif any(path.startswith("/workbook") for path in changes):
                 summary = "Updated projects"
             elif any(path.startswith("/templates") for path in changes):

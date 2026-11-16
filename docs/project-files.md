@@ -4,9 +4,9 @@ Plan's **Save** and **Save As…** commands write one project to a UTF-8 JSON fi
 
 See [the README](../README.md#project-files-save-save-as-and-open) for browser support and keyboard shortcuts.
 
-## Versions 1, 2 and 3
+## Versions 1, 2, 3 and 4
 
-The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), and `version: 3` (explicit task scheduling modes). It writes version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2 and 3 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
+The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), `version: 3` (explicit task scheduling modes) and `version: 4` (saved project versions). It writes version 4 when the project has saved versions and otherwise version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2, 3 and 4 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or saved versions, or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
 
 This is a complete version 3 file containing one automatic task:
 
@@ -88,7 +88,7 @@ The editor allows one relationship per directed task pair. Files containing lega
 
 ## Working calendars
 
-Versions 2 and 3 store this object in `project.data.calendar`:
+Versions 2, 3 and 4 store this object in `project.data.calendar`:
 
 ```json
 {
@@ -102,6 +102,47 @@ Versions 2 and 3 store this object in `project.data.calendar`:
 `workdays` is a nonempty array of distinct weekday numbers, where 0 is Sunday and 6 is Saturday. `holidays` contains at most 10,000 distinct dates in `YYYY-MM-DD` format; each must be a real date. Holiday names are strings up to 100 characters and may be empty. Holidays exclude dates from work even if their weekday is normally working. A version 1 file may omit `calendar`, or supply all seven weekdays with no holidays. A nontrivial calendar in a version 1 file is rejected. Calendar data is validated before the model can normalize it. Calendar-aware exclusive finishes must fit inside the supported date range.
 
 The **Calendar** dialog previews date changes before applying. It preserves durations, normalizes starts on days off forward, and applies dependency bounds when auto-scheduling is enabled. Calendar changes and affected dates form one undo step. Excel exports carry the same settings in a `Plan calendars` metadata sheet; native `.plan` files carry them directly in this object.
+
+## Saved project versions
+
+Version 4 adds the project's saved versions (the snapshots listed in the version menu) beside the live plan. `project.data` is always the live, editable plan, even if a saved version was on screen when the file was saved.
+
+```json
+"versions": [
+  {
+    "n": 1,
+    "name": "Baseline",
+    "note": "Approved by the steering group",
+    "at": "2026-11-16T09:30:00.000Z",
+    "by": "Ada Lovelace",
+    "auto": true,
+    "target": null,
+    "plan": {
+      "calendar": { "workdays": [1, 2, 3, 4, 5], "holidays": [] },
+      "tasks": [ … ],
+      "links": [ … ],
+      "nextId": 23,
+      "nextLink": 21
+    }
+  }
+],
+"nextVersion": 2
+```
+
+Both fields sit inside `project` and must appear together; version 1–3 files must not contain them.
+
+| Field | Meaning and requirements |
+|---|---|
+| `versions` | At most 200 entries. |
+| `versions[].n` | Version number shown as `v1`, `v2`, …: a unique positive safe integer. |
+| `versions[].name`, `versions[].note` | Nonblank name of at most 80 characters; note of at most 1,000 characters (may be empty). |
+| `versions[].at` | When the version was taken: a date-time string that JavaScript can parse. Plan writes ISO 8601 in UTC. |
+| `versions[].by` | Name of the signed-in Microsoft 365 user who took it, at most 120 characters; empty when not signed in. |
+| `versions[].auto`, `versions[].target` | The Auto-schedule setting and critical-path milestone ID (or `null` for project completion) when the version was taken. A version is shown with the dates it was saved with. |
+| `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in version 4; collapsed groups are not saved with versions. |
+| `nextVersion` | Positive safe integer greater than every `versions[].n`. Numbers of deleted versions are not reused. |
+
+Every saved plan is validated with the same task, relationship and calendar rules before the project opens; one invalid version rejects the whole file. Opening a file adds the project with its versions; the current plan is shown first.
 
 ## Preferences and reminders
 
@@ -121,7 +162,7 @@ A selected milestone critical-path target is an app view preference saved separa
 
 ## Data kept outside project files
 
-Project files include task owners, email addresses and reminder configuration. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
+Project files include task owners, email addresses, reminder configuration and saved project versions. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
 
 Native file connections are stored in browser-local IndexedDB and associated with a project tab. They can survive a refresh in that browser, but do not transfer through a `.plan` file or a database backup to another browser/computer. The browser may request file permission again. Duplicating a project does not duplicate its file connection. A tab from an app version that did not retain handles needs Save As once to establish a connection for subsequent Save operations.
 

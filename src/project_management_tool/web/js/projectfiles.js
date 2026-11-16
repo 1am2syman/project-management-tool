@@ -1,11 +1,11 @@
 import { diagnostics } from './diagnosticlog.js';
-import { cleanRem, isEmail, LINK_TYPES } from './model.js';
+import { cleanRem, cleanVersions, isEmail, LINK_TYPES, MAX_VERSIONS } from './model.js';
 import { createFileBindings } from './filebindings.js';
 import { calendarError, WorkingCalendar } from './calendar.js';
 
 export const PROJECT_FILE_EXTENSION = '.plan';
 export const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
-const FORMAT = 'plan-project', VERSION = 3;
+const FORMAT = 'plan-project', VERSION = 4;
 const TYPES = [{ description: 'Plan project', accept: { 'application/json': [PROJECT_FILE_EXTENSION] } }];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const integer = (v, min, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -54,40 +54,80 @@ function validateReminders(r) {
   if (!Array.isArray(r.muted) || r.muted.length > 500 || r.muted.some((email) => !isEmail(email))) invalid('muted reminder addresses are invalid.');
 }
 
+// Tasks, relationships and calendar of the live plan or of a saved version.
+function validatePlan(d, fileVersion, where = '') {
+  if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links)) invalid(`${where}tasks or relationships are missing.`);
+  const { ids, maxId, summaries } = validateTasks(d.tasks);
+  if (fileVersion < 3 && d.tasks.some((t) => t.scheduling != null)) invalid('explicit scheduling modes require file version 3.');
+  if (fileVersion >= 2 || d.calendar != null) {
+    const reason = calendarError(d.calendar); if (reason) invalid(`${where}calendar: ${reason}.`);
+    if (fileVersion === 1 && (d.calendar.workdays.length !== 7 || d.calendar.holidays.length)) invalid('a working calendar requires file version 2.');
+    const work = new WorkingCalendar(d.calendar);
+    if (d.tasks.some((t) => Math.abs(work.finish(t.start, t.dur)) > 99999999)) invalid(`${where}a task finish is outside the supported date range.`);
+  }
+  const maxLink = validateLinks(d.links, ids, summaries);
+  if (!integer(d.nextId, maxId + 1) || !integer(d.nextLink, maxLink + 1)) invalid(`${where}the next task or relationship ID is invalid.`);
+  return ids;
+}
+
+function validateVersions(list, nextVersion) {
+  if (!Array.isArray(list) || list.length > MAX_VERSIONS) invalid(`saved versions must be a list of at most ${MAX_VERSIONS}.`);
+  const numbers = new Set();
+  for (const v of list) {
+    if (!object(v) || !integer(v.n, 1) || numbers.has(v.n)) invalid('saved version numbers must be unique positive integers.');
+    const where = `version ${v.n}: `;
+    if (!text(v.name, 80) || !v.name.trim() || !text(v.note, 1000) || !text(v.by, 120)) invalid(`${where}name, note or author is invalid.`);
+    if (typeof v.at !== 'string' || !Number.isFinite(Date.parse(v.at)) || typeof v.auto !== 'boolean' || !(v.target === null || integer(v.target, 1))) invalid(`${where}date, scheduling or critical-path target is invalid.`);
+    validatePlan(v.plan, VERSION, where);
+    numbers.add(v.n);
+  }
+  if (!integer(nextVersion, Math.max(0, ...numbers) + 1)) invalid('the next version number is invalid.');
+}
+
 // Validate before the model's forgiving storage sanitizer can discard or repair file contents.
 function validateDocument(doc) {
   if (!object(doc) || doc.format !== FORMAT) invalid('choose a .plan file saved by Plan.');
-  if (![1, 2, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
+  if (![1, 2, 3, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
   const p = doc.project, prefs = doc.preferences;
   if (!object(p) || !text(p.name, 60) || !p.name.trim()) invalid('the project name is missing or too long.');
   if (!object(prefs) || typeof prefs.auto !== 'boolean' || typeof prefs.critical !== 'boolean') invalid('scheduling preferences are missing.');
   const d = p.data;
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links) || !Array.isArray(d.collapsed)) invalid('tasks, relationships or collapsed groups are missing.');
-  const { ids, maxId, summaries } = validateTasks(d.tasks);
-  if (doc.version < 3 && d.tasks.some((t) => t.scheduling != null)) invalid('explicit scheduling modes require file version 3.');
-  if (doc.version >= 2 || d.calendar != null) {
-    const reason = calendarError(d.calendar); if (reason) invalid(`calendar: ${reason}.`);
-    if (doc.version === 1 && (d.calendar.workdays.length !== 7 || d.calendar.holidays.length)) invalid('a working calendar requires file version 2.');
-    const work = new WorkingCalendar(d.calendar);
-    if (d.tasks.some((t) => Math.abs(work.finish(t.start, t.dur)) > 99999999)) invalid('a task finish is outside the supported date range.');
-  }
-  const maxLink = validateLinks(d.links, ids, summaries);
+  const ids = validatePlan(d, doc.version);
   if (d.collapsed.some((id) => !ids.has(id)) || new Set(d.collapsed).size !== d.collapsed.length) invalid('collapsed groups refer to missing or repeated tasks.');
-  if (!integer(d.nextId, maxId + 1) || !integer(d.nextLink, maxLink + 1)) invalid('the next task or relationship ID is invalid.');
   validateReminders(p.rem);
+  if (p.versions !== undefined || p.nextVersion !== undefined) {
+    if (doc.version < 4) invalid('saved versions require file version 4.');
+    validateVersions(p.versions, p.nextVersion);
+  }
   return doc;
 }
 
-export function encodeProjectFile(store) {
-  const data = JSON.parse(store.serialize());
-  // Newly inserted tasks acquire their default reminder flag on the next model load.
+// Plans carry reminder opt-outs as explicit booleans; newly inserted tasks acquire theirs on the next model load.
+function portablePlan(data) {
+  delete data.collapsed;
   for (const task of data.tasks) task.noRem = !!task.noRem;
-  let version = store.calendar.workdays.length === 7 && !store.calendar.holidays.length ? 1 : 2;
-  if (data.tasks.some((t) => t.scheduling)) version = VERSION;
+  return data;
+}
+
+export function encodeProjectFile(store) {
+  const sheet = store.sheet();
+  // While a saved version is on screen, the loaded tasks are that version; the file holds the live plan.
+  const data = JSON.parse(store.preview ? JSON.stringify(sheet.data) : store.serialize());
+  for (const task of data.tasks) task.noRem = !!task.noRem;
+  data.collapsed ??= [];
+  const versions = store.versions(), calendar = data.calendar || { workdays: [0, 1, 2, 3, 4, 5, 6], holidays: [] };
+  let version = calendar.workdays.length === 7 && !calendar.holidays.length ? 1 : 2;
+  if (data.tasks.some((t) => t.scheduling)) version = 3;
+  if (versions.length) version = VERSION;
+  const project = { name: sheet.name, data, rem: cleanRem(sheet.rem) };
+  if (versions.length) {
+    project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, plan: portablePlan(JSON.parse(v.data)) }));
+    project.nextVersion = Math.max(sheet.nextVersion || 1, versions.at(-1).n + 1);
+  }
   const doc = validateDocument({
-    format: FORMAT, version,
-    project: { name: store.sheet().name, data, rem: cleanRem(store.sheet().rem) },
-    preferences: { auto: store.readOnly ? false : store.auto, critical: store.critical },
+    format: FORMAT, version, project,
+    preferences: { auto: sheet.readOnly ? false : store.auto, critical: store.critical },
   });
   const contents = JSON.stringify(doc, null, 2) + '\n';
   if (new TextEncoder().encode(contents).length > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
@@ -104,6 +144,8 @@ export function parseProjectFile(contents) {
     name: doc.project.name, data: doc.project.data,
     rem: { ...cleanRem(doc.project.rem), on: false, auto: false },
     preferences: { auto: doc.preferences.auto, critical: doc.preferences.critical },
+    versions: cleanVersions((doc.project.versions || []).map((v) => ({ ...v, at: Date.parse(v.at), data: JSON.stringify(v.plan) }))),
+    nextVersion: doc.project.nextVersion,
   };
 }
 
@@ -117,7 +159,8 @@ export function openProjectFile(store, contents) {
   try {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
-    const id = store.addSheet(project.data, project.name, { rem: project.rem });
+    const extra = { rem: project.rem, ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
+    const id = store.addSheet(project.data, project.name, extra);
     apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
   } catch (error) { apply.fail(error); throw error; }
 }

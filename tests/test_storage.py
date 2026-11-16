@@ -146,6 +146,24 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.request(path="/api/history/999")[0], 404)
         self.assertEqual(storage.read()["state"], versions[-1])
 
+    def test_saved_project_versions_are_stored_once_and_named_in_history(self):
+        storage = persistence.ProjectStorage(self.directory)
+        revision = storage.write(None, STATE)["revision"]
+        state = copy.deepcopy(STATE)
+        plan = json.dumps(state["workbook"]["sheets"][0]["data"])
+        state["workbook"]["sheets"][0]["versions"] = [{"id": "v1", "n": 1, "name": "Baseline", "note": "", "at": 1, "by": "", "auto": False, "target": None, "data": plan}]
+        state["workbook"]["sheets"][0]["nextVersion"] = 2
+        revision = storage.write(revision, state)["revision"]
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated project versions")
+        self.assertEqual(storage.read()["state"], state)
+        state = copy.deepcopy(state)
+        state["workbook"]["sheets"][0]["data"]["tasks"][0]["name"] = "Edited after the snapshot"
+        storage.write(revision, state)
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Edited tasks")
+        with closing(sqlite3.connect(storage.path)) as db:
+            stored = [persistence.decode(value) for (value,) in db.execute("SELECT value FROM objects")]
+        self.assertEqual(sum(1 for value in stored if value == ["value", plan]), 1)
+
     def test_stale_revision_cannot_overwrite_newer_save(self):
         self.request({"revision": None, "state": STATE})
         self.assertEqual(self.request({"revision": None, "state": STATE})[0], 409)

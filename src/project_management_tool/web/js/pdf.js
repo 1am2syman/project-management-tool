@@ -2,7 +2,7 @@
 // summaries, milestones, FS/SS/FF/SF links, critical path, today line). Standard Helvetica fonts.
 import { MONTHS, dow, fmtDate, today, ymd, DAY } from './model.js';
 
-const PW = 842, PH = 595, M = 28;
+export const PW = 842, PH = 595, M = 28;
 const MAP = { 0x2013: 0x96, 0x2014: 0x97, 0x2026: 0x85, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2192: 0x3E, 0x25C6: 0x2A };
 const latin = (s) => {
   let o = '';
@@ -14,19 +14,19 @@ const rgb = (hex) => [0, 2, 4].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 2
 const n2 = (v) => (Math.round(v * 100) / 100).toString();
 
 const NARROW = new Set("iljt.,;:'|!()[]/ I`".split('')), MID = new Set('frt-"*'.split('')), WIDE = new Set('mwMW@%'.split(''));
-function tw(s, size, bold) {
+export function tw(s, size, bold) {
   let w = 0;
   for (const ch of latin(s)) w += NARROW.has(ch) ? 0.27 : MID.has(ch) ? 0.34 : WIDE.has(ch) ? 0.86 : ch >= '0' && ch <= '9' ? 0.556 : ch >= 'A' && ch <= 'Z' ? 0.68 : 0.52;
   return w * size * (bold ? 1.06 : 1);
 }
-function fit(s, maxW, size, bold) {
+export function fit(s, maxW, size, bold) {
   s = String(s); if (tw(s, size, bold) <= maxW) return s;
   while (s.length > 1 && tw(`${s}...`, size, bold) > maxW) s = s.slice(0, -1);
   return `${s}...`;
 }
 const monday = (d) => d - ((dow(d) + 6) % 7);
 
-class Page {
+export class Page {
   constructor() { this.o = []; }
   rect(x, y, w, h, fill) { if (w <= 0 || h <= 0) return; this.o.push(`${rgb(fill)} rg ${n2(x)} ${n2(PH - y - h)} ${n2(w)} ${n2(h)} re f`); }
   line(x1, y1, x2, y2, col, w = 0.5, dash) { this.o.push(`${dash ? `[${dash}] 0 d ` : ''}${rgb(col)} RG ${n2(w)} w ${n2(x1)} ${n2(PH - y1)} m ${n2(x2)} ${n2(PH - y2)} l S${dash ? ' [] 0 d' : ''}`); }
@@ -141,6 +141,11 @@ function projectPages(st, name, pages, slack) {
 export function buildPdf(projects, { slack = false } = {}) {
   const pages = [];
   for (const pr of projects) projectPages(pr.store, pr.name, pages, slack);
+  return pdfDocument(pages);
+}
+
+// Assemble A4-landscape pages into a PDF blob.
+export function pdfDocument(pages) {
   const objs = [];
   const add = (s) => objs.push(s) && objs.length;
   add('<< /Type /Catalog /Pages 2 0 R >>');

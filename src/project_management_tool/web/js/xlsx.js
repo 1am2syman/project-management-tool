@@ -10,7 +10,7 @@ const serial = (d) => d + 25569; // unix-day -> Excel serial
 
 // ---------- style registry ----------
 const BUILTIN_FMT = { '0': 1, '0%': 9 };
-class Styles {
+export class Styles {
   constructor() {
     this.fonts = [this.fontXml({})];
     this.fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
@@ -41,7 +41,7 @@ class Styles {
 }
 
 // ---------- sheet ----------
-class Sheet {
+export class Sheet {
   constructor(name, tab) { this.name = name; this.tab = tab; this.rows = new Map(); this.widths = []; this.merges = []; this.freeze = null; this.filter = null; this.heights = new Map(); this.outline = new Map(); this.grid = true; this.maxC = 0; this.landscape = true; this.validations = []; }
   set(r, c, v, s = 0) { if (!this.rows.has(r)) this.rows.set(r, new Map()); this.rows.get(r).set(c, { v, s }); this.maxC = Math.max(this.maxC, c); }
   cellXml(r, c, { v, s }) {
@@ -216,7 +216,7 @@ export async function buildXlsx(projects) {
   return pack(S, sheets);
 }
 
-async function pack(S, sheets) {
+export async function pack(S, sheets) {
   const files = [
     { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
     { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },

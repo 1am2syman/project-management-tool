@@ -1,5 +1,5 @@
 import { diagnostics } from './diagnosticlog.js';
-import { Store, fmtDate } from './model.js';
+import { Store, fmtDate, PREVIEW_LOCK } from './model.js';
 import { appState } from './appstate.js';
 import { openProjectStorage } from './storage.js';
 import { createHistory } from './history.js';
@@ -19,6 +19,8 @@ import { createPeople } from './people.js';
 import { createM365UI } from './m365ui.js';
 import { createReminders } from './reminders.js';
 import { createSharing } from './sharing.js';
+import { createVersionsUI } from './versionsui.js';
+import { createAnalysis } from './analysis.js';
 import * as m365 from './m365.js';
 import { initDensity, setDensity, fitDensity, dims } from './dims.js';
 
@@ -81,6 +83,8 @@ const reminders = createReminders(ctx);
 const sharing = createSharing(ctx);
 const criticalUI = createCriticalUI(ctx, grid);
 ctx.slack = createSlackUI(ctx, grid);
+ctx.analysis = createAnalysis(ctx);
+ctx.versions = createVersionsUI(ctx);
 
 function status() {
   const target = store.criticalTarget();
@@ -105,9 +109,13 @@ function renderAll() {
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
   $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto; criticalUI.render();
+  // A saved version on screen is read-only: its scheduling and critical-path target are the version's own.
+  $('#optAuto').disabled = !!store.preview; $('#critical-target').disabled = !!store.preview;
+  ctx.versions.render();
 }
 store.on((kind) => {
   if (kind !== 'drag') diagnostics.record('model.change', { kind, taskCount: store.tasks.length, linkCount: store.links.length });
+  if (kind === 'denied' && store.preview) { ctx.toast(PREVIEW_LOCK); return; }
   if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
   if (kind === 'drag') ctx.requestRender(); // coalesced to one render per frame, however many pointer events arrive
   else if (kind === 'sheet') {
@@ -116,6 +124,8 @@ store.on((kind) => {
       restoreSelection(); gantt.reset(); grid.resetScroll(); grid.invalidateHead(); renderAll(); render.end();
       requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
     } catch (error) { render.fail(error); throw error; }
+  } else if (kind === 'version') { // entering or leaving a saved version replaces the rows on screen
+    grid.invalidateHead(); gantt.closePop(); renderAll();
   } else ctx.requestRender();
 });
 
@@ -161,7 +171,7 @@ window.addEventListener('storage', (e) => {
 
 // keyboard
 document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back, #diagnostics-dialog[open]')) return; // dialogs own the keyboard
+  if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back, #diagnostics-dialog[open], #analysis:not([hidden])')) return; // dialogs own the keyboard
   const mod = e.metaKey || e.ctrlKey;
   // keys on a focused button/link/switch belong to that control, not to the grid (keeps Tab and Enter working for keyboard users)
   if (!mod && !e.altKey && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;

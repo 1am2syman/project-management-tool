@@ -8,12 +8,14 @@ Run these commands from the repository root:
 
 ```sh
 python -B -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs
+node --test tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs tests/versions.test.mjs tests/versiondiff.test.mjs tests/waterfall.test.mjs
 ```
 
 Use `python3` if that is your Python command. These commands use an existing development Python installation; with an already configured uv environment, `uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v` is equivalent.
 
 The diagnostics unit tests cover bounded recording, reload retention, redaction, pending-operation warnings, console/JavaScript/resource failures, fetch metadata, and precise Open stages including stalled reads and AbortError. The Python suite also checks the diagnostics endpoint without reading or initializing project storage and verifies that source changes alter its fingerprint.
+
+Version unit tests cover snapshots of the live plan, the read-only preview (edits, undo and saves never reach the live plan), saved dates under Auto-schedule, one-step undoable restore without reused IDs, rename/delete numbering, stale-window and read-only refusals, persistence, copies/duplicates/shared snapshots without versions, and format 4 `.plan` round-trips and validation. Comparison tests check working-day deltas across weekends and holidays, task/relationship/calendar changes by stable ID, ranked slips with causes, milestone status, critical-path and slack changes, owner totals, change-log filters, trends with missing milestones, the baseline Gantt, and that the PDF and Excel exports contain every analysis section. Waterfall tests check explicit schedule replay, no downstream double counting, named insertions/removals with connected dependency changes, parallel revisions and controlling-path switches, completed drivers, independence from milestone scope, zero-effect and offsetting changes, calendars, paused/manual/anchored dates, unexplained saved-date differences and baseline alignment, empty/cyclic graphs, input immutability, all four dependency types with signed lag, structural conversions, and sixty deterministic generated schedules. Chart tests check selection markup, empty-state geometry and escaping; exports check the PDF contribution chart/table and the Excel contribution and chart sheets, including pagination with carried-forward dates.
 
 Slack unit tests enumerate working-day starts with an independent daily oracle for every dependency type, positive/zero/negative lag, task/milestone combinations, multiple successors, tied limits and holidays. They also cover negative slack, terminal tasks, summary exclusions, milestone scope, free slack exceeding total slack, undo/calendar changes and portable-file recomputation.
 
@@ -37,12 +39,14 @@ node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
+node tests/browser-versions.mjs
 ```
 
 All suites start their own server on an available local port, use a temporary SQLite database and isolated browser profiles, and block requests to external services. They do not open or edit your saved projects. Each suite closes its browser and server and removes temporary files on normal completion or a caught test failure.
 
 | Suite | Coverage |
 |---|---|
+| `browser-versions.mjs` | Snapshot dialog and unchanged-plan notice, version list and keyboard closing, read-only preview (blocked typing, undo and toolbar actions; live plan unchanged on the server), Back to current, restore with “save current first”, undo/redo of a restore, rename and delete, version analysis sections, baseline/compared selection and swap, finish waterfall (unchanged/delayed/earlier comparison, single-source attribution, connected added/removed scope with labelled items imported through a real `.plan` document, table/chart selection, keyboard arrows and Home/End, multi-step details, smaller-width fit and screenshots at 100%, 150% and 200% display scaling), change-log filters and search, *Only changed rows*, keyboard isolation from the plan, PDF/Excel downloads, Compare to current, exporting the version on screen, Copy as new project, `.plan` Save/Open with versions while a version is shown, reload returning to the current plan, the empty analysis state, and banner/card fit at 1366px with screenshots at 1366 and 1920px. |
 | `browser-slack.mjs` | Total/free slack cells and keyboard inspection, latest dates and limiting successors, milestone scope and summaries, Off/Selected/All overlays, Fit bounds, passive slack tails during move/resize/cancel/undo, unchanged project data, SQLite preference restoration across profiles, Excel values and re-import, PDF columns/options/download, read-only inspection, narrow dialog layout, and row/tail alignment, working-calendar tail end plus screenshots at 100%, 150% and 200% device scaling in both densities. |
 | `browser-diagnostics.mjs` | Bottom-bar Log clicks, JSON downloads, browser/runtime metadata, cookie/storage checks, errors and request metadata, secret/project-content exclusion, retention through refresh, keyboard isolation, narrow footer and Log availability when the main module cannot load. |
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
@@ -61,6 +65,7 @@ node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
+node tests/browser-versions.mjs
 ```
 
 ### Visual rendering checks
@@ -71,7 +76,7 @@ Display scaling changes the browser's device pixel ratio; this is separate from 
 
 ### Optional screenshots
 
-By default, screenshots are written inside the suite's temporary directory and removed during cleanup. To keep screenshots for review, set `PLAN_TEST_ARTIFACTS` to a directory outside the checkout. The structure, fit and slack suites create separate `structure/`, `fit/` and `slack/` subdirectories there, including a failure screenshot when possible. The diagnostics suite writes `diagnostics-report.json` directly into the chosen directory.
+By default, screenshots are written inside the suite's temporary directory and removed during cleanup. To keep screenshots for review, set `PLAN_TEST_ARTIFACTS` to a directory outside the checkout. The structure, fit, slack and versions suites create separate `structure/`, `fit/`, `slack/` and `versions/` subdirectories there, including a failure screenshot when possible. The diagnostics suite writes `diagnostics-report.json` directly into the chosen directory.
 
 For example, in PowerShell:
 
@@ -81,6 +86,7 @@ node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
+node tests/browser-versions.mjs
 ```
 
 In a POSIX shell:
@@ -90,6 +96,7 @@ PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-structure.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-fit.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-diagnostics.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-slack.mjs
+PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-versions.mjs
 ```
 
 These optional outputs can be deleted after review. Generated screenshots, logs, databases and local agent/check ledgers do not belong in commits. Keep one-off comparison scripts and source snapshots outside the checkout and remove them with their screenshots after validation. The existing regression suites are maintained development tools and stay in the repository.
@@ -99,6 +106,10 @@ For a clean folder copy to another user, use GitHub's repository ZIP or `git arc
 ## Verification limits
 
 Automated native picker results are supplied by the tests. The file-handle suite uses real browser-private file handles to exercise writes and persistence across refresh; it does not operate the OS Open/Save As dialogs. Permission, external-edit conflicts, cancellation and uncertain save outcomes also have unit coverage. A separate manual check on Linux used an isolated database/profile and the real native chooser to open the reported `.plan` file, then clicked Log → Download log and verified all Open/IndexedDB stages in the actual download. This does not verify the Windows chooser.
+
+Version previews and the version analysis overlay were reviewed in Chromium on Linux at 1366×768 and 1920×1000. The analysis layout also has normal and long-name captures at 1024px and 800px. The overlay leads with finish movement and four supporting metrics; **All metrics**, **Why this step?**, **All contributions** and **Calculation notes** reveal the remaining information on demand. The change log groups fields under each item, the milestone legend can emphasize a series, and **Full names** expands wrapped Gantt labels. Browser checks cover section highlighting on clicks and manual scrolling, disclosure access, table-to-inspector selection, visible focus on unselected steps, both waterfall endpoints fitting in dense comparisons, and the compact header. These checks use isolated databases and profiles.
+
+The finish waterfall was also reviewed at 100%, 150% and 200% display scaling, including a connected addition/removal example. The exported analysis PDF's waterfall chart and contribution table were rendered and reviewed; the Excel waterfall chart and contribution sheets were rendered through LibreOffice. The workbook has not been opened in Microsoft Excel.
 
 Slack tails were reviewed visually in Chromium on Linux at 100%, 150% and 200% device scaling in both densities; other browsers and Windows display scaling have not been reviewed.
 
