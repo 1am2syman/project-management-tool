@@ -1,17 +1,19 @@
 # Development and testing
 
-Plan uses Python 3.10+ and browser ES modules without a front-end build step. Run it with `uv run --locked project-management-tool` or `python start.py`. Node.js is needed only for JavaScript regression tests; Playwright is optional for browser tests.
+Plan uses Python 3.10+ and browser ES modules without a front-end build step. On Windows, `start.bat` uses the bundled Python runtime with no downloads or package installation. With an existing Python installation, run `python start.py`; `uv run --locked project-management-tool` is also available for development but can download Python and build dependencies during setup. Node.js is needed only for JavaScript regression tests; Playwright is optional for browser tests.
 
 ## Regression tests
 
 Run these commands from the repository root:
 
 ```sh
-uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v
+python -B -m unittest discover -s tests -p "test_*.py" -v
 node --test tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs
 ```
 
-The Python suite covers SQLite persistence, saved history, conflict handling and launcher behavior. JavaScript tests cover task hierarchy and subtree movement, relationship validation, working calendars, all four dependency types, critical-path calculations, scheduling modes, project-file validation, native Save behavior and undo/redo. Targeted critical-path tests compare float against an independent exhaustive schedule oracle for mixed endpoint types, signed lags, milestones and holidays. They also verify independent/shared branches, unchanged dates/history, per-project persistence, export views and invalid/deleted/converted target fallback.
+Use `python3` if that is your Python command. These commands use an existing development Python installation; with an already configured uv environment, `uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v` is equivalent.
+
+The Python suite covers SQLite persistence, saved history, conflict handling and launcher behavior. Runtime tests validate the bundled Windows files against the recorded checksums and upstream SPDX metadata, check x64 executable headers, and verify the standard-library ZIP and isolation configuration. A Windows-only test executes the bundled interpreter and app help; the source launcher integration test uses the bundled interpreter on Windows and isolated system Python on other systems, covering paths with spaces, argument forwarding, SQLite saves and running-instance reuse. JavaScript tests cover task hierarchy and subtree movement, relationship validation, working calendars, all four dependency types, critical-path calculations, scheduling modes, project-file validation, native Save behavior and undo/redo. Targeted critical-path tests compare float against an independent exhaustive schedule oracle for mixed endpoint types, signed lags, milestones and holidays. They also verify independent/shared branches, unchanged dates/history, per-project persistence, export views and invalid/deleted/converted target fallback.
 
 ## Optional browser tests
 
@@ -78,8 +80,10 @@ PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-fit.mjs
 
 These optional outputs can be deleted after review. Generated screenshots, logs, databases and local agent/check ledgers do not belong in commits. Keep one-off comparison scripts and source snapshots outside the checkout and remove them with their screenshots after validation. The existing regression suites are maintained development tools and stay in the repository.
 
+For a clean folder copy to another user, use GitHub's repository ZIP or `git archive --format=zip --output=../plan.zip HEAD` from the committed checkout. Both include the bundled Windows runtime and maintained tests while excluding ignored local caches, virtual environments, agent notes and validation output. When cleaning a working checkout, stop any processes using its virtual environment before removing `.venv`; remove generated `__pycache__`, `.ruff_cache`, `.pytest_cache` and completed local validation output as needed. Keep the entire `runtime/windows-x64` directory, its license, manifest and SPDX metadata together.
+
 ## Verification limits
 
 Native picker results are supplied by the tests. The file-handle suite uses real browser-private file handles to exercise writes and persistence across refresh; it does not operate the OS Open/Save As dialogs. Permission, external-edit conflicts, cancellation and uncertain save outcomes also have unit coverage.
 
-Microsoft 365 behavior has been checked with mocked Graph responses, not a live tenant. Launcher and persistence tests run on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; the PowerShell examples above document setup rather than a completed Windows test run.
+Microsoft 365 behavior has been checked with mocked Graph responses, not a live tenant. Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.

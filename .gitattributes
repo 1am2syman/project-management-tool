@@ -1,1 +1,5 @@
 *.bat text eol=crlf
+
+# Preserve the vendored Python distribution byte-for-byte, including text files.
+runtime/windows-x64/** -text -diff
+runtime/*.spdx.json -text whitespace=cr-at-eol

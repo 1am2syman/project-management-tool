@@ -6,7 +6,7 @@ and Microsoft 365 integration (people directory, deadline reminders, read-only s
 
 ## Run on Windows
 
-With **Git and uv already installed**:
+On **64-bit Windows 10/11**, the repository includes Python; no Python or uv installation is needed. To get the app with Git for Windows:
 
 1. Clone the repository:
 
@@ -16,17 +16,19 @@ With **Git and uv already installed**:
 
 2. Double-click **start.bat** inside the `project-management-tool` folder.
 
-The launcher runs `uv run --locked project-management-tool`. uv automatically downloads Python if needed, creates the project's `.venv`, and installs the project using `uv.lock`. The app opens in your default browser at **http://127.0.0.1:5173/**. The first run needs internet access for setup; later launches reuse the environment. No manual Python installation, pip commands, Node.js, or ZIP is required.
+The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` to run `start.py` directly. The app opens in your default browser at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
+
+If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat** (or `git pull --ff-only`), then launch **start.bat** again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
 
 Keep the launcher window open while using Plan. Wait for **Saved to this computer** before closing the app, then stop the server with Ctrl+C or close its window. Run `start.bat` again to reopen your saved app state automatically. Double-clicking it while Plan is running opens that instance for the same database. If another program uses port 5173, run `start.bat --port 5174`.
 
-On macOS/Linux, or from a terminal on Windows:
+On macOS/Linux with Python 3.10 or newer:
 
 ```bash
-uv run --locked project-management-tool
+python3 start.py
 ```
 
-The standard-library source launcher, `python start.py`, is also available if you already have Python 3.10 or newer.
+If you already use uv for development, `uv run --locked project-management-tool` remains available. uv may download Python and build dependencies when setting up that environment; use `start.bat` on restricted Windows machines. With an existing Python 3.10+ installation, `python start.py` also works.
 
 ## Update the app
 
@@ -34,7 +36,7 @@ On Windows:
 
 1. Wait for **Saved to this computer**, then stop Plan by closing its launcher window or pressing Ctrl+C there.
 2. Double-click **update.bat** inside the cloned repository. It pulls the latest updates and keeps the window open so you can read the result.
-3. Run **start.bat** again. uv updates the environment as needed.
+3. Run **start.bat** again. It uses the updated source and bundled runtime directly.
 
 The page does not hot reload. For front-end-only JS/CSS/HTML updates, the running server reads the changed files directly with caching disabled: refresh the browser to load them. Python server or dependency updates require a server restart. The stop/update/start procedure above works for both kinds of update.
 
@@ -75,7 +77,7 @@ Serving only the `web` directory with a static server is still supported, but sh
 
 ## Microsoft 365 (optional)
 
-After the first uv setup, project planning and local saves work offline. To enable the Microsoft 365 features, register the app once:
+Project planning and local saves work offline from the first launch. To enable the Microsoft 365 features, connect to the internet and register the app once:
 
 1. Entra admin centre › App registrations › **New registration** (this organisation only).
 2. Authentication › **Single-page application** › redirect URI = the URL shown in *Microsoft 365 › Settings* (it ends in `redirect.html`).

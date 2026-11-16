@@ -216,12 +216,13 @@ except ConflictError:
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(http_request(self.server.server_port, "/plan.db")[0], 404)
 
-    def test_source_launcher_from_path_with_spaces_and_second_launch_reuse(self):
+    def test_isolated_source_launcher_from_path_with_spaces_and_second_launch_reuse(self):
         with tempfile.TemporaryDirectory(prefix="Plan copy with spaces ") as destination:
             root = Path(destination)
             shutil.copy(ROOT / "start.py", root)
             shutil.copytree(ROOT / "src", root / "src", ignore=shutil.ignore_patterns("__pycache__"))
-            args = [sys.executable, str(root / "start.py"), "--no-open", "--data-dir", str(self.directory), "--port"]
+            python = ROOT / "runtime/windows-x64/python.exe" if sys.platform == "win32" else sys.executable
+            args = [str(python), "-I", "-B", str(root / "start.py"), "--no-open", "--data-dir", str(self.directory), "--port"]
             proc = subprocess.Popen([*args, "0"], cwd=self.temp.name, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 lines = queue.Queue()
@@ -235,6 +236,14 @@ except ConflictError:
                 status, _, raw = http_request(port, "/api/health")
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(raw)["dataFile"], str(self.directory / "plan.db"))
+                body = json.dumps({"revision": None, "state": STATE}).encode()
+                status, _, raw = http_request(port, body=body, headers={"Content-Type": "application/json"})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw)["revision"], "1")
+                status, _, raw = http_request(port)
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw)["state"], STATE)
+                self.assertEqual(http_request(port, "/js/main.js")[0], 200)
                 second = subprocess.run([*args, port], cwd=self.temp.name, capture_output=True, text=True, timeout=10)
                 self.assertEqual(second.returncode, 0, second.stderr)
                 self.assertIn("already running", second.stdout)
