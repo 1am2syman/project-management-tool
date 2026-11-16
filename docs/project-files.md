@@ -6,17 +6,21 @@ See [the README](../README.md#project-files-save-save-as-and-open) for browser s
 
 ## Versions 1, 2 and 3
 
-The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), and `version: 3` (explicit task scheduling modes). It writes version 3 when any task has an explicit scheduling mode, otherwise version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2 and 3 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
+The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), and `version: 3` (explicit task scheduling modes). It writes version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2 and 3 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
 
-This is a complete, valid file containing one task:
+This is a complete version 3 file containing one automatic task:
 
 ```json
 {
   "format": "plan-project",
-  "version": 1,
+  "version": 3,
   "project": {
     "name": "Example project",
     "data": {
+      "calendar": {
+        "workdays": [0, 1, 2, 3, 4, 5, 6],
+        "holidays": []
+      },
       "tasks": [
         {
           "id": 1,
@@ -28,7 +32,8 @@ This is a complete, valid file containing one task:
           "owner": "",
           "email": "",
           "noRem": false,
-          "ms": false
+          "ms": false,
+          "scheduling": "auto"
         }
       ],
       "links": [],
@@ -66,7 +71,7 @@ This is a complete, valid file containing one task:
 | `tasks[].level` | Nonnegative integer hierarchy depth. The first task has level 0; a row can be at most one level deeper than the preceding row. A task followed by deeper rows is a summary. |
 | `tasks[].start` | Integer calendar day counted from 1970-01-01. For example, 20759 means 2026-11-02. |
 | `tasks[].dur` | Integer duration in project working days (calendar days for version 1). A regular task lasts at least one working day. A milestone (`ms: true`) has duration 0. The computed finish is exclusive: one day after the last occupied workday. |
-| `tasks[].scheduling` | Optional `"auto"` or `"manual"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Absence means the legacy date-anchor behavior (may be delayed but not pulled earlier). Summary dates still roll up from children. |
+| `tasks[].scheduling` | Optional `"auto"`, `"manual"` or `"anchor"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Anchors may be delayed but are not pulled earlier. An absent mode defaults to Auto, including in older files; enabling Auto-schedule can therefore remove existing gaps. Explicit Manual and Anchor modes are preserved. Summary dates still roll up from children. |
 | `tasks[].progress` | Integer percentage from 0 through 100. |
 | `tasks[].owner`, `tasks[].email` | Owner display name (at most 80 characters) and email address (at most 254 characters). Both can be empty strings; a nonempty email must pass the app's email validation. |
 | `tasks[].noRem`, `tasks[].ms` | Boolean flags for skipping reminders and marking a milestone. |

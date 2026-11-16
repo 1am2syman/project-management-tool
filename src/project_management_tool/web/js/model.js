@@ -111,7 +111,7 @@ function sanitize(d) {
     const rawDuration = Math.round(Number(r.dur));
     const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, ...(['auto', 'manual'].includes(r.scheduling) ? { scheduling: r.scheduling } : {}) });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto' });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -425,7 +425,7 @@ export class Store {
   scheduling(id) {
     const t = this.byId.get(id);
     if (this.info.get(id)?.summary) return { mode: 'summary', mark: 'Σ', label: 'Summary', detail: 'Dates roll up from child tasks' };
-    if (t?.scheduling === 'auto') return { mode: 'auto', mark: 'A', label: this.auto ? 'Auto' : 'Auto paused', detail: 'Earliest date from connections and the project calendar' + (this.auto ? '' : '; enable Auto-schedule for live updates') };
+    if (t?.scheduling !== 'manual' && t?.scheduling !== 'anchor') return { mode: 'auto', mark: 'A', label: this.auto ? 'Auto' : 'Auto paused', detail: 'Earliest date from connections and the project calendar; without predecessors, keeps its starting date' + (this.auto ? '' : '; enable Auto-schedule for live updates') };
     if (t?.scheduling === 'manual') return { mode: 'manual', mark: 'M', label: 'Manual', detail: 'Dates set by you; connections do not move this task' };
     return { mode: 'anchor', mark: 'D', label: 'Date anchor', detail: 'Keeps its chosen date; Auto-schedule can delay it to satisfy connections. Choose Auto-calculate to remove this date anchor.' };
   }
@@ -435,12 +435,11 @@ export class Store {
     if (!t || !f) return 'Task no longer exists';
     if (f.summary) return 'Summary dates come from their children';
     if (!['auto', 'manual', 'anchor'].includes(mode)) return 'Unknown scheduling mode';
-    if (mode === 'auto' && !this.incoming(id).length) return 'Connect a predecessor before calculating this task';
-    const lb = this.lowerBound(id);
-    if (mode === 'auto' && (!Number.isSafeInteger(lb) || Math.abs(this.work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
+    const lb = this.lowerBound(id), linked = this.incoming(id).length > 0;
+    if (mode === 'auto' && linked && (!Number.isSafeInteger(lb) || Math.abs(this.work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
     this.tx(() => {
-      if (mode === 'anchor') delete t.scheduling; else t.scheduling = mode;
-      if (mode === 'auto') t.start = this.work.next(lb);
+      t.scheduling = mode;
+      if (mode === 'auto' && linked) t.start = this.work.next(lb);
     });
     return null;
   }
@@ -449,7 +448,7 @@ export class Store {
       const lb = this.lowerBound(id);
       const t = this.byId.get(id);
       if (t.scheduling === 'manual') continue;
-      t.start = this.work.next(t.scheduling === 'auto' && Number.isFinite(lb) ? lb : Math.max(t.start, lb));
+      t.start = this.work.next(t.scheduling !== 'anchor' && Number.isFinite(lb) ? lb : Math.max(t.start, lb));
     }
   }
   // Everything connected to a task: WBS ancestors / descendants and the transitive dependency chain in both directions.
@@ -542,12 +541,12 @@ export class Store {
     const f = this.info.get(id);
     if (f.summary) {
       const ids = this.descLeaves(id), set = new Set(ids); let d = delta;
-      if (this.auto) for (const lid of ids) if (!this.byId.get(lid).scheduling) d = Math.max(d, this.lowerBound(lid, set) - this.byId.get(lid).start);
+      if (this.auto) for (const lid of ids) if (this.byId.get(lid).scheduling === 'anchor') d = Math.max(d, this.lowerBound(lid, set) - this.byId.get(lid).start);
       for (const lid of ids) { const t = this.byId.get(lid); if (t.scheduling === 'auto') t.scheduling = 'manual'; t.start = this.work.next(t.start + d); }
     } else {
       const t = this.byId.get(id); let s = t.start + delta;
       if (t.scheduling === 'auto') t.scheduling = 'manual';
-      if (this.auto && !t.scheduling) s = Math.max(s, this.lowerBound(id));
+      if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.lowerBound(id));
       t.start = this.work.next(s);
     }
   }
@@ -555,10 +554,10 @@ export class Store {
     const t = this.byId.get(id), end = this.finish(t);
     if (t.scheduling === 'auto') t.scheduling = 'manual';
     if (side === 'l') {
-      let s = t.start + delta; if (this.auto && !t.scheduling) s = Math.max(s, this.startLB(id));
+      let s = t.start + delta; if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.startLB(id));
       s = Math.min(this.work.next(s), this.work.next(end - 1, -1)); t.start = s; t.dur = Math.max(1, this.work.count(s, end));
     } else {
-      let e = end + delta; if (this.auto && !t.scheduling) e = Math.max(e, this.endLB(id));
+      let e = end + delta; if (this.auto && t.scheduling === 'anchor') e = Math.max(e, this.endLB(id));
       t.dur = Math.max(1, this.work.count(t.start, e));
     }
   }
@@ -595,7 +594,7 @@ export class Store {
   insertTask(referenceId, ms = false, position = 'after') {
     const place = this.insertion(referenceId, position); if (place.error) return { error: place.error };
     const id = this.tx(() => {
-      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level: place.level, start: this.work.next(place.start), dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms };
+      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level: place.level, start: this.work.next(place.start), dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms, scheduling: 'auto' };
       this.tasks.splice(place.index, 0, t);
       if (position === 'child') this.collapsed.delete(referenceId);
       return t.id;
@@ -729,7 +728,7 @@ export class Store {
     if (col === 'end') {
       if (f.summary) return 'Summary dates come from their children';
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date';
-      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = this.work.next(d); } else { t.dur = Math.max(1, this.work.count(t.start, d + 1)); if (this.auto && !t.scheduling) t.dur = Math.max(t.dur, this.work.count(t.start, this.endLB(id))); } });
+      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = this.work.next(d); } else { t.dur = Math.max(1, this.work.count(t.start, d + 1)); if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, this.work.count(t.start, this.endLB(id))); } });
       return null;
     }
     if (col === 'dur') {

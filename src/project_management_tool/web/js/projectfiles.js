@@ -19,7 +19,7 @@ function validateTasks(tasks) {
     if (!integer(t.level, 0, previousLevel + 1)) invalid(`task ${t.id} has an invalid hierarchy level.`);
     // Stay inside JavaScript's representable date range, including the exclusive finish date.
     if (!integer(t.start, -99999999, 99999999) || typeof t.ms !== 'boolean' || !integer(t.dur, t.ms ? 0 : 1, 99999999) || (t.ms && t.dur !== 0) || Math.abs(t.start + t.dur) > 99999999) invalid(`task ${t.id} has an invalid date or duration.`);
-    if (t.scheduling != null && !['auto', 'manual'].includes(t.scheduling)) invalid(`task ${t.id} has invalid scheduling mode.`);
+    if (t.scheduling != null && !['auto', 'manual', 'anchor'].includes(t.scheduling)) invalid(`task ${t.id} has invalid scheduling mode.`);
     if (!integer(t.progress, 0, 100) || typeof t.noRem !== 'boolean') invalid(`task ${t.id} has invalid progress or reminder settings.`);
     ids.add(t.id); maxId = Math.max(maxId, t.id); previousLevel = t.level;
   }
@@ -212,7 +212,7 @@ export function createProjectFiles(ctx, browser = window) {
 
   function paintSave() {
     if (!normalSave) return;
-    normalSave.textContent = store.sheet().fileToken ? 'Save' : 'Save…';
+    normalSave.querySelector('.tool-label').textContent = store.sheet().fileToken ? 'Save' : 'Save…';
     normalSave.title = store.sheet().fileToken ? 'Save changes to the connected .plan file (Ctrl/⌘+S)' : 'Choose a .plan file for this project (Ctrl/⌘+S)';
   }
   store.on(paintSave); paintSave();

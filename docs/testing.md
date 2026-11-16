@@ -36,7 +36,7 @@ Both suites start their own server on an available local port, use a temporary S
 | Suite | Coverage |
 |---|---|
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
-| `browser-fit.mjs` | Measured Fit label bounds, header/footer placement, adaptive density on resize/collapse, grid/Gantt scheduling actions, mode indicators, undo/redo, saving an active edit, connected file reuse after refresh and Save As. |
+| `browser-fit.mjs` | Measured Fit label bounds, single-row responsive toolbar and accessible icon actions, full switch labels at 125–200% zoom and narrow pane splits, sheet/Gantt alignment, adaptive density on resize/collapse, scheduling actions and sheet-only badges, undo/redo, saving an active edit, connected file reuse after refresh and Save As. |
 
 ### Browser and Python selection
 
@@ -50,8 +50,6 @@ $env:PLAYWRIGHT_CHROMIUM = "C:\Program Files\Google\Chrome\Application\chrome.ex
 node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 ```
-
-Both suites pass with Chromium 151 on Linux. Playwright's headless-shell build 1243 exited with SIGTRAP during the restored browser-private file-handle test after refresh. Use an installed Chromium for that flow if the bundled build has this problem. The crash was not reproduced in the installed Chromium; its underlying browser cause has not been determined.
 
 ### Optional screenshots
 

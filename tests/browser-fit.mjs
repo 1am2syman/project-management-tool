@@ -33,7 +33,7 @@ try {
   await page.goto(url); await page.locator('#gbody .r[data-id="21"]').waitFor();
   await page.evaluate(async () => {
     const { Store, D } = await import('./js/model.js'), { encodeProjectFile } = await import('./js/projectfiles.js');
-    const s = new Store(); s.auto = true; const day = D('2026-11-01');
+    const s = new Store(); s.auto = false; const day = D('2026-11-01');
     const t = (id, name, offset, dur = 1, level = 0, ms = false) => ({ id, name, level, start: day + offset, dur: ms ? 0 : dur, ms, progress: 0, owner: '' });
     s.load({ tasks: [t(1, 'Commercial Procurement', 0, 1), t(2, 'Sleeve', 12, 1, 1), t(3, 'Artwork sharing', 12, 1, 2), t(4, 'PM Connection', 30, 40, 2), t(5, 'PM QA', 84, 1, 2), t(6, 'PM Readiness', 85, 1, 2), t(7, 'RM', 78, 1, 1), t(8, 'RM transfer', 78, 8, 2), t(9, 'RM readiness', 87, 1, 2), t(10, 'FG Production Readiness', 95, 0, 1, true)], links: [{ id: 'l1', from: 3, to: 5, type: 'FS', lag: 0 }, { id: 'l2', from: 5, to: 6, type: 'FS', lag: 0 }], collapsed: [], nextId: 11, nextLink: 3 });
     s.renameSheet(s.wb.active, 'MEZ transition · Commercial Procurement & Production Launch');
@@ -65,13 +65,33 @@ try {
   await row(2).locator('.tog:not(.sp)').click(); await settle(); const collapsed = await geometry(); assert(collapsed.row > g.row); await row(2).locator('.tog:not(.sp)').click();
   await page.locator('[data-act=density]').click(); await settle(); assert.equal((await geometry()).row, 24); await page.locator('[data-act=density]').click();
   console.log('PASS Fit includes actual bar/summary/milestone labels; header/footer and adaptive geometry resize and collapse correctly');
+  assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto paused');
+  const paused = (await data()).tasks.find((t) => t.id === 5).start;
+  await page.locator('label.switch').filter({ has: page.locator('#optAuto') }).click();
+  assert((await data()).tasks.find((t) => t.id === 5).start < paused, 'global toggle pulls default Auto tasks earlier');
+  assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto');
+  const calculated = (await data()).tasks.find((t) => t.id === 5).start;
+  await page.locator('label.switch').filter({ has: page.locator('#optAuto') }).click();
+  await row(3).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-11-10'); await page.keyboard.press('Enter');
+  assert.equal((await data()).tasks.find((t) => t.id === 5).start, calculated, 'toggle off pauses dependency updates');
+  await page.locator('label.switch').filter({ has: page.locator('#optAuto') }).click();
+  assert.equal((await data()).tasks.find((t) => t.id === 5).start, calculated - 3);
+  await row(3).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-11-20'); await page.keyboard.press('Enter');
+  assert.equal((await data()).tasks.find((t) => t.id === 5).start, calculated + 7, 'Auto follows a later predecessor');
+  await row(3).locator('[data-col=name]').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click();
+  assert.equal(await row(3).locator('.schedule-badge').getAttribute('aria-label'), 'Auto', 'a root can return to Auto without predecessors');
+  await page.locator('.bar[data-id="5"]').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Use date anchor', exact: true }).click();
+  assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Date anchor');
+  await row(5).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-12-20'); await page.keyboard.press('Enter');
   await page.locator('.bar[data-id="5"]').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click();
   assert.equal((await data()).tasks.find((t) => t.id === 5).start, (await data()).tasks.find((t) => t.id === 3).start + 1);
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto');
   await row(6).locator('[data-col=name]').click({ button: 'right' }); await page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click();
-  assert.equal(await row(6).locator('.schedule-badge').getAttribute('aria-label'), 'Manual'); assert.equal(await page.locator('.bar[data-id="6"]').getAttribute('data-scheduling'), 'manual');
-  await page.keyboard.press('Control+z'); assert.equal((await data()).tasks.find((t) => t.id === 6).scheduling, undefined); await page.keyboard.press('Control+Shift+z');
+  assert.equal(await row(6).locator('.schedule-badge').getAttribute('aria-label'), 'Manual'); assert.equal(await page.locator('.bar[data-id="6"]').getAttribute('data-scheduling'), null);
+  await page.keyboard.press('Control+z'); assert.equal((await data()).tasks.find((t) => t.id === 6).scheduling, 'auto'); await page.keyboard.press('Control+Shift+z');
   await fitAndMeasure(); await page.setViewportSize({ width: 1280, height: 800 }); await settle(); await fitAndMeasure();
   await page.screenshot({ path: join(evidence, 'fit-and-modes.png') });
   console.log('PASS task and Gantt menus calculate earliest dates, show mode badges and preserve undo/redo');
@@ -83,6 +103,7 @@ try {
   await row(5).locator('[data-col=name]').dblclick(); await page.locator('.editor').fill('Saved after refresh'); await page.keyboard.press('Control+s');
   await page.waitForFunction(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan')).getFile()).text().then((s) => s.includes('Saved after refresh')));
   assert.equal(await page.evaluate(() => window.filePicks), 0);
+  await page.waitForFunction(() => !document.querySelector('#saveprojectbtn').disabled);
   await page.keyboard.press('Control+Shift+s'); await page.waitForFunction(() => window.filePicks === 1);
   await page.waitForFunction(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('save-as.plan')).getFile()).text().then((s) => s.includes('Saved after refresh')));
   await saved(); await settle();
@@ -91,5 +112,55 @@ try {
   await page.setViewportSize({ width: 1000, height: 740 }); await settle(); await fitAndMeasure();
   await page.setViewportSize({ width: 760, height: 780 }); await settle();
   await row(5).locator('[data-col=name]').click({ button: 'right' }); const m = await page.getByRole('menu', { name: 'Task actions' }).boundingBox(); assert(m.x >= 0 && m.y >= 0 && m.x + m.width <= 760 && m.y + m.height <= 780);
+  await page.keyboard.press('Escape');
+  async function responsiveLayout(width, zoom = 1) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.evaluate((factor) => { document.documentElement.style.zoom = String(factor); }, zoom);
+    await settle(); await settle();
+    const measured = await page.evaluate(() => {
+      const rect = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width }; };
+      const strip = document.querySelector('.strip');
+      return {
+        buttons: [...document.querySelectorAll('.tools button')].map(rect),
+        toolbar: rect(document.querySelector('.topbar')),
+        toolsOverflow: document.querySelector('.tools').scrollWidth - document.querySelector('.tools').clientWidth,
+        auto: rect(document.querySelector('#optAuto').closest('label')),
+        switches: [...strip.querySelectorAll('label.switch')].map(rect),
+        strip: rect(strip), overflow: strip.scrollWidth - strip.clientWidth,
+        formula: rect(document.querySelector('.fbar')),
+        row: rect(document.querySelector('#gbody .r[data-id]')),
+        bar: rect(document.querySelector('.bar')),
+        labelsHidden: [...document.querySelectorAll('.tools .tool-label')].every((el) => getComputedStyle(el).display === 'none'),
+      };
+    });
+    const description = JSON.stringify({ width, zoom, measured });
+    assert(Math.max(...measured.buttons.map((b) => b.top)) - Math.min(...measured.buttons.map((b) => b.top)) < 1, description);
+    assert(measured.toolsOverflow <= 1, description);
+    if (width / zoom <= 1550) assert(measured.labelsHidden, description);
+    assert(measured.overflow <= 1, description);
+    for (const label of measured.switches) {
+      assert(label.left >= measured.strip.left && label.right <= measured.strip.right + 1, description);
+      assert(label.top >= measured.strip.top && label.bottom <= measured.strip.bottom + 1, description);
+    }
+    assert(Math.abs(measured.formula.bottom - measured.strip.bottom) < 1, description);
+    assert(Math.abs((measured.row.top + measured.row.bottom) / 2 - (measured.bar.top + measured.bar.bottom) / 2) < 2 * zoom, description);
+  }
+  for (const width of [1920, 1440, 1280, 1000, 760]) await responsiveLayout(width);
+  await page.screenshot({ path: join(evidence, 'toolbar-760.png') });
+  for (const zoom of [1.25, 1.5, 2]) await responsiveLayout(1440, zoom);
+  await page.screenshot({ path: join(evidence, 'toolbar-zoom-200.png') });
+  await responsiveLayout(1440);
+  // A dragged splitter changes the available control width independently of the viewport.
+  await page.evaluate(() => document.documentElement.style.setProperty('--gridw', '1050px'));
+  await settle(); await settle();
+  const auto = await page.locator('#optAuto').evaluate((el) => { const a = el.closest('label').getBoundingClientRect(), b = document.querySelector('.strip').getBoundingClientRect(); return { left: a.left, right: a.right, paneLeft: b.left, paneRight: b.right }; });
+  assert(auto.left >= auto.paneLeft && auto.right <= auto.paneRight, JSON.stringify(auto));
+  await page.screenshot({ path: join(evidence, 'toolbar-narrow-timeline.png') });
+  assert.equal(await page.locator('.schedule-legend').count(), 0);
+  const decorations = await page.locator('.bar:not(.summary)').evaluateAll((bars) => bars.map((bar) => ({ border: getComputedStyle(bar).borderBottomWidth, mark: getComputedStyle(bar, '::after').content })));
+  for (const decoration of decorations) { assert.equal(decoration.border, '0px'); assert(['none', 'normal'].includes(decoration.mark)); }
+  assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto');
+  assert.equal(await row(6).locator('.schedule-badge').getAttribute('aria-label'), 'Manual');
+  console.log('PASS toolbar stays in one row, uses icons at narrow widths, preserves full switch labels at 125–200% zoom and narrow split, and leaves scheduling badges only in the sheet');
   assert.deepEqual(errors, []); console.log('FIT SCHEDULING SAVING AND DENSITY CHECKS PASSED');
 } catch (error) { if (browser) for (const context of browser.contexts()) for (const page of context.pages()) await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {}); throw error; } finally { await browser?.close(); server.kill(); await new Promise((done) => server.exitCode != null || server.signalCode != null ? done() : server.once('exit', done)); await rm(temp, { recursive: true, force: true }); }

@@ -193,7 +193,7 @@ export function createGantt(ctx) {
       const ms = t.ms && !f.summary;
       const rc = relClass(t.id);
       const schedule = store.scheduling(t.id);
-      el.dataset.scheduling = schedule.mode; el.dataset.scheduleMark = schedule.mark; el.setAttribute('aria-label', `${t.name} · ${schedule.label}`);
+      el.setAttribute('aria-label', `${t.name} · ${schedule.label}`);
       const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
       if (el._cls !== cls) { el.className = cls; el._cls = cls; }

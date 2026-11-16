@@ -198,7 +198,14 @@ document.addEventListener('keydown', (e) => {
 })();
 
 addEventListener('resize', () => ctx.requestRender());
-if (window.ResizeObserver) new ResizeObserver(() => ctx.requestRender()).observe($('#gb'));
+if (window.ResizeObserver) {
+  new ResizeObserver(() => ctx.requestRender()).observe($('#gb'));
+  // Both panes share the control row height when timeline controls wrap.
+  const strip = $('.strip');
+  const syncControlsHeight = () => $('#app').style.setProperty('--controls-height', getComputedStyle(strip).height);
+  syncControlsHeight();
+  new ResizeObserver(syncControlsHeight).observe(strip);
+}
 renderAll();
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 m365.init().then(() => { reminders.badge(); sharing.fromHash(); });

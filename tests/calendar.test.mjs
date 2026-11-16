@@ -111,12 +111,13 @@ test('calendars survive SQLite state shape, project switches, templates, read-on
   const first = s.wb.active; s.newBlank(); assert.equal(s.calendar.workdays.length, 7); s.switchSheet(first); assert.deepEqual(s.calendar, config);
   assert.deepEqual(s.view(first).calendar, config);
   const template = s.saveTemplate('Working calendar').tpl; s.instantiate(template, D('2026-11-06')); assert.deepEqual(s.calendar, config);
-  const contents = encodeProjectFile(s); assert.equal(JSON.parse(contents).version, 2);
+  const contents = encodeProjectFile(s); assert.equal(JSON.parse(contents).version, 3);
   const next = new Store(); openProjectFile(next, contents); assert.deepEqual(next.calendar, config); assert.equal(next.snap(), s.snap());
 });
 
 test('legacy files keep everyday scheduling; malformed calendar files fail without mutating the workbook', () => {
-  const s = new Store(); const legacy = JSON.parse(encodeProjectFile(s)); delete legacy.project.data.calendar;
+  const s = new Store(); const legacy = JSON.parse(encodeProjectFile(s)); delete legacy.project.data.calendar; legacy.version = 1;
+  for (const t of legacy.project.data.tasks) delete t.scheduling;
   assert.equal(legacy.version, 1); openProjectFile(s, JSON.stringify(legacy)); assert.equal(s.calendar.workdays.length, 7);
   const good = JSON.parse(encodeProjectFile(fixture())), before = s.snap();
   for (const mutate of [(d) => { d.project.data.calendar.workdays = []; }, (d) => { delete d.project.data.calendar; }, (d) => { d.version = 1; }, (d) => { d.project.data.calendar.holidays[0].date = '2026-02-30'; }]) {

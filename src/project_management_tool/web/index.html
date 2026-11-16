@@ -12,12 +12,12 @@
   <header class="topbar">
     <div class="brand"><span class="logo"></span><b>Launch plan</b></div>
     <div class="tools">
-      <button id="openprojectbtn" title="Open a Plan project file (Ctrl/⌘+O)"><svg viewBox="0 0 16 16"><path d="M2 12V4h5l2 2h5v2M2 12l2-4h10l-2 5H2z"/></svg>Open…</button>
-      <button id="saveprojectbtn" title="Save this project as a .plan file (Ctrl/⌘+Shift+S)"><svg viewBox="0 0 16 16"><path d="M3 2h8l2 2v10H3zM5 2v4h5V2M5 14V9h6v5"/></svg>Save As…</button>
-      <button id="savefilebtn" title="Save to the connected .plan file (Ctrl/⌘+S)">Save</button>
+      <button id="openprojectbtn" title="Open a Plan project file (Ctrl/⌘+O)" aria-label="Open project"><svg viewBox="0 0 16 16"><path d="M2 12V4h5l2 2h5v2M2 12l2-4h10l-2 5H2z"/></svg><span class="tool-label">Open…</span></button>
+      <button id="saveprojectbtn" title="Save this project as a .plan file (Ctrl/⌘+Shift+S)" aria-label="Save project as"><svg viewBox="0 0 16 16"><path d="M3 2h8l2 2v3M3 2v12h3M5 2v4h5V2M8 12l5-5 2 2-5 5H8z"/></svg><span class="tool-label">Save As…</span></button>
+      <button id="savefilebtn" title="Save to the connected .plan file (Ctrl/⌘+S)" aria-label="Save project"><svg viewBox="0 0 16 16"><path d="M3 2h8l2 2v10H3zM5 2v4h5V2M5 14V9h6v5"/></svg><span class="tool-label">Save</span></button>
       <span class="sep"></span>
-      <button data-act="add" title="Add task below selection (Ctrl/⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Task</button>
-      <button data-act="addms" title="Add milestone below selection (Ctrl/⌘+Shift+Enter)" aria-keyshortcuts="Control+Shift+Enter Meta+Shift+Enter"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg>Milestone</button>
+      <button data-act="add" title="Add task below selection (Ctrl/⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter" aria-label="Add task"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg><span class="tool-label">Task</span></button>
+      <button data-act="addms" title="Add milestone below selection (Ctrl/⌘+Shift+Enter)" aria-keyshortcuts="Control+Shift+Enter Meta+Shift+Enter" aria-label="Add milestone"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg><span class="tool-label">Milestone</span></button>
       <span class="sep"></span>
       <button data-act="outdent" title="Outdent (Alt+←)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M5 5L2 8l3 3"/></svg></button>
       <button data-act="indent" title="Indent (Alt+→)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M2 5l3 3-3 3"/></svg></button>
@@ -26,15 +26,15 @@
       <button data-act="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 16 16"><path d="M6 3L3 6l3 3M3 6h6a4 4 0 010 8H6"/></svg></button>
       <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
       <span class="sep"></span>
-      <button id="calendarbtn" title="Configure project workdays and custom holidays"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 7h12M5 1.5v3M11 1.5v3M5 10h1M9 10h1"/></svg>Calendar</button>
-      <button id="sharebtn" title="Share this project read-only"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg>Share</button>
-      <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden role="img" aria-label="Reminders are on"></span></button>
-      <button id="impbtn" title="Import from Excel or CSV"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg>Import</button>
-      <button id="expbtn" title="Export to Excel or PDF"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>Export</button>
+      <button id="calendarbtn" title="Configure project workdays and custom holidays" aria-label="Project calendar"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 7h12M5 1.5v3M11 1.5v3M5 10h1M9 10h1"/></svg><span class="tool-label">Calendar</span></button>
+      <button id="sharebtn" title="Share this project read-only" aria-label="Share project"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg><span class="tool-label">Share</span></button>
+      <button id="rembtn" title="Deadline reminders" aria-label="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg><span class="tool-label">Remind</span><span class="dot" hidden role="img" aria-label="Reminders are on"></span></button>
+      <button id="impbtn" title="Import from Excel or CSV" aria-label="Import"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg><span class="tool-label">Import</span></button>
+      <button id="expbtn" title="Export to Excel or PDF" aria-label="Export"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg><span class="tool-label">Export</span></button>
       <span class="sep"></span>
-      <button id="m365btn" class="m365" title="Connect Microsoft 365"><span id="m365lbl"></span></button>
+      <button id="m365btn" class="m365" title="Connect Microsoft 365" aria-label="Microsoft 365"><svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><rect x="9" y="9" width="5" height="5"/></svg><span id="m365lbl" class="tool-label"></span></button>
       <span class="sep"></span>
-      <button data-act="reset" class="ghost" title="Restore the demo workbook (removes all sheets)">Reset all</button>
+      <button data-act="reset" class="ghost" title="Restore the demo workbook (removes all sheets)" aria-label="Reset all"><svg viewBox="0 0 16 16"><path d="M3 6a5 5 0 1 1 0 5M3 2v4h4"/></svg><span class="tool-label">Reset all</span></button>
     </div>
   </header>
   <div id="robanner" class="robanner" hidden></div>
@@ -74,7 +74,6 @@
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
       </div>
       <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>
-      <div class="schedule-legend" aria-label="Scheduling indicators"><span><b class="schedule-badge auto">A</b> Auto</span><span><b class="schedule-badge manual">M</b> Manual</span><span title="Keeps its chosen date; Auto-schedule can delay it to satisfy connections"><b class="schedule-badge anchor">D</b> Date anchor</span></div>
       <div class="focusleg" id="focusleg" hidden><b>Focus</b><span class="k anc"><i></i>Parents <em class="n-anc">0</em></span><span class="k desc"><i></i>Children <em class="n-desc">0</em></span><span class="k up"><i></i>Predecessors <em class="n-up">0</em></span><span class="k down"><i></i>Successors <em class="n-down">0</em></span></div>
       <div class="gbody" id="gb">
         <div class="canvas" id="canvas">
