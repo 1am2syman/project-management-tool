@@ -1,6 +1,7 @@
 // Data model, scheduling engine (all 4 link types), critical path (CPM), undo/redo.
 // Durations are calendar days. A task occupies [start, start+dur) (end is exclusive).
 // Milestones have dur 0.
+import { appState } from './appstate.js';
 
 export const DAY = 86400000;
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -83,7 +84,7 @@ function demo() {
   const L = (from, to, type = 'FS', lag = 0) => ({ from, to, type, lag });
   const links = [
     L(3, 4, 'SS', 2), L(3, 5), L(4, 5), L(5, 7), L(7, 8, 'SS', 3), L(8, 9), L(9, 10),
-    L(5, 12, 'FS', 2), L(8, 13), L(12, 14, 'SS', 5), L(12, 14, 'FF', 2),
+    L(5, 12, 'FS', 2), L(8, 13), L(12, 14, 'FF', 2),
     L(10, 15), L(13, 15), L(14, 15), L(15, 17), L(15, 18, 'SS', 2), L(13, 19, 'SS', 5),
     L(17, 20), L(18, 20), L(19, 20), L(20, 21, 'FS', 2),
   ].map((l, i) => ({ id: 'l' + (i + 1), ...l }));
@@ -119,7 +120,7 @@ function sanitize(d) {
   }
   const uniq = new Set(); const clean = links.filter((l) => { if (uniq.has(l.id)) return false; uniq.add(l.id); return true; });
   const collapsed = (Array.isArray(d && d.collapsed) ? d.collapsed : []).filter((x) => ids.has(x));
-  return { tasks, links: clean, collapsed, nextId: Math.max(Number(d && d.nextId) || 0, ...ids, 0) + 1, nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
+  return { tasks, links: clean, collapsed, nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
 }
 
 function blank() {
@@ -165,25 +166,33 @@ function builtins() {
 }
 
 export class Store {
-  constructor() {
+  constructor(saved) {
     this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map();
     this.auto = true; this.critical = true;
-    try { const p = JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}'); if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; } catch { /* corrupt prefs */ }
-    this.wb = this.readWB();
-    this.templates = this.readTpl();
+    try { const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}'); if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; } catch { /* corrupt prefs */ }
+    this.wb = this.readWB(saved?.workbook);
+    this.templates = this.readTpl(saved ? saved.templates || [] : undefined);
+    const stack = (items) => (Array.isArray(items) ? items : []).filter((item) => {
+      try { const data = JSON.parse(item); return typeof item === 'string' && Array.isArray(data.tasks) && Array.isArray(data.links); } catch { return false; }
+    });
+    for (const [id, history] of Object.entries(saved?.history || {})) {
+      if (this.sheet(id) && history) this.hist.set(id, { u: stack(history.u), r: stack(history.r) });
+    }
+    const activeHistory = this.hist.get(this.wb.active);
+    this.undoStack = activeHistory?.u || []; this.redoStack = activeHistory?.r || [];
     this.load(this.sheet().data);
   }
   on(fn) { this.listeners.push(fn); }
   emit(kind = 'change') { for (const f of this.listeners) { try { f(kind); } catch (e) { console.error(e); } } } // one broken listener must not stop the others (e.g. the renderer)
 
   // ---- persistence ----
-  readWB() {
+  readWB(saved) {
     try {
-      const w = JSON.parse(localStorage.getItem(WB));
+      const w = saved ?? JSON.parse(localStorage.getItem(WB));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
         const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source) }));
         if (sheets.length) {
-          const nextSheet = Math.max(Number(w.nextSheet) || 0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1;
+          const nextSheet = Math.max(Number(w.nextSheet) || 1, Math.max(0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1);
           return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
         }
       }
@@ -192,8 +201,8 @@ export class Store {
     try { data = JSON.parse(localStorage.getItem(KEY)); } catch { /* none */ }
     return { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(data && Array.isArray(data.tasks) ? data : demo()), rem: cleanRem() }] };
   }
-  readTpl() {
-    try { const t = JSON.parse(localStorage.getItem(TPL)); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
+  readTpl(saved) {
+    try { const t = saved ?? JSON.parse(localStorage.getItem(TPL)); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
     return [];
   }
   sheet(id = this.wb.active) { return this.wb.sheets.find((s) => s.id === id); }
@@ -210,13 +219,19 @@ export class Store {
     return JSON.stringify(o);
   }
   snap() { return this.serialize(false); }
+  savedState() {
+    const history = Object.fromEntries([...this.hist].filter(([id]) => this.sheet(id)));
+    history[this.wb.active] = { u: this.undoStack, r: this.redoStack };
+    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical }, history, browser: appState.snapshot() };
+  }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
+    this.sheet().data = JSON.parse(this.serialize());
     try {
-      this.sheet().data = JSON.parse(this.serialize());
       localStorage.setItem(WB, JSON.stringify(this.wb));
       localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical }));
-    } catch { /* quota / private mode: keep working in memory */ }
+    } catch { /* disk saving can still work when browser storage is full */ }
+    this.persist?.(this.savedState());
   }
   resetAll() { this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
@@ -287,7 +302,11 @@ export class Store {
 
   // ---- templates ----
   allTemplates() { return [...builtins(), ...this.templates]; }
-  saveTpl() { try { localStorage.setItem(TPL, JSON.stringify(this.templates)); } catch { /* storage unavailable */ } }
+  saveTpl() {
+    if (this.stale) return;
+    try { localStorage.setItem(TPL, JSON.stringify(this.templates)); } catch { /* storage unavailable */ }
+    this.persist?.(this.savedState());
+  }
   saveTemplate(name) {
     const n = String(name).trim().slice(0, 60); if (!n) return null;
     const base = Math.min(...this.tasks.map((t) => t.start));
@@ -336,7 +355,7 @@ export class Store {
   }
   endDrag(commit = true) {
     if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; } this.settle(); }
-    else if (this.snap() !== this._before) { this.undoStack.push(this._before); this.redoStack = []; this.save(); }
+    else if (this.snap() !== this._before) { this.undoStack.push(this._before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
   }
   orig(id) { return this._orig.find((o) => o.id === id); }
@@ -517,21 +536,48 @@ export class Store {
   }
   toggle(id) { if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id); this.recalc(); this.save(); this.emit(); }
   reaches(a, b, seen = new Set()) { if (a === b) return true; if (seen.has(a)) return false; seen.add(a); return this.outgoing(a).some((l) => this.reaches(l.to, b, seen)); }
+  linksBetween(from, to) { return this.links.filter((l) => l.from === from && l.to === to); }
+  linkConflicts() {
+    const pairs = new Map();
+    for (const l of this.links) {
+      const key = `${l.from}:${l.to}`;
+      if (!pairs.has(key)) pairs.set(key, []);
+      pairs.get(key).push(l);
+    }
+    return [...pairs.values()].filter((links) => links.length > 1);
+  }
   canLink(from, to) {
+    if (!this.byId.has(from) || !this.byId.has(to)) return 'Task no longer exists';
     if (from === to) return 'A task cannot depend on itself';
     if (this.info.get(from).summary || this.info.get(to).summary) return 'Summary tasks cannot be linked';
     if (this.reaches(to, from)) return 'That link would create a cycle';
     return null;
   }
   addLink(from, fromEnd, to, toEnd) {
+    if (this.readOnly) return 'This project is read-only';
+    if (this.stale) return 'This project changed in another tab; reload before editing relationships';
     const type = (fromEnd === 'f' ? 'F' : 'S') + (toEnd === 'f' ? 'F' : 'S');
     const err = this.canLink(from, to); if (err) return err;
-    if (this.links.some((l) => l.from === from && l.to === to && l.type === type)) return 'Link already exists';
-    let id;
-    this.tx(() => { id = 'l' + this.nextLink++; this.links.push({ id, from, to, type, lag: 0 }); });
+    if (this.linksBetween(from, to).length) return 'A relationship already exists between these tasks';
+    this.tx(() => { this.links.push({ id: 'l' + this.nextLink++, from, to, type, lag: 0 }); });
     return null;
   }
-  updateLink(id, patch) { this.tx(() => Object.assign(this.links.find((l) => l.id === id), patch)); }
+  updateLink(id, patch, { resolvePair = false } = {}) {
+    if (this.readOnly) return 'This project is read-only';
+    if (this.stale) return 'This project changed in another tab; reload before editing relationships';
+    const link = this.links.find((l) => l.id === id); if (!link) return 'Relationship no longer exists';
+    if ('from' in patch || 'to' in patch) return 'Relationship endpoints cannot be changed';
+    const type = patch.type ?? link.type, lag = Number(patch.lag ?? link.lag);
+    if (!LINK_SET.has(type)) return 'Unknown relationship type';
+    if (!Number.isSafeInteger(lag)) return 'Lag must be a whole number of days';
+    const err = this.canLink(link.from, link.to); if (err) return err;
+    if (!resolvePair && this.linksBetween(link.from, link.to).length > 1) return 'Review the existing relationships and choose one to keep';
+    this.tx(() => {
+      Object.assign(link, { type, lag });
+      if (resolvePair) this.links = this.links.filter((l) => l.id === id || l.from !== link.from || l.to !== link.to);
+    });
+    return null;
+  }
   removeLink(id) { this.tx(() => { this.links = this.links.filter((l) => l.id !== id); }); }
 
   predText(id) {
@@ -588,6 +634,7 @@ export class Store {
         const type = (m[2] || 'FS').toUpperCase(), lag = m[3] ? parseInt(m[3].replace(/\s/g, ''), 10) : 0;
         if (p.id === id) return 'A task cannot depend on itself';
         if (this.info.get(p.id).summary) return `Row ${m[1]} is a summary`;
+        if (next.some((l) => l.from === p.id)) return `Only one relationship per task pair is allowed; row ${m[1]} is repeated`;
         next.push({ from: p.id, type, lag });
       }
       const keep = this.links.filter((l) => l.to !== id);

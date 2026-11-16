@@ -11,6 +11,7 @@
 <div id="app">
   <header class="topbar">
     <div class="brand"><span class="logo"></span><b>Launch plan</b><span class="muted">· sheet + gantt</span></div>
+    <button id="save-status" class="save-status" aria-live="polite" disabled>Loading saved projects…</button>
     <div class="tools">
       <button data-act="add" title="Add task below selection"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Task</button>
       <button data-act="addms" title="Add milestone"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg>Milestone</button>
@@ -62,6 +63,7 @@
         <button data-act="today">Today</button>
         <span class="sep"></span>
         <button data-act="density" title="Toggle row density">Density</button>
+        <button id="reviewlinks" hidden>Review relationships</button>
         <span class="grow"></span>
         <label class="switch" title="Highlight the selected task's parents, children, predecessors and successors"><input type="checkbox" id="optFocus"><i></i>Focus</label>
         <label class="switch crit"><input type="checkbox" id="optCrit"><i></i>Critical path</label>
@@ -87,6 +89,7 @@
     <span class="grow"></span>
     <span id="stat" class="stat"></span>
     <span class="hint">Drag bar · drag edges to resize · drag <i class="dotdemo"></i> onto another bar to link · ⌘/Ctrl+wheel zoom · drag background to pan</span>
+    <button class="tplbtn" id="historybtn" title="View saved app versions" disabled>History</button>
     <button class="tplbtn" id="tplbtn" title="New sheet from a template / save this sheet as one"><svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M2.5 6.5h11M6.5 6.5v7"/></svg>Templates</button>
   </nav>
 
@@ -98,7 +101,6 @@
 <div id="tplpop" class="tplpop" hidden></div>
 <div id="ctxmenu" class="ctxmenu" hidden></div>
 <div id="colpop" class="colpop" hidden></div>
-<div id="linkpop" class="linkpop" hidden></div>
 <div id="toast" class="toast"></div>
 <script type="module" src="js/main.js"></script>
 </body>

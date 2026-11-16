@@ -2,13 +2,13 @@
 // pointer-driven move / resize / progress / link-create / pan, wheel zoom, edge auto-scroll.
 import { DAY, MONTHS, dow, today, fmtDate, ymd } from './model.js';
 import { setHTML, setSVG, esc } from './dom.js';
+import { appState } from './appstate.js';
 
 import { dims } from './dims.js';
 const PAD_B = 40;
 const monday = (d) => d - ((dow(d) + 6) % 7);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const LETTER = 'SMTWTFS';
-const TYPE_NAME = { FS: 'Finish → Start', SS: 'Start → Start', FF: 'Finish → Finish', SF: 'Start → Finish' };
 
 function isoWeek(d) {
   const th = d + 3 - ((dow(d) + 6) % 7);
@@ -51,16 +51,32 @@ export function createGantt(ctx) {
   const { store, ui } = ctx;
   const $ = (s) => document.querySelector(s);
   const root = $('#app'), gb = $('#gb'), canvas = $('#canvas'), bg = $('#bg'), linksEl = $('#links'), barsEl = $('#bars'), linkdrag = $('#linkdrag');
-  const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), pop = $('#linkpop'), seg = $('#zoomseg');
+  const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), seg = $('#zoomseg');
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
-  let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, layoutKey = '';
+  let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, taskH = 0, layoutKey = '';
   const barEls = new Map();
   let vwCache = 0;
   if (window.ResizeObserver) new ResizeObserver(() => { const w = gb.clientWidth; if (w !== vwCache) { vwCache = w; if (origin != null) ctx.requestRender(); } }).observe(gb);
-  let drag = null, raf = 0, popLink = null, bgDefs = '', bgBody = '', pendShift = 0;
+  let drag = null, raf = 0, bgDefs = '', bgBody = '', pendShift = 0;
 
   ppdNow = () => ppd;
   const xOf = (d) => (d - origin) * ppd;
+  let restoringView = true, viewTimer = 0, queuedView = null;
+  function readViews() {
+    try { const value = JSON.parse(appState.getItem('pm-gantt-views') || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
+  }
+  function flushView() {
+    clearTimeout(viewTimer); viewTimer = 0;
+    if (!queuedView) return;
+    const views = readViews(); views[queuedView.id] = queuedView.value; queuedView = null;
+    appState.setItem('pm-gantt-views', JSON.stringify(views));
+  }
+  function queueView() {
+    if (restoringView || drag || origin == null) return;
+    queuedView = { id: store.wb.active, value: { ppd, leftDay: Math.round((origin + gb.scrollLeft / ppd) * 1000) / 1000, top: gb.scrollTop } };
+    clearTimeout(viewTimer); viewTimer = setTimeout(flushView, 120);
+  }
+  window.addEventListener('pm-flush-view', () => { queueView(); flushView(); });
 
   // ---------- layout / header / background ----------
   function layout() {
@@ -71,7 +87,8 @@ export function createGantt(ctx) {
     const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
     W = (endDay - origin) * ppd;
-    H = store.rows.length * dims.row + dims.row + 4 + PAD_B;
+    taskH = store.rows.length * dims.row;
+    H = taskH + dims.row + 4 + PAD_B; // match the grid's total row and bottom padding for scroll sync
     const key = `${origin}|${endDay}|${ppd}|${H}`;
     if (key === layoutKey) return;
     layoutKey = key;
@@ -125,12 +142,12 @@ export function createGantt(ctx) {
       const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="${sat * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/><rect x="${((sat + 1) % 7) * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/></pattern>`;
       const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.045 : 0.07;
       bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,${a})"/></pattern></defs>`;
-      bgBody = `<rect width="${W}" height="${H}" fill="url(#wk)"/><rect width="${W}" height="${H}" fill="url(#dl)"/>`;
+      bgBody = `<rect width="${W}" height="${taskH}" fill="url(#wk)"/><rect width="${W}" height="${taskH}" fill="url(#dl)"/>`;
     } else { bgDefs = ''; bgBody = ''; }
     // explicit month / quarter boundaries in the coarse views
     let lines = '';
-    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${H}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
-    bg.setAttribute('width', W); bg.setAttribute('height', H);
+    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
+    bg.setAttribute('width', W); bg.setAttribute('height', taskH);
     setSVG(bg, bgDefs + bgBody + lines);
   }
 
@@ -138,8 +155,8 @@ export function createGantt(ctx) {
   function makeBar(id) {
     const el = document.createElement('div');
     el.dataset.id = id;
-    setHTML(el, '<div class="fill"></div><span class="label"></span><i class="h l"></i><i class="h r"></i><b class="dot s"></b><b class="dot f"></b><u class="prog"></u>');
-    el._fill = el.children[0]; el._label = el.children[1]; el._prog = el.children[6];
+    setHTML(el, '<div class="fill"></div><span class="label"><span class="label-text"></span></span><i class="h resize-start"></i><i class="h resize-end"></i><b class="dot s"></b><b class="dot f"></b><u class="prog"></u>');
+    el._fill = el.children[0]; el._label = el.children[1]; el._text = el._label.firstElementChild; el._prog = el.children[6];
     return el;
   }
 
@@ -159,7 +176,7 @@ export function createGantt(ctx) {
   const tctx = document.createElement('canvas').getContext('2d'), twCache = new Map(); let twKey = '';
   function textW(s) { // width of a bar label in the bar font, cached per density
     const k = dims.name, ref = barsEl.querySelector('.label'); if (!ref) return s.length * 6.5;
-    if (k !== twKey) { twKey = k; twCache.clear(); const cs = getComputedStyle(ref); tctx.font = `500 ${cs.fontSize} ${cs.fontFamily}`; }
+    if (k !== twKey) { twKey = k; twCache.clear(); const cs = getComputedStyle(ref); tctx.font = `500 ${cs.fontSize} ${cs.fontFamily}`; tctx.fontVariantCaps = cs.fontVariantCaps; }
     let w = twCache.get(s); if (w == null) { w = tctx.measureText(s).width; twCache.set(s, w); } return w;
   }
 
@@ -181,9 +198,12 @@ export function createGantt(ctx) {
       let w = ms ? 18 : Math.max(6, x2 - x1 - 2);
       el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${y}px,0)`;
       if (!ms) el.style.width = w + 'px';
-      if (el._lt !== t.name) { el._label.textContent = t.name; el._lt = t.name; }
-      const out = !f.summary && !ms && textW(t.name) + 16 > w; // label goes outside as soon as the text would not fit
+      if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
+      // Keep readable bars self-contained; only very short bars need an external label.
+      const out = !f.summary && !ms && w < 80 && textW(t.name) + 16 > w;
       el._label.classList.toggle('out', out);
+      const labelX = ms ? x1 + dims.msz * 1.5 + 9 : x1 + 1 + w + (f.summary ? 8 : 18);
+      el._label.style.maxWidth = f.summary || ms || out ? Math.max(0, Math.min(200, W - labelX - 8)) + 'px' : '';
       const hw = ms || f.summary ? 8 : clamp(w * 0.22, 3, 8); if (el._hw !== hw) { el._hw = hw; el.style.setProperty('--hw', hw + 'px'); }
       const p = f.progress;
       el._fill.style.width = p + '%'; el._fill.classList.toggle('full', p >= 100);
@@ -242,7 +262,8 @@ export function createGantt(ctx) {
     const si = store.rows.findIndex((t) => t.id === ui.selId);
     rowsel.style.display = si >= 0 ? '' : 'none'; rowsel.style.top = si * dims.row + 'px';
     const tx = xOf(today) + ppd / 2;
-    todayline.style.display = tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
+    todayline.style.height = taskH + 'px';
+    todayline.style.display = taskH > 0 && tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
     renderBars(); renderLinks();
     if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
     updateSeg();
@@ -265,20 +286,28 @@ export function createGantt(ctx) {
     let ax = clientX != null ? clientX - rect.left : rect.width / 2, day = origin + (gb.scrollLeft + ax) / ppd;
     if (preset) { day = anchorDay(); ax = Math.min(rect.width * 0.3, 160); }
     ppd = np; render();
-    gb.scrollLeft = (day - origin) * ppd - ax; syncHead();
+    gb.scrollLeft = (day - origin) * ppd - ax; syncHead(); queueView();
   }
   function fit() {
     const P = store.project, vw = gb.clientWidth - 40;
     origin = monday(P.start - 7); layoutKey = '';
     ppd = clamp(vw / (P.end - origin + 7), 1.2, 90); render();
-    gb.scrollLeft = 0; syncHead();
+    gb.scrollLeft = 0; syncHead(); queueView();
   }
   function reset() {
+    flushView(); restoringView = true;
+    const view = readViews()[store.wb.active];
+    ppd = Number.isFinite(view?.ppd) ? clamp(view.ppd, 1.2, 90) : 16;
     origin = null; layoutKey = '';
     for (const el of barEls.values()) el.remove();
     barEls.clear(); gb.scrollTop = 0; gb.scrollLeft = 0; closePop();
   }
-  function initialScroll() { gb.scrollLeft = Math.max(0, xOf(store.project.start) - 36); syncHead(); }
+  function initialScroll() {
+    const view = readViews()[store.wb.active];
+    gb.scrollLeft = Number.isFinite(view?.leftDay) ? Math.max(0, xOf(view.leftDay)) : Math.max(0, xOf(store.project.start) - 36);
+    gb.scrollTop = Number(view?.top) || 0; ctx.syncV(gb.scrollTop);
+    syncHead(); restoringView = false; queueView();
+  }
   function goToday() { gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
   function reveal(id, horizontal) {
     const i = store.rows.findIndex((t) => t.id === id); if (i < 0) return;
@@ -290,27 +319,9 @@ export function createGantt(ctx) {
     }
   }
 
-  // ---------- link popover ----------
-  function closePop() { pop.hidden = true; popLink = null; }
-  function fillPop() {
-    const l = store.links.find((x) => x.id === popLink); if (!l) { closePop(); return; }
-    setHTML(pop, `<div class="ttl"><b>${store.rowNum(l.from)} → ${store.rowNum(l.to)}</b> · ${TYPE_NAME[l.type]}</div>` +
-      `<div class="row"><div class="types">${['FS', 'SS', 'FF', 'SF'].map((t) => `<button data-t="${t}" class="${t === l.type ? 'on' : ''}">${t}</button>`).join('')}</div></div>` +
-      `<div class="row"><label>Lag (days)</label><input type="number" step="1" value="${l.lag}"></div>` +
-      `<div class="row"><button class="del">Remove link</button><span style="flex:1"></span><span class="ttl">${l.violated ? 'violated' : l.slack ? `slack ${l.slack}d` : 'tight'}</span></div>`);
-  }
-  function openPop(id, x, y) {
-    popLink = id; fillPop(); pop.hidden = false;
-    pop.style.left = clamp(x + 8, 8, innerWidth - 240) + 'px'; pop.style.top = clamp(y + 10, 8, innerHeight - 180) + 'px';
-  }
-  pop.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-t]'), del = e.target.closest('.del');
-    if (t) { store.updateLink(popLink, { type: t.dataset.t }); fillPop(); }
-    else if (del) { store.removeLink(popLink); closePop(); ui.linkId = null; ctx.requestRender(); }
-  });
-  pop.addEventListener('change', (e) => { if (e.target.matches('input')) { store.updateLink(popLink, { lag: parseInt(e.target.value, 10) || 0 }); fillPop(); } });
-  pop.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur?.(); if (e.key === 'Escape') closePop(); });
-  document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.lk')) closePop(); }, true);
+  // ---------- relationship editor ----------
+  function closePop() { ctx.relationships.close(); }
+  function openPop(id, proposedType) { ctx.relationships.open(id, proposedType); }
 
   // ---------- tooltip ----------
   function showTip(html, x, y) { setHTML(tip, html); tip.classList.add('on'); tip.style.left = Math.min(x + 14, innerWidth - 260) + 'px'; tip.style.top = Math.max(8, y - 44) + 'px'; }
@@ -332,7 +343,7 @@ export function createGantt(ctx) {
     const gr = gb.getBoundingClientRect();
     if (e.clientX - gr.left >= gb.clientWidth || e.clientY - gr.top >= gb.clientHeight) return; // scrollbar
     const dot = e.target.closest('.dot'), prog = e.target.closest('.prog'), hnd = e.target.closest('.h'), bar = e.target.closest('.bar'), lk = e.target.closest('.lk');
-    if (lk) { ctx.selectLink(lk.dataset.id); openPop(lk.dataset.id, e.clientX, e.clientY); return; }
+    if (lk) { openPop(lk.dataset.id); return; }
     if (!bar) {
       drag = { kind: 'pan', x0: e.clientX, y0: e.clientY, sl: gb.scrollLeft, st: gb.scrollTop, moved: false, lastX: e.clientX, lastY: e.clientY };
       gb.setPointerCapture(e.pointerId); return;
@@ -343,7 +354,7 @@ export function createGantt(ctx) {
     gb.setPointerCapture(e.pointerId);
     if (dot) { drag = { kind: 'link', id, end: dot.classList.contains('f') ? 'f' : 's', moved: true, lastX: e.clientX, lastY: e.clientY, target: null }; root.classList.add('linking'); e.preventDefault(); return; }
     store.beginDrag();
-    const kind = prog ? 'prog' : hnd ? (hnd.classList.contains('l') ? 'rl' : 'rr') : 'move';
+    const kind = prog ? 'prog' : hnd ? (hnd.classList.contains('resize-start') ? 'rl' : 'rr') : 'move';
     drag = { kind, id, x0: e.clientX, y0: e.clientY, cx0: contentX(e.clientX), moved: false, lastX: e.clientX, lastY: e.clientY, delta: null };
     e.preventDefault();
   });
@@ -417,10 +428,20 @@ export function createGantt(ctx) {
     else if (d.kind === 'link') {
       setSVG(linkdrag, '');
       barEls.forEach((el) => el.querySelectorAll('.dot').forEach((x) => x.classList.remove('target')));
-      if (commit && d.target) { const err = store.addLink(d.id, d.end, d.target.id, d.target.end); if (err) ctx.toast(err); }
+      if (commit && d.target) {
+        const existing = store.linksBetween(d.id, d.target.id);
+        const type = (d.end === 'f' ? 'F' : 'S') + (d.target.end === 'f' ? 'F' : 'S');
+        if (existing.length) {
+          const link = existing.find((l) => l.type === type) || existing[0];
+          if (existing.length === 1 && link.type === type) ctx.selectLink(link.id);
+          else openPop(link.id, type);
+        } else {
+          const err = store.addLink(d.id, d.end, d.target.id, d.target.end); if (err) ctx.toast(err);
+        }
+      }
       else if (commit && d.moved) { const ri = Math.floor(contentY(d.lastY) / dims.row), t = store.rows[ri]; if (t && t.id !== d.id) { const err = store.canLink(d.id, t.id); if (err) ctx.toast(err); } }
     } else store.endDrag(commit && d.moved);
-    ctx.requestRender();
+    ctx.requestRender(); queueView(); flushView();
   }
   gb.addEventListener('pointerup', () => finish(true));
   gb.addEventListener('pointercancel', () => finish(false));
@@ -429,16 +450,17 @@ export function createGantt(ctx) {
   gb.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); setPpd(ppd * Math.exp(-e.deltaY * 0.0018), e.clientX); }
   }, { passive: false });
-  gb.addEventListener('scroll', () => { syncHead(); ctx.syncV(gb.scrollTop); });
+  gb.addEventListener('scroll', () => { syncHead(); ctx.syncV(gb.scrollTop); queueView(); });
 
   seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom, null, true); });
 
+  reset();
   return {
     render, setPpd, goToday, reveal, closePop, fit, initialScroll, reset,
     zoomStep: (dir) => setPpd(ppd * (dir > 0 ? 1.3 : 1 / 1.3)),
     cancelDrag: () => finish(false),
     isDragging: () => !!drag && drag.moved,
     setScrollTop: (v) => { if (gb.scrollTop !== v) gb.scrollTop = v; },
-    popOpen: () => !pop.hidden,
+    popOpen: () => ctx.relationships.isOpen(),
   };
 }

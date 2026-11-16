@@ -131,7 +131,7 @@ export function mapSheet(sh) {
   recs.forEach((x, i) => { x.t.id = i + 1; });
 
   // dependencies
-  const links = [], out = new Map(); let nl = 1;
+  const links = [], out = new Map(), pairs = new Map(); let nl = 1;
   const reaches = (from, to) => { const st = [from], seen = new Set(); while (st.length) { const c = st.pop(); if (c === to) return true; if (seen.has(c)) continue; seen.add(c); for (const n of out.get(c) || []) st.push(n); } return false; };
   for (const x of recs) {
     const txt = str(x.g('pred')); if (!txt) continue;
@@ -145,13 +145,20 @@ export function mapSheet(sh) {
       if (!p) { warn(x.r, `Dependency “${tok}” does not match any # — ignored`); continue; }
       if (p === x) { warn(x.r, 'Task depends on itself — ignored'); continue; }
       if (p.summary) { warn(x.r, `Dependency on “${p.name}” ignored — it is a summary row; depend on one of its children`); continue; }
+      const key = `${p.t.id}:${x.t.id}`, existing = pairs.get(key);
+      if (existing) {
+        if (existing.type === type && existing.lag === lag) warn(x.r, `Repeated dependency on “${p.name}” was included once`);
+        else issues.push({ row: x.r, lv: 'error', msg: `Row ${x.r}: multiple relationships from “${p.name}” to “${x.name}”. Keep one type and lag in Depends on, then import again.` });
+        continue;
+      }
       if (reaches(x.t.id, p.t.id)) { warn(x.r, `Dependency on “${p.name}” would create a cycle — ignored`); continue; }
-      links.push({ id: `l${nl++}`, from: p.t.id, to: x.t.id, type, lag }); (out.get(p.t.id) || out.set(p.t.id, []).get(p.t.id)).push(x.t.id);
+      const link = { id: `l${nl++}`, from: p.t.id, to: x.t.id, type, lag };
+      links.push(link); pairs.set(key, link); (out.get(p.t.id) || out.set(p.t.id, []).get(p.t.id)).push(x.t.id);
     }
   }
   const tasks = recs.map((x) => x.t);
   const stats = { tasks: tasks.filter((t, i) => !t.ms && !recs[i].summary).length, ms: tasks.filter((t, i) => t.ms && !recs[i].summary).length, summaries: recs.filter((x) => x.summary).length, links: links.length, unscheduled: noStart.length, first: anchor };
-  return { ok: true, name: sh.name, data: { tasks, links, collapsed: [], nextId: tasks.length + 1, nextLink: nl }, stats, issues, cols, missing };
+  return { ok: !issues.some((x) => x.lv === 'error'), name: sh.name, data: { tasks, links, collapsed: [], nextId: tasks.length + 1, nextLink: nl }, stats, issues, cols, missing };
 }
 
 export function createImport(ctx) {

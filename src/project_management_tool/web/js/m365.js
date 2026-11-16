@@ -1,4 +1,5 @@
 // Microsoft 365 connection: MSAL (popup, PKCE, tokens kept in localStorage by MSAL) + a small Microsoft Graph client.
+import { appState } from './appstate.js';
 // No secrets live here: this is a public-client SPA, the user signs in with their corporate account and every
 // Graph call runs with that user's delegated permissions.
 import { isEmail } from './model.js';
@@ -33,7 +34,7 @@ export function validateConfig(c) {
 }
 export async function loadConfig() {
   let c = null;
-  try { c = JSON.parse(localStorage.getItem(CFG_KEY)); } catch { /* none */ }
+  try { c = JSON.parse(appState.getItem(CFG_KEY)); } catch { /* none */ }
   if (!c || !c.clientId) { // optional deployment default, so employees never have to type an ID
     try { const r = await fetch('m365.config.json', { cache: 'no-cache' }); if (r.ok) c = await r.json(); } catch { /* no file */ }
   }
@@ -45,7 +46,7 @@ export function saveConfig(c) {
   const err = validateConfig(c); if (err) return err;
   const changed = c.clientId.trim() !== cfg.clientId || c.tenant.trim() !== cfg.tenant;
   cfg = { clientId: c.clientId.trim(), tenant: c.tenant.trim() };
-  try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch { /* storage blocked */ }
+  try { appState.setItem(CFG_KEY, JSON.stringify(cfg)); } catch { /* storage blocked */ }
   if (changed) { app = null; loading = null; account = null; }
   emit(); return null;
 }

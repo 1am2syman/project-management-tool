@@ -6,5 +6,15 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
+# Virtual environments, tool caches and local agent notes
+.venv/
+.ruff_cache/
+.pytest_cache/
+.pi/
+
+# Local app state (default database lives outside the app, in Documents/Plan)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -1,12 +1,12 @@
 [project]
 name = "project-management-tool"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local project planning with a spreadsheet grid, interactive Gantt and SQLite history"
 readme = "README.md"
 authors = [
     { name = "1am2syman", email = "1am2syman@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]

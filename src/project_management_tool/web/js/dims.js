@@ -1,12 +1,13 @@
 // Shared row geometry. CSS reads the same values through custom properties set by apply().
-export const DENSITY = { compact: { row: 24, bar: 15 }, roomy: { row: 34, bar: 22 } };
-export const dims = { row: 24, bar: 15, msz: 11, name: 'compact' };
+import { appState } from './appstate.js';
+export const DENSITY = { compact: { row: 24, bar: 18 }, roomy: { row: 34, bar: 26 } };
+export const dims = { row: 24, bar: 18, msz: 14, name: 'compact' };
 
 export function setDensity(name) {
   const d = DENSITY[name] || DENSITY.compact;
   Object.assign(dims, d, { name, msz: Math.round(d.bar * 0.75) });
   apply();
-  try { localStorage.setItem('pm-density', name); } catch { /* storage unavailable */ }
+  try { appState.setItem('pm-density', name); } catch { /* storage unavailable */ }
 }
 export function apply() {
   const s = document.documentElement.style;
@@ -17,6 +18,6 @@ export function apply() {
 }
 export function initDensity() {
   let n = 'compact';
-  try { n = localStorage.getItem('pm-density') || n; } catch { /* storage unavailable */ }
+  try { n = appState.getItem('pm-density') || n; } catch { /* storage unavailable */ }
   setDensity(n);
 }

@@ -1,6 +1,10 @@
 import { Store, fmtDate } from './model.js';
+import { appState } from './appstate.js';
+import { openProjectStorage } from './storage.js';
+import { createHistory } from './history.js';
 import { createGrid, COLS } from './grid.js';
 import { createGantt } from './gantt.js';
+import { createRelationshipEditor } from './relationships.js';
 import { setHTML } from './dom.js';
 import { createSheets } from './sheets.js';
 import { createExport } from './export.js';
@@ -13,10 +17,24 @@ import * as m365 from './m365.js';
 import { initDensity, setDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
+const storage = await openProjectStorage();
 initDensity();
-const store = new Store();
-let focusOn = true; try { focusOn = localStorage.getItem('pm-focus') !== '0'; } catch {}
+const store = new Store(storage.initial);
+storage.attach(store);
+let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
 const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
+let selections = {};
+try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) selections = value; } catch { /* no saved selection */ }
+function restoreSelection() {
+  const current = selections[store.wb.active] || {};
+  ui.selId = current.selId ?? null; ui.linkId = current.linkId ?? null;
+  ui.col = COLS.some((col) => col.id === current.col) ? current.col : 'name';
+}
+function rememberSelection() {
+  selections[store.wb.active] = { selId: ui.selId, linkId: ui.linkId, col: ui.col };
+  appState.setItem('pm-selection', JSON.stringify(selections));
+}
+restoreSelection();
 let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
@@ -33,17 +51,20 @@ const ctx = {
     ui.selId = id; ui.linkId = null; if (col) ui.col = col;
     gantt.closePop(); grid.invalidateHead(); renderAll();
     if (reveal && id != null) { gantt.reveal(id, true); grid.scrollIntoView(); }
+    rememberSelection();
   },
-  selectLink(id) { ui.linkId = id; ui.selId = null; renderAll(); },
+  selectLink(id) { ui.linkId = id; ui.selId = null; renderAll(); rememberSelection(); },
   toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2600); },
   syncGantt(v) { const gb = $('#gb'); if (gb.scrollTop !== v) gb.scrollTop = v; },
   syncV(v) { grid.setScrollTop(v); },
 };
+ctx.relationships = createRelationshipEditor(ctx);
 grid = createGrid(ctx);
 gantt = createGantt(ctx);
 sheets = createSheets(ctx);
 createExport(ctx);
 createImport(ctx);
+createHistory();
 ctx.people = createPeople(ctx);
 ctx.m365ui = createM365UI(ctx);
 const reminders = createReminders(ctx);
@@ -59,10 +80,11 @@ function status() {
 
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
+  if (ui.linkId != null && !store.links.some((link) => link.id === ui.linkId)) ui.linkId = null;
   ctx.rel = ui.focus && ui.selId != null ? store.related(ui.selId) : null;
   $('#app').classList.toggle('focusing', !!ctx.rel);
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
-  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner();
+  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render();
   $('.brand b').textContent = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
@@ -73,8 +95,8 @@ store.on((kind) => {
   if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
   if (kind === 'drag') ctx.requestRender(); // coalesced to one render per frame, however many pointer events arrive
   else if (kind === 'sheet') {
-    ui.selId = null; ui.linkId = null; gantt.reset(); grid.invalidateHead(); renderAll();
-    requestAnimationFrame(() => gantt.initialScroll());
+    restoreSelection(); gantt.reset(); grid.resetScroll(); grid.invalidateHead(); renderAll();
+    requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
   } else ctx.requestRender();
 });
 
@@ -94,7 +116,7 @@ const act = {
 };
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
 $('#optFocus').checked = ui.focus;
-$('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { localStorage.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
+$('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { appState.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
 $('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 
@@ -102,6 +124,7 @@ $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.c
 window.addEventListener('storage', (e) => {
   if (e.key !== 'pm-workbook-v1' || store.stale) return;
   store.stale = true;
+  storage.markStale();
   const bar = document.createElement('div'); bar.className = 'robanner stale';
   setHTML(bar, '<span class="lock">Changed in another tab</span><span>Edits here are no longer saved, to protect the other tab’s work.</span><span style="flex:1"></span><button>Reload</button>');
   bar.querySelector('button').addEventListener('click', () => location.reload());
@@ -143,20 +166,21 @@ document.addEventListener('keydown', (e) => {
 
 // splitter
 (() => {
-  const sp = $('#split'); let saved = null; try { saved = localStorage.getItem('pm-gridw'); } catch { /* storage blocked */ }
-  if (saved) document.documentElement.style.setProperty('--gridw', `${saved}px`);
+  const sp = $('#split'); let saved = null; try { saved = appState.getItem('pm-gridw'); } catch { /* storage blocked */ }
+  const width = Number(saved);
+  if (Number.isFinite(width) && width > 0) document.documentElement.style.setProperty('--gridw', `${Math.max(320, Math.min(innerWidth - 320, width))}px`);
   sp.addEventListener('pointerdown', (e) => {
     sp.setPointerCapture(e.pointerId); sp.classList.add('on');
     const x0 = e.clientX, w0 = $('#left').getBoundingClientRect().width;
     let w = w0, pend = 0;
     const mv = (ev) => { w = Math.max(320, Math.min(innerWidth - 320, w0 + ev.clientX - x0)); if (!pend) pend = requestAnimationFrame(() => { pend = 0; document.documentElement.style.setProperty('--gridw', `${w}px`); gantt.render(); }); };
-    const up = () => { sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('lostpointercapture', up); try { localStorage.setItem('pm-gridw', Math.round(w)); } catch { /* storage blocked */ } };
+    const up = () => { sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('lostpointercapture', up); try { appState.setItem('pm-gridw', Math.round(w)); } catch { /* storage blocked */ } };
     sp.addEventListener('pointermove', mv); sp.addEventListener('lostpointercapture', up);
   });
 })();
 
 addEventListener('resize', () => ctx.requestRender());
 renderAll();
-requestAnimationFrame(() => gantt.initialScroll());
+requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 m365.init().then(() => { reminders.badge(); sharing.fromHash(); });
 void COLS;

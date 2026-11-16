@@ -1,4 +1,5 @@
 // Deadline reminders. Per project: switch on, choose the granularity (one email per action item, per person, or per
+import { appState } from './appstate.js';
 // project), the lead times, and the message template. Emails are scheduled in the signed-in user's own mailbox with a
 // deferred-send time, so Exchange Online delivers them on time even when this browser is closed. A sync diffs what
 // should exist against what was scheduled before: stale reminders are cancelled, new ones created. With "auto" on, a
@@ -17,8 +18,8 @@ const BUILTIN_TPL = [
 ];
 export const VARS = [['person', 'First name (or "team")'], ['task', 'Task name or "N tasks"'], ['project', 'Project name'], ['when', 'due tomorrow, due in 3 days…'], ['deadline', 'Deadline date'], ['prefix', 'Reminder / Overdue'], ['count', 'Number of tasks'], ['sender', 'Your name'], ['details', 'Table of task details']];
 
-const jget = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
-const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } };
+const jget = (k, d) => { try { const v = JSON.parse(appState.getItem(k)); return v ?? d; } catch { return d; } };
+const jset = (k, v) => { try { appState.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } };
 // The ledger of scheduled messages belongs to ONE account: another user's message ids mean nothing in my mailbox.
 const acct = () => { const a = m365.currentAccount(); return a ? String(a.email).toLowerCase() : ''; };
 const ledgerKey = () => `${LEDGER}:${acct()}`;

@@ -1,4 +1,5 @@
 // Spreadsheet-style grid: name box, formula bar, column letters, group bands, heat-mapped cells,
+import { appState } from './appstate.js';
 // sparklines, frozen columns, inline editing, resizable columns.
 import { fmtDate, fmtISO, today } from './model.js';
 import { esc, setHTML } from './dom.js';
@@ -42,12 +43,22 @@ export function createGrid(ctx) {
   const $ = (s) => document.querySelector(s);
   const gx = $('#gx'), inner = $('#ginner'), band = $('#gband'), letters = $('#gletters'), head = $('#ghead'), body = $('#gbody');
   const namebox = $('#namebox'), fxin = $('#fxin');
-  let editing = null, headKey = '';
+  let editing = null, headKey = '', restoringScroll = true;
+  try {
+    const widths = JSON.parse(appState.getItem('pm-column-widths') || '{}');
+    for (const col of COLS) if (Number.isFinite(widths?.[col.id])) col.w = Math.max(44, Math.min(1000, widths[col.id]));
+  } catch { /* use default widths */ }
+  function restoreScroll() {
+    let saved = {};
+    try { saved = JSON.parse(appState.getItem('pm-grid-scroll') || '{}') || {}; } catch { /* no saved scroll */ }
+    gx.scrollLeft = Number(saved[store.wb.active]) || 0;
+    restoringScroll = false;
+  }
 
   // ---- column visibility (persisted). Hidden columns keep their letters, like a spreadsheet. ----
   const HKEY = 'pm-hidden-cols';
   let hidden = new Set();
-  try { const sv = localStorage.getItem(HKEY); hidden = new Set(sv == null ? ['email'] : JSON.parse(sv)); } catch { hidden = new Set(['email']); }
+  try { const sv = appState.getItem(HKEY); hidden = new Set(sv == null ? ['email'] : JSON.parse(sv)); } catch { hidden = new Set(['email']); }
   hidden.delete('name');
   const VIS = () => COLS.filter((c) => !hidden.has(c.id));
   const edge = (c) => {
@@ -225,7 +236,16 @@ export function createGrid(ctx) {
     const r = e.target.closest('.r[data-id]'), c = e.target.closest('.c[data-col]');
     if (r && c && c.dataset.col !== 'rn' && !e.target.closest('.tog')) startEdit(+r.dataset.id, c.dataset.col);
   });
+  function rememberScroll() {
+    if (restoringScroll) return;
+    let saved = {};
+    try { const value = JSON.parse(appState.getItem('pm-grid-scroll') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) saved = value; } catch { /* no saved scroll */ }
+    saved[store.wb.active] = gx.scrollLeft;
+    appState.setItem('pm-grid-scroll', JSON.stringify(saved));
+  }
   gx.addEventListener('scroll', () => { gx.classList.toggle('scrolled', gx.scrollLeft > 0); ctx.syncGantt(gx.scrollTop); });
+  gx.addEventListener('scrollend', rememberScroll);
+  window.addEventListener('pm-flush-view', rememberScroll);
 
   letters.addEventListener('pointerdown', (e) => {
     const rs = e.target.closest('.rs');
@@ -233,7 +253,10 @@ export function createGrid(ctx) {
     const col = COLS[+rs.dataset.i], x0 = e.clientX, w0 = col.w;
     rs.setPointerCapture(e.pointerId);
     const mv = (ev) => { col.w = Math.max(44, w0 + ev.clientX - x0); applyTpl(); };
-    const up = () => { rs.removeEventListener('pointermove', mv); rs.removeEventListener('lostpointercapture', up); };
+    const up = () => {
+      rs.removeEventListener('pointermove', mv); rs.removeEventListener('lostpointercapture', up);
+      appState.setItem('pm-column-widths', JSON.stringify(Object.fromEntries(COLS.map((item) => [item.id, item.w]))));
+    };
     rs.addEventListener('pointermove', mv); rs.addEventListener('lostpointercapture', up);
   });
 
@@ -259,7 +282,7 @@ export function createGrid(ctx) {
     setHTML(colpop, `<div class="ttl"><b>Columns</b><button data-all="1">Show all</button></div>${rows}<div class="ttl foot">${VIS().length} of ${COLS.length} shown</div>`);
   }
   function applyCols() {
-    try { localStorage.setItem(HKEY, JSON.stringify([...hidden])); } catch { /* storage unavailable */ }
+    try { appState.setItem(HKEY, JSON.stringify([...hidden])); } catch { /* storage unavailable */ }
     if (hidden.has(ui.col)) ui.col = 'name';
     headKey = ''; fillColPop(); render(); ctx.requestRender();
   }
@@ -279,5 +302,5 @@ export function createGrid(ctx) {
   document.addEventListener('pointerdown', (e) => { if (!colpop.hidden && !colpop.contains(e.target) && !colbtn.contains(e.target)) colpop.hidden = true; }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') colpop.hidden = true; });
 
-  return { render, startEdit, moveSel, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
+  return { render, startEdit, moveSel, restoreScroll, resetScroll: () => { restoringScroll = true; }, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
 }
