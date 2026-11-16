@@ -30,7 +30,15 @@ The standard-library source launcher, `python start.py`, is also available if yo
 
 ## Update the app
 
-Stop Plan, open a terminal in the cloned folder, and run `git pull --ff-only`. Then run `start.bat` again. uv updates the environment as needed. Saved work stays in Documents/Plan, separate from the repository.
+On Windows:
+
+1. Wait for **Saved to this computer**, then stop Plan by closing its launcher window or pressing Ctrl+C there.
+2. Double-click **update.bat** inside the cloned repository. It pulls the latest updates and keeps the window open so you can read the result.
+3. Run **start.bat** again. uv updates the environment as needed.
+
+The updater requires Git and internet access. It uses `git pull --ff-only` for the current branch's configured upstream, so it stops if the branches have diverged. If Git reports a conflict with local edits or another error, resolve that error before running the updater again. It does not reset your checkout or discard local changes.
+
+On macOS/Linux, or from a terminal on Windows, stop Plan and run `git pull --ff-only` in the cloned folder, then start the app again. Saved work stays in Documents/Plan, separate from the repository.
 
 ## Project files: Save As and Open
 
@@ -98,4 +106,4 @@ The JavaScript model, import and project-file regression tests require Node.js, 
 node --test tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs
 ```
 
-Browser validation covers relationship confirmation, Gantt layout and restoring SQLite state into a fresh browser profile after a server restart. Project-file checks cover the toolbar, keyboard save during an edit, file round-trips, cancellation and invalid files, a real download/file-input fallback, layout at several viewport widths, and restoring opened files in a fresh browser profile. Native picker results are mocked for automation; the OS Save As dialog itself is not driven by these tests. Microsoft 365 flows have been checked with a mocked Graph API, not a live tenant. The Windows batch launcher has been reviewed; automated launcher checks run on Linux with uv-managed Python.
+Browser validation covers relationship confirmation, Gantt layout and restoring SQLite state into a fresh browser profile after a server restart. Project-file checks cover the toolbar, keyboard save during an edit, file round-trips, cancellation and invalid files, a real download/file-input fallback, layout at several viewport widths, and restoring opened files in a fresh browser profile. Native picker results are mocked for automation; the OS Save As dialog itself is not driven by these tests. Microsoft 365 flows have been checked with a mocked Graph API, not a live tenant. The Windows batch launcher and updater have been reviewed. Launcher tests run on Linux with uv-managed Python, and Git update checks use temporary local repositories. The batch files have not been executed in Windows cmd.exe.
