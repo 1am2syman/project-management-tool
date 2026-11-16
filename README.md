@@ -114,11 +114,15 @@ Task names show **A** (green, automatic), **M** (orange, manual) or **D** (amber
 - **Use manual dates** keeps the chosen dates even if a connection is violated. Violated links are marked. Moving/resizing an automatic task or editing its start/finish switches it to manual; progress and duration edits retain its scheduling mode.
 - **Use date anchor** keeps a chosen date but allows Auto-schedule to delay it when a dependency requires it. This is an explicit choice, retained when saving and reopening the project. Summary dates always roll up from their children.
 
-**Fit** measures visible task, summary and milestone labels as well as bars. The **Row density** dropdown selects **Compact** or **Adaptive**; adaptive sizing fills the available height and recalculates when the window, visible row count or collapsed groups change, with compact scrolling for large plans. Your density choice is saved with the app's layout settings.
+**Critical path** defaults to **Project completion**, using the latest finish across the project. To analyze a specific goal, click the **Critical path** text beside its switch and choose a milestone, or right-click a milestone row/Gantt diamond and select **Use as critical-path target**. The control and status bar identify the selected target. Only that milestone and its transitive predecessors receive float and critical-path highlights; unrelated branches show no float. Shared predecessors are still included. Float uses working days, all four relationship types and lag; completed tasks are not highlighted as critical.
+
+The target uses the milestone’s current date and does not change dates or scheduling modes. It is separate from **Use date anchor**, which controls scheduling. Your target choice is saved per project in the app and restored after refresh; it is a view setting outside undo/redo and portable `.plan` files. If the target is deleted, converted to a task or becomes a summary, the view falls back to Project completion; undoing that edit restores the choice. Use the chooser’s **Project completion** option to clear it. PDF and Excel exports use the selected analysis and label its target.
+
+**Fit** measures task bars, labels, milestone diamonds, connector elbows and connection handles, leaving room for start-to-start links at the chart's left edge. The **Row density** dropdown selects **Compact** or **Adaptive**; adaptive sizing fills the available height and recalculates when the window, visible row count or collapsed groups change, with compact scrolling for large plans. Your density choice is saved with the app's layout settings.
 
 Header actions stay on one row and use icons with tooltips when space is tight. The compact density dropdown and timeline spacing keep Auto-schedule alongside the other controls at normal desktop pane widths. Narrow panes wrap with full switch labels, keeping sheet and Gantt rows aligned; save status appears in the bottom bar.
 
-Gantt bars and labels use sharper positioning without soft outer shadows or label text shadows. Grid lines have crisp edges, and dependency connectors use a stronger stroke while retaining rounded elbows. Hover and drag feedback still use shadows.
+Gantt bars and labels use sharper positioning without soft outer shadows or label text shadows. Grid lines have crisp edges, and dependency connectors use a stronger stroke while retaining rounded elbows. Hover and drag feedback still use shadows. Sheet and chart scrollbars use slim tracks; Chromium-based browsers show 6px scrollbars without arrow buttons.
 
 ## Project calendar
 

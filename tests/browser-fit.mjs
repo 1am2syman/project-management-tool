@@ -28,7 +28,7 @@ try {
   await page.addInitScript(() => {
     window.filePicks = 0;
     window.showOpenFilePicker = async () => [await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan')];
-    window.showSaveFilePicker = async () => { window.filePicks++; return (await navigator.storage.getDirectory()).getFileHandle('save-as.plan', { create: true }); };
+    window.showSaveFilePicker = async () => { const handle = await (await navigator.storage.getDirectory()).getFileHandle('save-as.plan', { create: true }); window.filePicks++; return handle; };
   });
   await page.goto(url); await page.locator('#gbody .r[data-id="21"]').waitFor();
   await page.evaluate(async () => {
@@ -173,5 +173,99 @@ try {
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto');
   assert.equal(await row(6).locator('.schedule-badge').getAttribute('aria-label'), 'Manual');
   console.log('PASS toolbar stays in one row, uses icons at narrow widths, preserves full switch labels at 125–200% zoom and narrow split, and leaves scheduling badges only in the sheet');
+  // An earliest milestone needs extra room for a start-to-start elbow to its left.
+  await page.setViewportSize({ width: 1920, height: 740 });
+  await page.evaluate(async () => {
+    document.documentElement.style.setProperty('--gridw', '840px');
+    const { Store, D } = await import('./js/model.js'), { encodeProjectFile } = await import('./js/projectfiles.js');
+    const s = new Store(), start = D('2026-11-01'); s.auto = false;
+    const task = (id, name, offset, dur, ms = false) => ({ id, name, start: start + offset, dur, ms, level: 0, progress: 0, owner: '' });
+    s.load({ tasks: [task(1, 'Start gate', 0, 0, true), task(2, 'Parallel work', 0, 120), task(3, 'Finish gate', 120, 0, true)], links: [{ id: 'l1', from: 1, to: 2, type: 'SS', lag: 0 }], collapsed: [], nextId: 4, nextLink: 2 });
+    const handle = await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan');
+    const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
+  });
+  await page.locator('#openprojectbtn').click(); await page.locator('.bar[data-id="1"]').filter({ hasText: 'Start gate' }).waitFor();
+  for (const mode of ['compact', 'auto']) {
+    await density.selectOption(mode); await fitAndMeasure();
+    const linkBounds = await page.locator('.lk[data-id="l1"] .vis').evaluate((path) => {
+      const r = path.getBoundingClientRect(), viewport = document.querySelector('#gb').getBoundingClientRect();
+      return { left: r.left - viewport.left, right: r.right - viewport.left, width: document.querySelector('#gb').clientWidth };
+    });
+    assert(linkBounds.left >= 6, `Start-to-start elbow is clipped in ${mode}: ${JSON.stringify(linkBounds)}`);
+    assert(linkBounds.right <= linkBounds.width - 6, JSON.stringify(linkBounds));
+    const handle = await page.locator('.bar[data-id="1"] .dot.s').boundingBox(), viewport = await page.locator('#gb').boundingBox();
+    assert(handle.x - viewport.x >= 6, `Milestone start handle is clipped in ${mode}: ${JSON.stringify({ handle, viewport })}`);
+  }
+  await page.screenshot({ path: join(evidence, 'start-to-start-fit.png') });
+  await density.selectOption('compact'); await page.setViewportSize({ width: 1920, height: 240 }); await settle();
+  const scrollbars = await page.locator('#gx, #gb').evaluateAll((panes) => panes.map((pane) => ({
+    id: pane.id, vertical: pane.offsetWidth - pane.clientWidth, horizontal: pane.offsetHeight - pane.clientHeight,
+    overflows: pane.scrollHeight > pane.clientHeight || pane.scrollWidth > pane.clientWidth,
+  })));
+  for (const bar of scrollbars) { assert(bar.overflows, JSON.stringify(bar)); assert(bar.vertical <= 6 && bar.horizontal <= 6, `Scrollbar is too thick: ${JSON.stringify(bar)}`); }
+  console.log('PASS Fit keeps milestone start-to-start elbows inside the chart in both densities; sheet and Gantt scrollbars are at most 6px');
+  // Targeted critical paths exclude an independent later licence branch.
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await page.evaluate(async () => {
+    const { Store, D } = await import('./js/model.js'), { encodeProjectFile } = await import('./js/projectfiles.js');
+    const s = new Store(); s.auto = false; const start = D('2026-11-02');
+    const task = (id, name, offset, dur) => ({ id, name, start: start + offset, dur, ms: dur === 0, level: 0, progress: 0 });
+    s.load({ tasks: [task(1, 'Shared preparation', 0, 2), task(2, 'Production setup', 2, 3), task(3, 'FG Production Readiness', 5, 0), task(4, 'Licence processing', 2, 12), task(5, 'Independent work', 0, 1), task(6, 'Licence received', 14, 0)], links: [{ id: 'l1', from: 1, to: 2, type: 'FS', lag: 0 }, { id: 'l2', from: 2, to: 3, type: 'FS', lag: 0 }, { id: 'l3', from: 1, to: 4, type: 'FS', lag: 0 }, { id: 'l4', from: 4, to: 6, type: 'FS', lag: 0 }], collapsed: [], nextId: 7, nextLink: 5 });
+    const handle = await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan');
+    const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
+  });
+  await page.locator('#openprojectbtn').click(); await row(3).filter({ hasText: 'FG Production Readiness' }).waitFor();
+  await fitAndMeasure();
+  const beforeTarget = await data();
+  const criticalIds = async () => { await settle(); return page.locator('.bar.critical:not(.summary)').evaluateAll((bars) => bars.map((b) => Number(b.dataset.id)).sort((a, b) => a - b)); };
+  assert.deepEqual(await criticalIds(), [1, 4, 6]);
+  const targetButton = page.locator('#critical-target');
+  await targetButton.click();
+  const targetDialog = page.getByRole('dialog', { name: 'Critical-path target', exact: true });
+  await targetDialog.getByLabel('Calculate critical path to').selectOption('3');
+  await page.screenshot({ path: join(evidence, 'critical-target-dialog.png') });
+  await targetDialog.getByRole('button', { name: 'Show critical path', exact: true }).click();
+  assert.deepEqual(await criticalIds(), [1, 2, 3]);
+  assert.deepEqual(await data(), beforeTarget, 'target selection must not change tasks, links or dates');
+  assert.equal(await row(4).locator('[data-col=float]').textContent(), '·');
+  assert((await page.locator('#stat').textContent()).includes('FG Production Readiness'));
+  assert((await targetButton.getAttribute('aria-label')).includes('FG Production Readiness'));
+  const exportCheck = await page.evaluate(async () => {
+    const { Store } = await import('./js/model.js'), { buildXlsx } = await import('./js/xlsx.js');
+    const { readSpreadsheet } = await import('./js/xlsxread.js'), { mapSheet } = await import('./js/import.js');
+    const { buildPdf } = await import('./js/pdf.js');
+    const disk = (await (await fetch('/api/projects')).json()).state, s = new Store(disk), view = s.view(s.wb.active);
+    const sheets = await readSpreadsheet(new File([await buildXlsx([{ name: 'Targeted plan', store: view }])], 'targeted.xlsx'));
+    const rows = sheets[0].rows, mapped = mapSheet(sheets[0]);
+    return { label: rows[0][12], target: rows[0][13], productionCritical: rows.find((r) => r[1] === 'Production setup')[8], licenceCritical: rows.find((r) => r[1] === 'Licence processing')[8], licenceFloat: rows.find((r) => r[1] === 'Licence processing')[7], importedNames: mapped.data.tasks.map((t) => t.name), pdfLabeled: (await buildPdf([{ name: 'Targeted plan', store: view }]).text()).includes('Critical-path target: FG Production Readiness') };
+  });
+  assert.equal(exportCheck.label, 'Critical-path target'); assert.equal(exportCheck.target, 'FG Production Readiness');
+  assert.equal(exportCheck.productionCritical, 'Yes'); assert(!exportCheck.licenceCritical); assert(!exportCheck.licenceFloat);
+  assert.deepEqual(exportCheck.importedNames, beforeTarget.tasks.map((t) => t.name)); assert(exportCheck.pdfLabeled);
+  console.log('PASS PDF/Excel label the selected target; exported critical/float values match the view and Excel re-import preserves task rows');
+  for (const mode of ['compact', 'auto']) { await density.selectOption(mode); await responsiveLayout(1630); }
+  await page.screenshot({ path: join(evidence, 'critical-target-selected.png') });
+  await saved(); await page.reload(); await row(3).waitFor(); await saved();
+  assert.deepEqual(await criticalIds(), [1, 2, 3]);
+  assert((await targetButton.getAttribute('aria-label')).includes('FG Production Readiness'));
+  // A second profile reads the saved choice from SQLite, with no localStorage migration.
+  const freshContext = await browser.newContext({ viewport: { width: 1920, height: 900 } });
+  await freshContext.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
+  const freshPage = await freshContext.newPage(); await freshPage.goto(url);
+  await freshPage.locator('#gbody .r[data-id="3"]').waitFor();
+  assert((await freshPage.locator('#critical-target').getAttribute('aria-label')).includes('FG Production Readiness'));
+  assert.deepEqual(await freshPage.locator('.bar.critical:not(.summary)').evaluateAll((bars) => bars.map((b) => Number(b.dataset.id)).sort((a, b) => a - b)), [1, 2, 3]);
+  await freshContext.close();
+  await row(3).locator('[data-col=name]').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Use project completion for critical path', exact: true }).click();
+  assert.deepEqual(await criticalIds(), [1, 4, 6]);
+  await page.locator('.bar[data-id="3"]').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Use as critical-path target', exact: true }).click();
+  assert.deepEqual(await criticalIds(), [1, 2, 3]);
+  await targetButton.click(); await targetDialog.getByLabel('Calculate critical path to').selectOption('');
+  await targetDialog.getByRole('button', { name: 'Show critical path', exact: true }).click();
+  assert.deepEqual(await criticalIds(), [1, 4, 6]);
+  assert.deepEqual(await data(), beforeTarget);
+  console.log('PASS milestone target scopes critical bars and float, preserves dates, restores from SQLite across profiles and clears through toolbar and context menus without toolbar wrapping');
   assert.deepEqual(errors, []); console.log('FIT SCHEDULING SAVING AND DENSITY CHECKS PASSED');
 } catch (error) { if (browser) for (const context of browser.contexts()) for (const page of context.pages()) await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {}); throw error; } finally { await browser?.close(); server.kill(); await new Promise((done) => server.exitCode != null || server.signalCode != null ? done() : server.once('exit', done)); await rm(temp, { recursive: true, force: true }); }

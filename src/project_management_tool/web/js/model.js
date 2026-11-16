@@ -170,8 +170,14 @@ function builtins() {
 export class Store {
   constructor(saved) {
     this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map();
-    this.auto = true; this.critical = true;
-    try { const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}'); if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; } catch { /* corrupt prefs */ }
+    this.auto = true; this.critical = true; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
+    try {
+      const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
+      if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical;
+      if (p.criticalTargets && typeof p.criticalTargets === 'object' && !Array.isArray(p.criticalTargets)) {
+        for (const [sheet, id] of Object.entries(p.criticalTargets)) if (Number.isSafeInteger(id) && id > 0) this.criticalTargets[sheet] = id;
+      }
+    } catch { /* corrupt prefs */ }
     this.wb = this.readWB(saved?.workbook);
     this.templates = this.readTpl(saved ? saved.templates || [] : undefined);
     const stack = (items) => (Array.isArray(items) ? items : []).filter((item) => {
@@ -225,19 +231,34 @@ export class Store {
   savedState() {
     const history = Object.fromEntries([...this.hist].filter(([id]) => this.sheet(id)));
     history[this.wb.active] = { u: this.undoStack, r: this.redoStack };
-    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical }, history, browser: appState.snapshot() };
+    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
   }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
     this.sheet().data = JSON.parse(this.serialize());
     try {
       localStorage.setItem(WB, JSON.stringify(this.wb));
-      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical }));
+      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalTargets: this.criticalTargets }));
     } catch { /* disk saving can still work when browser storage is full */ }
     this.persist?.(this.savedState());
   }
-  resetAll() { this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  resetAll() { this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
+
+  criticalTarget() {
+    const id = this.wb ? this.criticalTargets?.[this.wb.active] : this.criticalTargetId;
+    const task = this.byId?.get(id);
+    return task?.ms && !this.info.get(id).summary ? task : null;
+  }
+  setCriticalTarget(id = null) {
+    if (this.stale) return 'This project changed in another tab. Reload before changing the view.';
+    if (id !== null && (!this.byId.get(id)?.ms || this.info.get(id).summary)) return 'Choose an existing milestone as the critical-path target';
+    if (id === null) delete this.criticalTargets[this.wb.active];
+    else this.criticalTargets[this.wb.active] = id;
+    this.critical = true;
+    this.recalc(); this.save(); this.emit('critical-target');
+    return null;
+  }
 
   // ---- sheets (workbook tabs) ----
   uniqueName(base, ignoreId) {
@@ -287,7 +308,7 @@ export class Store {
   deleteSheet(id) {
     const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
     if (i < 0 || ws.length < 2) return false;
-    ws.splice(i, 1); this.hist.delete(id);
+    ws.splice(i, 1); this.hist.delete(id); delete this.criticalTargets[id];
     if (id === this.wb.active) { this.undoStack = []; this.redoStack = []; this.enter(ws[Math.min(i, ws.length - 1)].id); } else { this.save(); this.emit('meta'); }
     return true;
   }
@@ -299,7 +320,7 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
+    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
     v.settle(); return v;
   }
 
@@ -490,21 +511,36 @@ export class Store {
     const order = this.topo(), leaves = order.map((id) => this.byId.get(id));
     let pend = -Infinity, pstart = Infinity;
     for (const t of leaves) { pend = Math.max(pend, this.finish(t)); pstart = Math.min(pstart, t.start); }
+    const target = this.criticalTarget(), scope = target ? new Set([target.id]) : null;
+    if (scope) {
+      const queue = [target.id];
+      for (let i = 0; i < queue.length; i++) for (const link of this.incoming(queue[i])) {
+        if (!scope.has(link.from)) { scope.add(link.from); queue.push(link.from); }
+      }
+    }
     const latestStarts = new Map();
     for (let k = order.length - 1; k >= 0; k--) {
-      const t = this.byId.get(order[k]);
-      let latest = t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      const t = this.byId.get(order[k]), f = info.get(t.id);
+      if (scope && !scope.has(t.id)) { f.float = null; f.critical = false; continue; }
+      let latest = target ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      const outgoing = this.outgoing(t.id).filter((link) => !scope || scope.has(link.to));
       // Invert the same endpoint constraints used by forward scheduling. Searching actual
       // workday starts also handles milestones and finishes beside weekends/holidays.
       const fits = (day) => {
         const start = this.work.next(day, -1), end = this.work.finish(start, t.dur);
-        return this.outgoing(t.id).every((l) => {
+        return outgoing.every((l) => {
           const successor = this.byId.get(l.to), ss = latestStarts.get(l.to) ?? successor.start;
           const source = l.type[0] === 'F' ? end : start;
           const required = l.type[1] === 'S' ? this.work.shift(source, l.lag) : this.work.shiftEnd(source, l.lag);
           return required <= (l.type[1] === 'S' ? ss : this.work.finish(ss, successor.dur));
         });
       };
+      // SS/SF links and negative lag can allow an ancestor to finish after the target.
+      // Find a genuine upper bound instead of capping every finish at the milestone date.
+      if (target && t.id !== target.id) {
+        let step = 7;
+        while (fits(latest)) { latest += step; step *= 2; }
+      }
       if (!fits(latest)) {
         let lo = Math.min(t.start, latest), hi = latest, step = 7;
         while (!fits(lo)) { lo -= step; step *= 2; }
@@ -512,7 +548,7 @@ export class Store {
         latest = this.work.next(lo, -1);
       }
       latestStarts.set(t.id, latest);
-      const f = info.get(t.id); f.float = this.work.count(t.start, latest); f.critical = f.float <= 0 && t.progress < 100;
+      f.float = this.work.count(t.start, latest); f.critical = f.float <= 0 && t.progress < 100;
     }
     for (const t of T) { const f = info.get(t.id); if (f.summary) { f.float = null; f.critical = false; } }
     // a summary is "critical" if any of its children is

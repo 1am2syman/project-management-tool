@@ -29,6 +29,10 @@ export function createTaskUI(ctx, grid) {
       const childError = reason || store.canAddChild(id);
       html += `<div role="separator"></div>${item('Add child task', 'task-child', childError)}${item('Add child milestone', 'ms-child', childError)}`;
       html += `<div role="separator"></div>${item(store.byId.get(id).ms ? 'Convert to task (1 working day)' : 'Convert to milestone', 'convert', reason || (summary ? 'A cascade with children cannot be converted to a milestone' : null))}`;
+      if (store.byId.get(id).ms && !summary) {
+        const selected = store.criticalTarget()?.id === id;
+        html += `<div role="separator"></div>${item(selected ? 'Use project completion for critical path' : 'Use as critical-path target', selected ? 'critical-project' : 'critical-milestone', store.stale ? 'Reload this project before changing the view' : null)}`;
+      }
       const modeError = reason || (summary ? 'Summary dates come from their children' : null);
       html += `<div role="separator"></div>${item('Auto-calculate from connections', 'schedule-auto', modeError)}${item('Use manual dates', 'schedule-manual', modeError)}${item('Use date anchor', 'schedule-anchor', modeError)}`;
       const indentError = (dir) => { const plan = store.indentPlan(id, dir); return plan.error || store.movePlan(id, plan.targetId, plan.position).error; };
@@ -53,7 +57,9 @@ export function createTaskUI(ctx, grid) {
   menu.addEventListener('click', (e) => {
     const button = e.target.closest('button[data-task-action]'); if (!button || button.disabled) return;
     const action = button.dataset.taskAction; closeMenu(true);
-    if (action.startsWith('schedule-')) {
+    if (action.startsWith('critical-')) {
+      const error = store.setCriticalTarget(action === 'critical-project' ? null : menuId); if (error) ctx.toast(error);
+    } else if (action.startsWith('schedule-')) {
       const error = store.setScheduling(menuId, action.slice(9)); if (error) ctx.toast(error);
       else { ctx.select(menuId, 'name', true); if (action === 'schedule-auto' && !store.auto) ctx.toast('Calculated from connections. Enable Auto-schedule for live updates.'); }
     } else if (action === 'convert') {

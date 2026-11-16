@@ -5,9 +5,10 @@ import { createHistory } from './history.js';
 import { createGrid, COLS } from './grid.js';
 import { createTaskUI } from './taskui.js';
 import { createCalendarUI } from './calendarui.js';
+import { createCriticalUI } from './criticalui.js';
 import { createGantt } from './gantt.js';
 import { createRelationshipEditor } from './relationships.js';
-import { setHTML } from './dom.js';
+import { esc, setHTML } from './dom.js';
 import { createSheets } from './sheets.js';
 import { createExport } from './export.js';
 import { createImport } from './import.js';
@@ -73,13 +74,15 @@ ctx.people = createPeople(ctx);
 ctx.m365ui = createM365UI(ctx);
 const reminders = createReminders(ctx);
 const sharing = createSharing(ctx);
+const criticalUI = createCriticalUI(ctx, grid);
 
 function status() {
+  const target = store.criticalTarget();
   const leaves = store.tasks.filter((t) => !store.info.get(t.id).summary), ms = leaves.filter((t) => t.ms).length, P = store.project;
   const viol = store.links.filter((l) => l.violated).length;
   setHTML($('#stat'), `<span><b>${leaves.length - ms}</b> tasks · <b>${ms}</b> milestones · <b>${store.links.length}</b> links</span>` +
     `<span>Finish <b>${fmtDate(P.end - 1)}</b> · <b>${P.end - P.start}</b> days</span>` +
-    `<span class="cr">Critical path: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
+    `<span class="cr" title="${esc(target?.name || 'Project completion')}">Critical path${target ? ` to ${esc(target.name)}` : ' to Project completion'}: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
 }
 
 function renderAll() {
@@ -95,7 +98,7 @@ function renderAll() {
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
-  $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto;
+  $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto; criticalUI.render();
 }
 store.on((kind) => {
   if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }

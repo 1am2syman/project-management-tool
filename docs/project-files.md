@@ -107,6 +107,8 @@ The **Calendar** dialog previews date changes before applying. It preserves dura
 
 `preferences.auto` and `preferences.critical` are booleans controlling auto-scheduling and critical-path display. Opening a project applies these settings to the editor. Saving a read-only shared project writes `auto: false` so its editable copy preserves the published dates.
 
+A selected milestone critical-path target is an app view preference saved separately for each project tab. It is not included in `.plan` files; an opened project starts with **Project completion** as its target. Selecting a target changes float and highlights without moving dates or changing `tasks[].scheduling`. PDF and Excel exports use the selected analysis and identify the target, but importing those exports does not restore the target choice.
+
 `project.rem` contains these reminder settings:
 
 - `on` and `auto`: boolean switches. The saved values are recorded in the file, but both become **false** in the opened copy. Enable reminders in **Remind** when ready.
@@ -119,7 +121,7 @@ The **Calendar** dialog previews date changes before applying. It preserves dura
 
 ## Data kept outside project files
 
-Project files include task owners, email addresses and reminder configuration. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
+Project files include task owners, email addresses and reminder configuration. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
 
 Native file connections are stored in browser-local IndexedDB and associated with a project tab. They can survive a refresh in that browser, but do not transfer through a `.plan` file or a database backup to another browser/computer. The browser may request file permission again. Duplicating a project does not duplicate its file connection. A tab from an app version that did not retain handles needs Save As once to establish a connection for subsequent Save operations.
 

@@ -300,18 +300,26 @@ export function createGantt(ctx) {
   function fit() {
     const P = store.project, vw = gb.clientWidth;
     if (vw < 60 || !store.rows.length) return;
-    // Include real external labels, summary labels and milestone diamonds. The outside-label
-    // threshold changes with zoom, so measure again after each adjustment.
+    // Measure labels, milestone diamonds, connection handles and routed elbows together.
+    // Their bounds change with zoom, so measure again after each adjustment.
+    let padding = 20;
     ppd = Math.min(90, (vw - 40) / Math.max(1, P.end - P.start));
     for (let i = 0; i < 12; i++) {
-      origin = P.start - Math.ceil(20 / ppd); layoutKey = ''; render();
+      origin = P.start - Math.ceil(padding / ppd); layoutKey = ''; render();
       const left = canvas.getBoundingClientRect().left;
-      let right = 0;
-      for (const el of barEls.values()) {
-        right = Math.max(right, el.getBoundingClientRect().right - left, el._label.getBoundingClientRect().right - left);
+      let first = Infinity, right = 0;
+      const elements = [...barEls.values()].flatMap((el) => [el, el._label, ...el.querySelectorAll('.dot')]);
+      elements.push(...linksEl.querySelectorAll('.vis,.ah'));
+      for (const el of elements) {
+        const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) continue;
+        const diamond = el.classList.contains('ms') ? dims.msz * (Math.SQRT2 - 1) / 2 : 0;
+        first = Math.min(first, rect.left - left - diamond);
+        right = Math.max(right, rect.right - left + diamond);
       }
+      // Leave room for the connector hit area and enlarged handles on hover.
+      if (first < 8) { padding += 8 - first; continue; }
       if (right <= vw - 16) break;
-      ppd *= Math.max(0.1, (vw - 36) / Math.max(vw, right - 20));
+      ppd *= Math.max(0.1, (vw - padding - 16) / Math.max(vw - padding, right - padding));
     }
     gb.scrollLeft = 0; syncHead(); queueView();
   }

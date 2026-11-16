@@ -55,7 +55,8 @@ function projectPages(st, name, pages) {
   const t0 = monday(P.start) - 1, t1 = P.end + 3, span = t1 - t0;
   const cols = [['#', 16, 'r'], ['Task', 170, 'l'], ['Start', 40, 'c'], ['End', 40, 'c'], ['Days', 24, 'r'], ['Done', 28, 'r']];
   const tableW = cols.reduce((a, c) => a + c[1], 0), gx0 = M + tableW + 8, gw = PW - M - gx0, sc = gw / span;
-  const topBlock = M + 38, hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
+  const target = st.criticalTarget();
+  const topBlock = M + (target ? 52 : 38), hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
   const rowH = Math.max(11, Math.min(18, avail / Math.max(n, 1))), perPage = Math.max(1, Math.floor(avail / rowH));
   const count = Math.max(1, Math.ceil(n / perPage));
   const X = (d) => gx0 + (d - t0) * sc;
@@ -66,6 +67,8 @@ function projectPages(st, name, pages) {
     p.text(name, M, M + 12, 16, '0F172A', true);
     p.text(`${fmtDate(P.start)} \u2192 ${fmtDate(P.end - 1)}  \u00B7  ${st.work.count(P.start, P.end)} working days  \u00B7  ${leaves} tasks (${done} done)  \u00B7  critical path: ${st.critCount} tasks`.replace('\u2192', '>'), M, M + 26, 8.5, '64748B');
     p.text(`${ymd(P.start)[0]}${ymd(P.start)[0] !== ymd(P.end - 1)[0] ? `\u2013${ymd(P.end - 1)[0]}` : ''}`, PW - M, M + 12, 10, '94A3B8', true, 'r');
+
+    if (target) p.text(fit(`Critical-path target: ${target.name}`, PW - 2 * M, 8.5), M, M + 39, 8.5, 'BE123C');
 
     // header band
     p.rect(M, topBlock, tableW, hdrH, '1E293B'); p.rect(gx0, topBlock, gw, hdrH, 'F6F7FA');

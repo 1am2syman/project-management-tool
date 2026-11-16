@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plan — project sheet &amp; gantt</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -73,7 +73,7 @@
         <button id="reviewlinks" hidden>Review relationships</button>
         <span class="grow"></span>
         <label class="switch" title="Highlight the selected task's parents, children, predecessors and successors"><input type="checkbox" id="optFocus"><i></i>Focus</label>
-        <label class="switch crit"><input type="checkbox" id="optCrit"><i></i>Critical path</label>
+        <span class="critical-controls"><label class="switch crit" title="Show critical-path highlights"><input type="checkbox" id="optCrit" aria-label="Show critical path"><i></i></label><button id="critical-target" aria-haspopup="dialog">Critical path</button></span>
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
       </div>
       <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>

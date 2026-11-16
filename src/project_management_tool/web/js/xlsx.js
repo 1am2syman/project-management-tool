@@ -87,6 +87,11 @@ function tasksSheet(S, st, name, tab) {
   const heads = ['#', 'Task', 'Type', 'Start', 'End', 'Days', '% done', 'Float (d)', 'Critical', 'Depends on', 'Owner', 'Email'];
   heads.forEach((h, c) => sh.set(0, c, h, head)); sh.heights.set(0, 22);
   sh.widths = [5, 38, 10, 13, 13, 7, 9, 9, 9, 16, 18, 30];
+  const target = st.criticalTarget();
+  if (target) {
+    sh.widths.push(23, 38);
+    sh.set(0, 12, 'Critical-path target', head); sh.set(0, 13, target.name, head);
+  }
   st.tasks.forEach((t, i) => {
     const f = st.info.get(t.id), r = i + 1, sum = f.summary, ms = t.ms && !sum, crit = f.critical && st.critical;
     const base = { b: sum ? 1 : 0, fill: sum ? 'F1F5F9' : null, bb: 'E2E8F0', color: crit && !sum ? 'BE123C' : '0F172A' };
