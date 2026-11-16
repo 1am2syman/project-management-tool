@@ -304,3 +304,43 @@ test('a stale conflict arriving during a connected-file read stops the write', a
   a.getFile = async () => { h.store.stale = true; return file(a.contents); };
   await h.files.save(); assert.equal(a.writes.length, 0); assert.match(h.notices.at(-1), /another window/);
 });
+
+test('diagnostics identifies a stalled native read and traces every successful Open stage without file contents', async (t) => {
+  const events = [], pending = new Set();
+  globalThis.PlanDiagnostics = {
+    record: (event, detail) => events.push({ event, detail }),
+    begin: (event, detail) => {
+      events.push({ event: `${event}.start`, detail }); pending.add(event);
+      return { end: (detail) => { pending.delete(event); events.push({ event: `${event}.end`, detail }); }, fail: (error) => { pending.delete(event); events.push({ event: `${event}.error`, error }); } };
+    },
+  };
+  t.after(() => { delete globalThis.PlanDiagnostics; });
+  const h = harness(), contents = encodeProjectFile(h.store);
+  let release;
+  h.browser.showOpenFilePicker = async () => [{ getFile: () => new Promise((resolve) => { release = resolve; }) }];
+  const opened = h.files.open();
+  await new Promise(setImmediate);
+  assert(pending.has('file.open.getFile')); assert(h.openButton.disabled);
+  let releaseText;
+  release({ ...file(contents, 'PRIVATE_PROJECT.plan'), text: () => new Promise((resolve) => { releaseText = resolve; }) });
+  await new Promise(setImmediate);
+  assert(pending.has('file.open.readText')); assert(!pending.has('file.open.getFile'));
+  releaseText(contents); await opened;
+  for (const stage of ['file.open.picker', 'file.open.getFile', 'file.open.readText', 'file.open.validate', 'file.open.apply', 'file.open.connect', 'file.open']) assert(events.some((e) => e.event === `${stage}.end`), stage);
+  assert(events.some((e) => e.event === 'file.open.controlsUnlocked'));
+  assert(!JSON.stringify(events).includes('PRIVATE_PROJECT'));
+  assert(!JSON.stringify(events).includes('Release & delivery'));
+  assert(!h.openButton.disabled); assert.equal(pending.size, 0);
+});
+
+test('diagnostics records AbortError during getFile even when the UI treats it silently', async (t) => {
+  const events = [];
+  globalThis.PlanDiagnostics = { record: (event, detail) => events.push({ event, detail }) };
+  t.after(() => { delete globalThis.PlanDiagnostics; });
+  const h = harness();
+  h.browser.showOpenFilePicker = async () => [{ getFile: async () => { throw new DOMException('File could not be read', 'AbortError'); } }];
+  await h.files.open();
+  const failure = events.find((e) => e.event === 'file.open.failure');
+  assert.equal(failure.detail.error.name, 'AbortError'); assert.equal(failure.detail.cancelledOrAborted, true);
+  assert(!h.openButton.disabled); assert.deepEqual(h.notices, []);
+});

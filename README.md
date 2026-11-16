@@ -58,6 +58,16 @@ A project file preserves tasks, hierarchy, dates, working calendars, per-task sc
 
 Files use versioned JSON with a `.plan` extension and a 64 MB size limit. Invalid, incomplete or unsupported files show an error before any project is added. Cancelling a file dialog leaves your work in place. Automatic saves and History continue to use the app's database; a `.plan` file contains the single project as it was when you last chose **Save** or **Save As…**. Changes do not automatically overwrite connected `.plan` files. See the [project file format](docs/project-files.md) for the version 1–3 structures and validation rules.
 
+## Diagnostic log
+
+The **Log** button in the bottom bar opens a live diagnostic report. Recording starts as soon as the page opens, including before the main app starts. To investigate a problem, reproduce it, select **Log → Download log**, and share the resulting `plan-diagnostics-….json` file. Log remains available while Open/Save are waiting. **Refresh setup** repeats the environment checks; **Clear log** removes the recorded events.
+
+The report includes Chrome/Edge version information exposed by the browser, operating-system information, language/timezone, page security and file-picker support, cookie and browser-storage availability, IndexedDB checks, Python/SQLite versions, and a fingerprint of the installed app source. It records JavaScript errors and stacks, rejected promises, console messages, failed resources, request status/timing, page lifecycle and control actions, app startup/local saves, and individual Open/Save stages. Operations still waiting after 15 seconds produce a warning, and a downloaded report lists any unfinished operations. This helps distinguish waiting on the chooser, file access, reading, validation, rendering or file-connection storage.
+
+Logs stay locally in the current tab, with recent entries retained through refresh using session storage when available. Recording is bounded to the latest 1,500 events and approximately 384 KB of event data; older entries are dropped. Nothing is uploaded automatically. Project contents, typed input, cookie values, request/response bodies, authentication headers and credential-storage values are excluded. Error text is redacted on a best-effort basis; review a downloaded log before sharing it. Browsers may withhold some version/setup information, and this report cannot inspect Windows event logs or installed browser extensions.
+
+After updating to a version with Log, restart the launcher and refresh the app so the browser and Python server both use the updated code.
+
 ## Automatic local saves
 
 The launcher automatically creates **Plan/plan.db inside your Documents folder**. On Windows it asks Windows for the actual Documents location, including redirected or OneDrive Documents folders. You do not need to create the folder or choose a file. This one SQLite database contains the machine's saved Plan state:

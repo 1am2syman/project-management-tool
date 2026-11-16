@@ -1,3 +1,4 @@
+import { diagnostics } from './diagnosticlog.js';
 import { Store, fmtDate } from './model.js';
 import { appState } from './appstate.js';
 import { openProjectStorage } from './storage.js';
@@ -21,10 +22,13 @@ import * as m365 from './m365.js';
 import { initDensity, setDensity, fitDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
+diagnostics.record('app.start');
 const storage = await openProjectStorage();
 initDensity();
 const store = new Store(storage.initial);
 storage.attach(store);
+globalThis.PlanDiagnostics?.setStoreSummary(() => ({ sheetCount: store.wb.sheets.length, taskCount: store.tasks.length, linkCount: store.links.length, readOnly: store.readOnly, stale: !!store.stale, autoSchedule: store.auto, connectedFile: !!store.sheet().fileToken, undoCount: store.undoStack.length, saveStatus: $('#save-status').dataset.state }));
+diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
 const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
 let selections = {};
@@ -101,11 +105,15 @@ function renderAll() {
   $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto; criticalUI.render();
 }
 store.on((kind) => {
+  if (kind !== 'drag') diagnostics.record('model.change', { kind, taskCount: store.tasks.length, linkCount: store.links.length });
   if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
   if (kind === 'drag') ctx.requestRender(); // coalesced to one render per frame, however many pointer events arrive
   else if (kind === 'sheet') {
-    restoreSelection(); gantt.reset(); grid.resetScroll(); grid.invalidateHead(); renderAll();
-    requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
+    const render = diagnostics.begin('ui.renderSheet');
+    try {
+      restoreSelection(); gantt.reset(); grid.resetScroll(); grid.invalidateHead(); renderAll(); render.end();
+      requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
+    } catch (error) { render.fail(error); throw error; }
   } else ctx.requestRender();
 });
 
@@ -151,7 +159,7 @@ window.addEventListener('storage', (e) => {
 
 // keyboard
 document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back')) return; // dialogs own the keyboard
+  if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back, #diagnostics-dialog[open]')) return; // dialogs own the keyboard
   const mod = e.metaKey || e.ctrlKey;
   // keys on a focused button/link/switch belong to that control, not to the grid (keeps Tab and Enter working for keyboard users)
   if (!mod && !e.altKey && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;
@@ -208,6 +216,7 @@ if (window.ResizeObserver) {
   new ResizeObserver(syncControlsHeight).observe(strip);
 }
 renderAll();
+diagnostics.record('app.ready');
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 m365.init().then(() => { reminders.badge(); sharing.fromHash(); });
 void COLS;

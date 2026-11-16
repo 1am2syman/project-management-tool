@@ -438,3 +438,14 @@ code{font:11.5px var(--mono);background:#f1f5f9;padding:1px 5px;border-radius:5p
 
 .strip>*,.strip button{flex-shrink:0}
 .strip>.grow{flex:1;min-width:0}
+
+/* Diagnostics also works when the main application module cannot start. */
+#logbtn{flex-shrink:0}
+.diagnostics-dialog{border:1px solid var(--line);border-radius:14px;padding:0;width:min(960px,94vw);max-height:88vh;color:var(--ink);background:#fff;box-shadow:0 24px 70px #0f172a59}
+.diagnostics-dialog::backdrop{background:#0f172a59}
+.diagnostics-body{padding:0 18px 18px;font-size:12px}
+.diagnostics-body p{line-height:1.5}
+.diagnostics-actions{display:flex;gap:8px;flex-wrap:wrap}
+.diagnostics-actions button{border:1px solid var(--line);border-radius:7px;background:#f8fafc;padding:7px 12px;cursor:pointer;font:600 12px var(--sans)}
+.diagnostics-actions button:first-child{background:var(--blue);color:#fff;border-color:var(--blue)}
+.diagnostics-dialog pre{height:min(48vh,450px);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#e2e8f0;border-radius:8px;padding:12px;font:11px/1.5 var(--mono)}

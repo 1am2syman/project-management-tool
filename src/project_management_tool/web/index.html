@@ -97,6 +97,7 @@
     <button id="save-status" class="save-status" aria-live="polite" disabled>Loading saved projects…</button>
     <span id="stat" class="stat"></span>
     <span class="hint">Drag bar · drag edges to resize · drag <i class="dotdemo"></i> onto another bar to link · ⌘/Ctrl+wheel zoom · drag background to pan</span>
+    <button class="tplbtn" id="logbtn" title="View and download the diagnostic log" aria-haspopup="dialog">Log</button>
     <button class="tplbtn" id="historybtn" title="View saved app versions" disabled>History</button>
     <button class="tplbtn" id="tplbtn" title="New sheet from a template / save this sheet as one"><svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M2.5 6.5h11M6.5 6.5v7"/></svg>Templates</button>
   </nav>
@@ -110,6 +111,17 @@
 <div id="ctxmenu" class="ctxmenu" hidden></div>
 <div id="colpop" class="colpop" hidden></div>
 <div id="toast" class="toast"></div>
+<dialog id="diagnostics-dialog" class="diagnostics-dialog" aria-labelledby="diagnostics-title">
+  <div class="m-head"><b id="diagnostics-title">Diagnostic log</b><button class="m-x" data-log-close aria-label="Close diagnostic log">×</button></div>
+  <div class="diagnostics-body">
+    <p>Logging starts when Plan opens. Reproduce the issue, then download the log to share for troubleshooting.</p>
+    <p class="help">Includes browser and setup information, errors and app activity. Project contents, typed input, cookie values and sign-in credentials are excluded. Review the file before sharing.</p>
+    <div class="diagnostics-actions"><button data-log-download>Download log</button><button data-log-refresh>Refresh setup</button><button data-log-clear>Clear log</button></div>
+    <p data-log-status aria-live="polite"></p>
+    <pre tabindex="0" aria-label="Diagnostic log entries"></pre>
+  </div>
+</dialog>
+<script src="js/diagnostics.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

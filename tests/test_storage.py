@@ -60,6 +60,32 @@ class StorageTests(unittest.TestCase):
         status, _, response = http_request(self.server.server_port, path, raw, {"Content-Type": "application/json", **(headers or {})})
         return status, json.loads(response)
 
+    def test_runtime_diagnostics_describes_build_without_reading_or_exposing_user_data(self):
+        self.assertFalse((self.directory / "plan.db").exists())
+        status, result = self.request(path="/api/diagnostics")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["app"], "plan-local")
+        self.assertRegex(result["sourceFingerprint"], r"^[a-f0-9]{64}$")
+        self.assertEqual(result["python"]["bitness"], 64 if sys.maxsize > 2**32 else 32)
+        self.assertIn("version", result["python"])
+        self.assertIn("system", result["operatingSystem"])
+        self.assertEqual(result["sqliteVersion"], sqlite3.sqlite_version)
+        self.assertFalse((self.directory / "plan.db").exists(), "diagnostics cannot initialize or modify project storage")
+        raw = json.dumps(result)
+        for private in [str(self.directory), str(ROOT), str(Path.home()), str(Path(sys.executable))]:
+            self.assertNotIn(private, raw)
+        self.assertEqual(self.request(path="/api/diagnostics")[1]["sourceFingerprint"], result["sourceFingerprint"])
+        fake_web = Path(self.temp.name) / "private-installation" / "web"
+        (fake_web / "js").mkdir(parents=True)
+        script = fake_web / "js" / "main.js"
+        script.write_text("first build", encoding="utf-8")
+        with patch("src.project_management_tool.WEB", fake_web):
+            first = self.request(path="/api/diagnostics")[1]
+            script.write_text("second build", encoding="utf-8")
+            second = self.request(path="/api/diagnostics")[1]
+        self.assertNotEqual(first["sourceFingerprint"], second["sourceFingerprint"])
+        self.assertNotIn("private-installation", json.dumps(second))
+
     def test_round_trip_and_server_restart(self):
         status, empty = self.request()
         self.assertEqual(status, 200)

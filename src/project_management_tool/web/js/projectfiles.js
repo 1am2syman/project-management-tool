@@ -1,3 +1,4 @@
+import { diagnostics } from './diagnosticlog.js';
 import { cleanRem, isEmail, LINK_TYPES } from './model.js';
 import { createFileBindings } from './filebindings.js';
 import { calendarError, WorkingCalendar } from './calendar.js';
@@ -107,11 +108,18 @@ export function parseProjectFile(contents) {
 }
 
 export function openProjectFile(store, contents) {
-  const project = parseProjectFile(contents);
+  const validation = diagnostics.begin('file.open.validate');
+  let project;
+  try { project = parseProjectFile(contents); validation.end({ taskCount: project.data.tasks.length, linkCount: project.data.links.length }); }
+  catch (error) { validation.fail(error); throw error; }
   if (store.stale) throw new Error('Reload this window before opening a project; the app changed in another window.');
-  // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
-  store.auto = project.preferences.auto; store.critical = project.preferences.critical;
-  return store.addSheet(project.data, project.name, { rem: project.rem });
+  const apply = diagnostics.begin('file.open.apply');
+  try {
+    // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
+    store.auto = project.preferences.auto; store.critical = project.preferences.critical;
+    const id = store.addSheet(project.data, project.name, { rem: project.rem });
+    apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
+  } catch (error) { apply.fail(error); throw error; }
 }
 
 export function projectFileName(name) {
@@ -130,15 +138,20 @@ export function createProjectFiles(ctx, browser = window) {
     await bindings.write(tokenFor(sheet), { handle, contents }); store.save(); paintSave();
   }
   const lock = (value) => { busy = value; openButton.disabled = value; saveButton.disabled = value; if (normalSave) normalSave.disabled = value; };
-  const report = (action, e) => { if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}`); };
+  const report = (action, e) => {
+    diagnostics.record(`file.${action}.failure`, { error: e, cancelledOrAborted: e?.name === 'AbortError' }, e?.name === 'AbortError' ? 'warn' : 'error');
+    if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}`);
+  };
   const canOpen = () => {
     if (!store.stale) return true;
+    diagnostics.record('file.open.blocked', { reason: 'stale-window' }, 'warn');
     ctx.toast('Reload this window before opening a project; the app changed in another window.'); return false;
   };
 
   async function loadFile(file) {
+    diagnostics.record('file.open.selected', { bytes: file.size, mimeType: file.type || '', extension: /\.plan$/i.test(file.name || '') ? '.plan' : 'other' });
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
-    const contents = await file.text();
+    const contents = await diagnostics.trace('file.open.readText', () => file.text());
     const id = openProjectFile(store, contents);
     ctx.toast(`Opened “${store.sheet(id).name}” · reminders are off`);
     return { id, contents };
@@ -156,46 +169,53 @@ export function createProjectFiles(ctx, browser = window) {
   }
 
   async function open() {
-    if (busy || !canOpen()) return;
+    if (busy || !canOpen()) { diagnostics.record('file.open.ignored', { busy }); return; }
+    const operation = diagnostics.begin('file.open');
     lock(true);
     try {
       let file, handle;
       if (typeof browser.showOpenFilePicker === 'function') {
-        [handle] = await browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false });
-        file = await handle.getFile();
-      } else file = await fallbackOpen();
-      if (file) { const { id, contents } = await loadFile(file); if (handle) await connect(store.sheet(id), handle, contents); }
-    } catch (e) { report('open', e); }
-    finally { lock(false); }
+        [handle] = await diagnostics.trace('file.open.picker', () => browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false }), { kind: 'native' });
+        file = await diagnostics.trace('file.open.getFile', () => handle.getFile());
+      } else file = await diagnostics.trace('file.open.picker', fallbackOpen, { kind: 'input' });
+      if (file) { const { id, contents } = await loadFile(file); if (handle) await diagnostics.trace('file.open.connect', () => connect(store.sheet(id), handle, contents)); }
+      operation.end({ cancelled: !file });
+    } catch (e) { operation.fail(e); report('open', e); }
+    finally { lock(false); diagnostics.record('file.open.controlsUnlocked'); }
   }
 
   async function writeProject(asNew = false) {
-    if (busy) return;
+    if (busy) { diagnostics.record('file.save.ignored', { busy }); return; }
+    const operation = diagnostics.begin('file.save', { asNew });
     lock(true); let writable = null, closing = false;
     try {
       // Snapshot before awaiting the dialog: a later tab switch must not change what is saved.
-      const sheet = store.sheet(), contents = encodeProjectFile(store), name = projectFileName(sheet.name);
+      const encode = diagnostics.begin('file.save.encode');
+      let contents;
+      const sheet = store.sheet(), name = projectFileName(sheet.name);
+      try { contents = encodeProjectFile(store); encode.end({ characters: contents.length }); }
+      catch (error) { encode.fail(error); throw error; }
       let record = !asNew && sheet.fileToken ? await bindings.read(sheet.fileToken) : null;
       // Stale/read-only windows may export a copy, but must not replace a connected file.
       if (record && (store.stale || sheet.readOnly)) throw new Error('Use Save As to save a copy from this read-only or outdated window.');
       if (record) {
         const { handle } = record;
-        if (handle.queryPermission && await handle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
-          if (!handle.requestPermission || await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw new Error('File access denied. Allow access or use Save As.');
+        if (handle.queryPermission && await diagnostics.trace('file.save.queryPermission', () => handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+          if (!handle.requestPermission || await diagnostics.trace('file.save.requestPermission', () => handle.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('File access denied. Allow access or use Save As.');
         }
-        const current = await (await handle.getFile()).text();
+        const current = await diagnostics.trace('file.save.checkExternalChanges', async () => (await handle.getFile()).text());
         if (current !== record.contents && current !== record.pending) throw new Error('This file changed outside Plan. Open it to review the changes, or use Save As for a separate copy.');
       }
       if (record || typeof browser.showSaveFilePicker === 'function') {
-        const handle = record?.handle || await browser.showSaveFilePicker({ id: 'plan-projects', suggestedName: name, types: TYPES });
+        const handle = record?.handle || await diagnostics.trace('file.save.picker', () => browser.showSaveFilePicker({ id: 'plan-projects', suggestedName: name, types: TYPES }));
         // Remember the attempted snapshot if close loses its acknowledgement. Next Save first
         // reconciles the actual file with either the last confirmed or attempted contents.
         if (record) await bindings.write(sheet.fileToken, { ...record, pending: contents });
         if (record && (store.stale || sheet.readOnly)) throw new Error('The project changed in another window. Reload, or use Save As for a copy.');
-        writable = await handle.createWritable();
-        await writable.write(contents); closing = true;
-        await writable.close(); writable = null;
-        await connect(sheet, handle, contents);
+        writable = await diagnostics.trace('file.save.createWritable', () => handle.createWritable());
+        await diagnostics.trace('file.save.write', () => writable.write(contents)); closing = true;
+        await diagnostics.trace('file.save.close', () => writable.close()); writable = null;
+        await diagnostics.trace('file.save.connect', () => connect(sheet, handle, contents));
         ctx.toast(`Saved ${handle.name || name}`);
       } else {
         const url = browser.URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
@@ -203,11 +223,13 @@ export function createProjectFiles(ctx, browser = window) {
         try { a.click(); } finally { a.remove(); browser.setTimeout(() => browser.URL.revokeObjectURL(url), 4000); }
         ctx.toast(`Download started: ${name}`);
       }
+      operation.end();
     } catch (e) {
+      operation.fail(e);
       if (writable) { try { await writable.abort(); } catch { /* the browser may have already closed the stream */ } }
       if (closing) ctx.toast('Could not confirm the project save. Check the selected file before trying again.');
       else report('save', e);
-    } finally { lock(false); }
+    } finally { lock(false); diagnostics.record('file.save.controlsUnlocked'); }
   }
 
   function paintSave() {
@@ -223,7 +245,7 @@ export function createProjectFiles(ctx, browser = window) {
   doc.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || !['o', 's'].includes(e.key.toLowerCase())) return;
     e.preventDefault();
-    if (doc.querySelector('.modal-back') || store._orig) return;
+    if (doc.querySelector('.modal-back, #diagnostics-dialog[open]') || store._orig) return;
     e.stopPropagation();
     // Commit an in-progress grid/formula edit before capturing the project.
     doc.activeElement?.blur();

@@ -2,9 +2,13 @@
 import argparse
 import contextlib
 import functools
+import hashlib
 import http.server
 import json
+import platform
 import sqlite3
+import struct
+import sys
 import webbrowser
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -19,6 +23,26 @@ from .persistence import (
 )
 
 WEB = Path(__file__).parent / "web"
+
+
+def runtime_diagnostics():
+    """Describe the running build without exposing paths, environment variables or saved data."""
+    digest = hashlib.sha256()
+    source = WEB.parent
+    for path in sorted([*source.glob("*.py"), *WEB.glob("*.html"), *WEB.glob("*.css"), *WEB.glob("js/*.js")]):
+        digest.update(path.relative_to(source).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return {
+        "app": "plan-local", "diagnosticsVersion": 1,
+        "sourceFingerprint": digest.hexdigest(),
+        "python": {"version": platform.python_version(), "implementation": platform.python_implementation(),
+                   "bitness": struct.calcsize("P") * 8, "bundled": any(Path(sys.executable).parent.glob("python*._pth"))},
+        "operatingSystem": {"system": platform.system(), "release": platform.release(),
+                            "version": platform.version(), "machine": platform.machine()},
+        "sqliteVersion": sqlite3.sqlite_version,
+        "storageBackend": "sqlite",
+    }
 
 
 class ProjectHandler(http.server.SimpleHTTPRequestHandler):
@@ -44,7 +68,12 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if parsed.path == "/api/health":
+        if parsed.path == "/api/diagnostics":
+            try:
+                self.send_json(200, runtime_diagnostics())
+            except OSError:
+                self.send_json(503, {"error": "Cannot inspect the installed app source"})
+        elif parsed.path == "/api/health":
             self.send_json(200, {"app": "plan-local", "dataFile": str(self.storage.path)})
         elif parsed.path == "/api/projects" or parsed.path.startswith("/api/history"):
             try:

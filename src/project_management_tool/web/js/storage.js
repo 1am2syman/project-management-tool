@@ -1,4 +1,5 @@
 import { appState } from './appstate.js';
+import { diagnostics } from './diagnosticlog.js';
 
 // The launcher supplies SQLite. Static previews retain their browser-only behavior.
 export async function openProjectStorage() {
@@ -9,9 +10,11 @@ export async function openProjectStorage() {
   const controls = () => { if (historyButton) historyButton.disabled = mode !== 'disk' || blocked || inFlight || pending !== null; };
   const paint = (text, kind = '', detail = '', clickable = false) => {
     badge.textContent = text; badge.dataset.state = kind; badge.title = detail || text; badge.disabled = !clickable; controls();
+    diagnostics.record('storage.status', { mode, status: kind, message: text, ...(kind === 'error' ? { detail } : {}) }, kind === 'error' ? 'error' : 'info');
   };
   const saved = () => paint('Saved to this computer', 'saved', `App state and history save automatically to ${dataFile}`);
   paint('Loading saved app state…');
+  const loadOperation = diagnostics.begin('storage.load');
   try {
     const response = await fetch(endpoint, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
     if (response.status === 404 || response.status === 405) {
@@ -24,12 +27,15 @@ export async function openProjectStorage() {
       lastSaved = initial ? JSON.stringify(initial) : null; saved();
     }
   } catch (e) {
+    loadOperation.fail(e);
     mode = 'unavailable';
     paint('Disk unavailable · Browser only', 'error', `${e.message}. Existing disk data is preserved. Check the server window, then reopen the app.`);
   }
+  loadOperation.end({ mode, hasSavedState: !!initial });
   appState.restore(initial ? initial.browser || {} : null);
 
   function markStale() {
+    diagnostics.record('storage.stale', {}, 'warn');
     blocked = true; pending = null;
     if (store) store.stale = true;
     paint('Changed elsewhere · Reload', 'error', 'Another window saved the app state. Reload to load its changes.', true);
@@ -41,6 +47,7 @@ export async function openProjectStorage() {
     if (pending === lastSaved) { pending = null; saved(); return; }
     const sent = pending; pending = null; inFlight = true;
     paint('Saving…', 'saving');
+    const operation = diagnostics.begin('storage.save', { characters: sent.length, reconciling: uncertain !== null });
     let failed = false, attempted = false;
     try {
       // A lost response may follow a successful commit. Reconcile before retrying newer edits.
@@ -63,7 +70,9 @@ export async function openProjectStorage() {
       if (typeof result.revision !== 'string') throw new Error('Save acknowledgement is incomplete');
       revision = result.revision; lastSaved = sent; uncertain = null;
       if (!blocked) saved();
+      operation.end();
     } catch (e) {
+      operation.fail(e);
       failed = true;
       if (attempted) uncertain = sent;
       if (!blocked) {
@@ -71,6 +80,7 @@ export async function openProjectStorage() {
         paint('Not saved to disk · Retry', 'error', e.message, true);
       }
     } finally {
+      operation.end({ blocked });
       inFlight = false; controls();
       if (!failed && !blocked && pending !== null) void flush();
     }
@@ -86,6 +96,7 @@ export async function openProjectStorage() {
     initial, markStale,
     attach(value) {
       store = value;
+      diagnostics.record('storage.attached', { mode });
       if (mode !== 'disk') return;
       store.persist = (state) => {
         if (blocked || store.stale) return;
