@@ -3,6 +3,8 @@ import { appState } from './appstate.js';
 import { openProjectStorage } from './storage.js';
 import { createHistory } from './history.js';
 import { createGrid, COLS } from './grid.js';
+import { createTaskUI } from './taskui.js';
+import { createCalendarUI } from './calendarui.js';
 import { createGantt } from './gantt.js';
 import { createRelationshipEditor } from './relationships.js';
 import { setHTML } from './dom.js';
@@ -15,7 +17,7 @@ import { createM365UI } from './m365ui.js';
 import { createReminders } from './reminders.js';
 import { createSharing } from './sharing.js';
 import * as m365 from './m365.js';
-import { initDensity, setDensity, dims } from './dims.js';
+import { initDensity, setDensity, fitDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
 const storage = await openProjectStorage();
@@ -77,7 +79,7 @@ function status() {
   const viol = store.links.filter((l) => l.violated).length;
   setHTML($('#stat'), `<span><b>${leaves.length - ms}</b> tasks · <b>${ms}</b> milestones · <b>${store.links.length}</b> links</span>` +
     `<span>Finish <b>${fmtDate(P.end - 1)}</b> · <b>${P.end - P.start}</b> days</span>` +
-    `<span class="cr">Critical path: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (auto-schedule off)</span>` : ''));
+    `<span class="cr">Critical path: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
 }
 
 function renderAll() {
@@ -86,8 +88,12 @@ function renderAll() {
   ctx.rel = ui.focus && ui.selId != null ? store.related(ui.selId) : null;
   $('#app').classList.toggle('focusing', !!ctx.rel);
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
+  fitDensity($('#gb').clientHeight, store.rows.length);
+  const densityButton = $('[data-act=density]'); densityButton.textContent = dims.name === 'auto' ? 'Density: Adaptive' : 'Density: Compact';
+  densityButton.title = 'Toggle compact rows or adaptive rows that fill the available height';
+  densityButton.setAttribute('aria-pressed', String(dims.name === 'auto'));
   grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render();
-  $('.brand b').textContent = store.sheet().name;
+  $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
@@ -102,18 +108,27 @@ store.on((kind) => {
   } else ctx.requestRender();
 });
 
+ctx.insertTask = (ms = false, position = 'after', referenceId = ui.selId) => {
+  grid.commitEdit();
+  const result = store.insertTask(referenceId, ms, position);
+  if (result.error) { ctx.toast(result.error); return; }
+  ctx.select(result.id, 'name', true);
+  grid.startEdit(result.id, 'name');
+};
+createTaskUI(ctx, grid);
+createCalendarUI(ctx, grid);
 const act = {
-  add: () => { const id = store.addTask(ui.selId); ctx.select(id, 'name', true); setTimeout(() => grid.startEdit(id, 'name'), 30); },
-  addms: () => { const id = store.addTask(ui.selId, true); ctx.select(id, 'name', true); },
-  indent: () => { if (ui.selId != null) { const err = store.indent(ui.selId, 1); if (err) ctx.toast(err); } },
-  outdent: () => { if (ui.selId != null) store.indent(ui.selId, -1); },
+  add: () => ctx.insertTask(),
+  addms: () => ctx.insertTask(true),
+  indent: () => { grid.commitEdit(); if (ui.selId != null) { const err = store.indent(ui.selId, 1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
+  outdent: () => { grid.commitEdit(); if (ui.selId != null) { const err = store.indent(ui.selId, -1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
   del: () => {
     if (ui.linkId) { store.removeLink(ui.linkId); ui.linkId = null; gantt.closePop(); }
     else if (ui.selId != null) { const rows = store.rows, i = rows.findIndex((t) => t.id === ui.selId); store.deleteTask(ui.selId); const n = store.rows[Math.min(i, store.rows.length - 1)]; ui.selId = n ? n.id : null; }
   },
   undo: () => store.undo(), redo: () => store.redo(),
   reset: () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) store.resetAll(); },
-  density: () => { setDensity(dims.name === 'compact' ? 'roomy' : 'compact'); ctx.requestRender(); },
+  density: () => { setDensity(dims.name === 'compact' ? 'auto' : 'compact'); ctx.requestRender(); },
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
@@ -138,8 +153,9 @@ document.addEventListener('keydown', (e) => {
   if (e.target.matches('input,textarea,select') || document.querySelector('.modal-back')) return; // dialogs own the keyboard
   const mod = e.metaKey || e.ctrlKey;
   // keys on a focused button/link/switch belong to that control, not to the grid (keeps Tab and Enter working for keyboard users)
-  if (!mod && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;
+  if (!mod && !e.altKey && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;
   if (gantt.isDragging() && e.key !== 'Escape') { if (mod || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); return; }
+  if (mod && !e.altKey && e.key === 'Enter') { e.preventDefault(); ctx.insertTask(e.shiftKey); return; }
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) store.redo(); else store.undo(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
   if (e.key === 'Escape') { if (gantt.isDragging()) gantt.cancelDrag(); else if (gantt.popOpen()) gantt.closePop(); else { ui.linkId = null; ctx.select(null); } return; }
@@ -182,6 +198,7 @@ document.addEventListener('keydown', (e) => {
 })();
 
 addEventListener('resize', () => ctx.requestRender());
+if (window.ResizeObserver) new ResizeObserver(() => ctx.requestRender()).observe($('#gb'));
 renderAll();
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 m365.init().then(() => { reminders.badge(); sharing.fromHash(); });

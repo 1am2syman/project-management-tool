@@ -82,14 +82,14 @@ export function createGantt(ctx) {
   function layout() {
     const P = store.project;
     if (origin == null) origin = monday(P.start - 14);
-    else if (P.start - 7 < origin) { const no = monday(P.start - 14); pendShift += (origin - no) * ppd; origin = no; layoutKey = ''; } // tasks moved earlier than the timeline: grow it leftwards
+    else if (P.start < origin) { const no = monday(P.start - 14); pendShift += (origin - no) * ppd; origin = no; layoutKey = ''; } // tasks moved earlier than the timeline: grow it leftwards
     const vw = vwCache || gb.clientWidth || 800; // cached: reading clientWidth after the grid's DOM writes would force a layout every frame
     const target = Math.max(P.end + 45, origin + Math.ceil(vw / ppd) + 7);
     endDay = origin + Math.ceil((target - origin) / 14) * 14;
     W = (endDay - origin) * ppd;
     taskH = store.rows.length * dims.row;
     H = taskH + dims.row + 4 + PAD_B; // match the grid's total row and bottom padding for scroll sync
-    const key = `${origin}|${endDay}|${ppd}|${H}`;
+    const key = `${origin}|${endDay}|${ppd}|${H}|${JSON.stringify(store.calendar)}`;
     if (key === layoutKey) return;
     layoutKey = key;
     buildHead(); buildBg();
@@ -123,7 +123,7 @@ export function createGantt(ctx) {
     tiers.forEach((unit, ti) => {
       for (let d = unit === 'week' ? monday(origin) : origin; d < endDay;) {
         const nb = nextBoundary(unit, d), s = Math.max(d, origin), e = Math.min(nb, endDay), w = (e - s) * ppd;
-        const dow0 = dow(d), we = unit === 'day' && (dow0 === 0 || dow0 === 6);
+        const dow0 = dow(d), we = unit === 'day' && !store.work.isWork(d);
         const cur = today >= d && today < nb;
         let inner = '';
         if (unit === 'day') { if (ppd >= 14) inner = `${ppd >= 26 ? `<small>${LETTER[dow0]}</small>` : ''}${ymd(d)[2]}`; }
@@ -138,14 +138,14 @@ export function createGantt(ctx) {
 
   function buildBg() {
     if (ppd >= 5) {
-      const sat = (6 - dow(origin) + 7) % 7;
-      const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse"><rect x="${sat * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/><rect x="${((sat + 1) % 7) * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/></pattern>`;
+      const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/>` : '').join('');
+      const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern>`;
       const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.045 : 0.07;
       bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,${a})"/></pattern></defs>`;
       bgBody = `<rect width="${W}" height="${taskH}" fill="url(#wk)"/><rect width="${W}" height="${taskH}" fill="url(#dl)"/>`;
     } else { bgDefs = ''; bgBody = ''; }
     // explicit month / quarter boundaries in the coarse views
-    let lines = '';
+    let lines = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
     if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
     bg.setAttribute('width', W); bg.setAttribute('height', taskH);
     setSVG(bg, bgDefs + bgBody + lines);
@@ -192,6 +192,8 @@ export function createGantt(ctx) {
       [x1, x2] = nudged(t, f, x1, x2);
       const ms = t.ms && !f.summary;
       const rc = relClass(t.id);
+      const schedule = store.scheduling(t.id);
+      el.dataset.scheduling = schedule.mode; el.dataset.scheduleMark = schedule.mark; el.setAttribute('aria-label', `${t.name} · ${schedule.label}`);
       const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
       if (el._cls !== cls) { el.className = cls; el._cls = cls; }
@@ -199,6 +201,7 @@ export function createGantt(ctx) {
       el.style.transform = `translate3d(${ms ? x1 : x1 + 1}px,${y}px,0)`;
       if (!ms) el.style.width = w + 'px';
       if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
+      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}`;
       // Keep readable bars self-contained; only very short bars need an external label.
       const out = !f.summary && !ms && w < 80 && textW(t.name) + 16 > w;
       el._label.classList.toggle('out', out);
@@ -289,15 +292,27 @@ export function createGantt(ctx) {
     gb.scrollLeft = (day - origin) * ppd - ax; syncHead(); queueView();
   }
   function fit() {
-    const P = store.project, vw = gb.clientWidth - 40;
-    origin = monday(P.start - 7); layoutKey = '';
-    ppd = clamp(vw / (P.end - origin + 7), 1.2, 90); render();
+    const P = store.project, vw = gb.clientWidth;
+    if (vw < 60 || !store.rows.length) return;
+    // Include real external labels, summary labels and milestone diamonds. The outside-label
+    // threshold changes with zoom, so measure again after each adjustment.
+    ppd = Math.min(90, (vw - 40) / Math.max(1, P.end - P.start));
+    for (let i = 0; i < 12; i++) {
+      origin = P.start - Math.ceil(20 / ppd); layoutKey = ''; render();
+      const left = canvas.getBoundingClientRect().left;
+      let right = 0;
+      for (const el of barEls.values()) {
+        right = Math.max(right, el.getBoundingClientRect().right - left, el._label.getBoundingClientRect().right - left);
+      }
+      if (right <= vw - 16) break;
+      ppd *= Math.max(0.1, (vw - 36) / Math.max(vw, right - 20));
+    }
     gb.scrollLeft = 0; syncHead(); queueView();
   }
   function reset() {
     flushView(); restoringView = true;
     const view = readViews()[store.wb.active];
-    ppd = Number.isFinite(view?.ppd) ? clamp(view.ppd, 1.2, 90) : 16;
+    ppd = Number.isFinite(view?.ppd) ? clamp(view.ppd, 0.000001, 90) : 16;
     origin = null; layoutKey = '';
     for (const el of barEls.values()) el.remove();
     barEls.clear(); gb.scrollTop = 0; gb.scrollLeft = 0; closePop();
@@ -330,7 +345,7 @@ export function createGantt(ctx) {
     if (!drag || !drag.moved) return;
     const t = store.byId.get(drag.id), f = store.info.get(drag.id);
     if (drag.kind === 'prog') { showTip(`<b>${esc(t.name)}</b> <span>${Math.round(t.progress)}% complete</span>`, drag.lastX, drag.lastY); return; }
-    const dur = f.end - f.start;
+    const dur = store.duration(t.id);
     showTip(`<b>${esc(t.name)}</b> <span>${fmtDate(f.start)}${t.ms ? '' : ` → ${fmtDate(f.end - 1)} · ${dur}d`}</span>`, drag.lastX, drag.lastY);
   }
 
@@ -350,6 +365,7 @@ export function createGantt(ctx) {
     }
     const id = +bar.dataset.id;
     if (ui.selId !== id || ui.linkId) ctx.select(id, ui.col);
+    if (store.stale) { ctx.toast('This project changed in another window; reload before editing.'); return; }
     if (store.readOnly) { store.emit('denied'); return; } // viewers can look, not touch
     gb.setPointerCapture(e.pointerId);
     if (dot) { drag = { kind: 'link', id, end: dot.classList.contains('f') ? 'f' : 's', moved: true, lastX: e.clientX, lastY: e.clientY, target: null }; root.classList.add('linking'); e.preventDefault(); return; }

@@ -10,6 +10,7 @@ wheels/
 .venv/
 .ruff_cache/
 .pytest_cache/
+.unlazy/
 .pi/
 
 # Local app state (default database lives outside the app, in Documents/Plan)
@@ -18,3 +19,9 @@ data/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Optional JavaScript tooling and browser test output
+node_modules/
+playwright-report/
+test-results/
+coverage/

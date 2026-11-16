@@ -1,7 +1,8 @@
 // Data model, scheduling engine (all 4 link types), critical path (CPM), undo/redo.
-// Durations are calendar days. A task occupies [start, start+dur) (end is exclusive).
+// Durations count project working days; computed finish dates are exclusive.
 // Milestones have dur 0.
 import { appState } from './appstate.js';
+import { WorkingCalendar, cleanCalendar, calendarError } from './calendar.js';
 
 export const DAY = 86400000;
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -107,9 +108,10 @@ function sanitize(d) {
     const ms = !!r.ms, prev = tasks[tasks.length - 1];
     const level = Math.max(0, Math.min(prev ? prev.level + 1 : 0, Math.floor(Number(r.level)) || 0));
     const start = Number.isFinite(Number(r.start)) ? Math.round(Number(r.start)) : today;
-    const dur = ms ? 0 : Math.max(1, Math.round(Number(r.dur)) || 1);
+    const rawDuration = Math.round(Number(r.dur));
+    const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, ...(['auto', 'manual'].includes(r.scheduling) ? { scheduling: r.scheduling } : {}) });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -120,7 +122,7 @@ function sanitize(d) {
   }
   const uniq = new Set(); const clean = links.filter((l) => { if (uniq.has(l.id)) return false; uniq.add(l.id); return true; });
   const collapsed = (Array.isArray(d && d.collapsed) ? d.collapsed : []).filter((x) => ids.has(x));
-  return { tasks, links: clean, collapsed, nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
+  return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
 }
 
 function blank() {
@@ -190,7 +192,7 @@ export class Store {
     try {
       const w = saved ?? JSON.parse(localStorage.getItem(WB));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
-        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source) }));
+        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source) }));
         if (sheets.length) {
           const nextSheet = Math.max(Number(w.nextSheet) || 1, Math.max(0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1);
           return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
@@ -208,13 +210,14 @@ export class Store {
   sheet(id = this.wb.active) { return this.wb.sheets.find((s) => s.id === id); }
   load(d) {
     const c = sanitize(d);
+    this.calendar = c.calendar; this.work = new WorkingCalendar(this.calendar);
     this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
     this.settle();
   }
   // What is stored: tasks and the user-authored fields of links (slack/violated/critical are recomputed on load).
   // Undo snapshots leave out which groups are collapsed: folding a group is a view choice, not an edit to be undone.
   serialize(withView = true) {
-    const o = { tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
+    const o = { calendar: this.calendar, tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
     if (withView) o.collapsed = [...this.collapsed];
     return JSON.stringify(o);
   }
@@ -296,7 +299,7 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
+    Object.assign(v, { listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
     v.settle(); return v;
   }
 
@@ -313,6 +316,7 @@ export class Store {
     const t = {
       id: `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: n, builtin: false, savedAt: Date.now(),
       desc: `Saved from "${this.sheet().name}"`,
+      calendar: cleanCalendar(this.calendar),
       tasks: this.tasks.map((x) => ({ ...x, start: x.start - base, progress: 0 })),
       links: this.links.map(({ id, from, to, type, lag }) => ({ id, from, to, type, lag })), nextId: this.nextId, nextLink: this.nextLink,
     };
@@ -322,7 +326,7 @@ export class Store {
   }
   deleteTemplate(id) { this.templates = this.templates.filter((t) => t.id !== id); this.saveTpl(); this.emit('meta'); }
   instantiate(tpl, startDay, name) {
-    const data = { tasks: tpl.tasks.map((t) => ({ ...t, start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
+    const data = { calendar: cleanCalendar(tpl.calendar), tasks: tpl.tasks.map((t) => ({ ...t, start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
     const id = this.addSheet(data, name || tpl.name);
     this.recalc(); this.propagate(); this.recalc(); this.save(); this.emit('sheet'); // always resolve links once, even with auto-schedule off
     return id;
@@ -348,13 +352,13 @@ export class Store {
   redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
-  beginDrag() { this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress })); }
+  beginDrag() { this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
   dragApply(fn) {
-    for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; }
+    for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; }
     fn(); this.settle(); this.emit('drag');
   }
   endDrag(commit = true) {
-    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; } this.settle(); }
+    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; } this.settle(); }
     else if (this.snap() !== this._before) { this.undoStack.push(this._before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
   }
@@ -372,8 +376,8 @@ export class Store {
     for (const l of this.incoming(id)) {
       if (exclude && exclude.has(l.from)) continue;
       const p = this.byId.get(l.from);
-      if (l.type === 'FS') m = Math.max(m, p.start + p.dur + l.lag);
-      else if (l.type === 'SS') m = Math.max(m, p.start + l.lag);
+      if (l.type === 'FS') m = Math.max(m, this.work.shift(this.work.next(this.finish(p)), l.lag));
+      else if (l.type === 'SS') m = Math.max(m, this.work.shift(p.start, l.lag));
     }
     return m;
   }
@@ -382,12 +386,29 @@ export class Store {
     for (const l of this.incoming(id)) {
       if (exclude && exclude.has(l.from)) continue;
       const p = this.byId.get(l.from);
-      if (l.type === 'FF') m = Math.max(m, p.start + p.dur + l.lag);
-      else if (l.type === 'SF') m = Math.max(m, p.start + l.lag);
+      if (l.type === 'FF') m = Math.max(m, this.work.shiftEnd(this.finish(p), l.lag));
+      else if (l.type === 'SF') m = Math.max(m, this.work.shiftEnd(p.start, l.lag));
     }
     return m;
   }
-  lowerBound(id, exclude) { const t = this.byId.get(id); return Math.max(this.startLB(id, exclude), this.endLB(id, exclude) - t.dur); }
+  finish(task) { return this.work.finish(task.start, task.dur); }
+  duration(id) { const f = this.info.get(id), t = this.byId.get(id); return f.summary ? this.work.count(f.start, f.end) : t.dur; }
+  lowerBound(id, exclude) { const t = this.byId.get(id); return Math.max(this.startLB(id, exclude), this.work.start(this.endLB(id, exclude), t.dur)); }
+  previewCalendar(value) {
+    const error = this.structureError() || calendarError(value); if (error) return { error };
+    const view = Object.create(Store.prototype);
+    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(value), work: new WorkingCalendar(value), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed) });
+    for (const task of view.tasks) if (!this.info.get(task.id).summary) task.start = view.work.next(task.start);
+    view.settle();
+    if ([...view.info.values()].some((f) => !Number.isSafeInteger(f.end) || Math.abs(f.start) > 99999999 || Math.abs(f.end) > 99999999)) return { error: 'This calendar moves task dates outside the supported date range; shorten the affected tasks first' };
+    const changes = this.tasks.filter((t) => { const before = this.info.get(t.id), after = view.info.get(t.id); return before.start !== after.start || before.end !== after.end; }).map((t) => ({ id: t.id, name: t.name, before: this.info.get(t.id), after: view.info.get(t.id) }));
+    return { view, changes };
+  }
+  setCalendar(value) {
+    const preview = this.previewCalendar(value); if (preview.error) return preview.error;
+    this.tx(() => { this.calendar = preview.view.calendar; this.work = preview.view.work; this.tasks = preview.view.tasks; });
+    return null;
+  }
 
   topo() {
     const leaves = this.tasks.filter((t) => !this.info.get(t.id).summary);
@@ -401,11 +422,34 @@ export class Store {
     for (const t of leaves) if (!seen.has(t.id)) out.push(t.id);
     return out;
   }
+  scheduling(id) {
+    const t = this.byId.get(id);
+    if (this.info.get(id)?.summary) return { mode: 'summary', mark: 'Σ', label: 'Summary', detail: 'Dates roll up from child tasks' };
+    if (t?.scheduling === 'auto') return { mode: 'auto', mark: 'A', label: this.auto ? 'Auto' : 'Auto paused', detail: 'Earliest date from connections and the project calendar' + (this.auto ? '' : '; enable Auto-schedule for live updates') };
+    if (t?.scheduling === 'manual') return { mode: 'manual', mark: 'M', label: 'Manual', detail: 'Dates set by you; connections do not move this task' };
+    return { mode: 'anchor', mark: 'D', label: 'Date anchor', detail: 'Keeps its chosen date; Auto-schedule can delay it to satisfy connections. Choose Auto-calculate to remove this date anchor.' };
+  }
+  setScheduling(id, mode) {
+    const error = this.structureError(); if (error) return error;
+    const t = this.byId.get(id), f = this.info.get(id);
+    if (!t || !f) return 'Task no longer exists';
+    if (f.summary) return 'Summary dates come from their children';
+    if (!['auto', 'manual', 'anchor'].includes(mode)) return 'Unknown scheduling mode';
+    if (mode === 'auto' && !this.incoming(id).length) return 'Connect a predecessor before calculating this task';
+    const lb = this.lowerBound(id);
+    if (mode === 'auto' && (!Number.isSafeInteger(lb) || Math.abs(this.work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
+    this.tx(() => {
+      if (mode === 'anchor') delete t.scheduling; else t.scheduling = mode;
+      if (mode === 'auto') t.start = this.work.next(lb);
+    });
+    return null;
+  }
   propagate() {
     for (const id of this.topo()) {
       const lb = this.lowerBound(id);
       const t = this.byId.get(id);
-      if (lb > t.start) t.start = lb;
+      if (t.scheduling === 'manual') continue;
+      t.start = this.work.next(t.scheduling === 'auto' && Number.isFinite(lb) ? lb : Math.max(t.start, lb));
     }
   }
   // Everything connected to a task: WBS ancestors / descendants and the transitive dependency chain in both directions.
@@ -434,11 +478,11 @@ export class Store {
     // summaries
     for (const t of T) {
       const f = info.get(t.id);
-      if (!f.summary) { f.start = t.start; f.end = t.start + t.dur; f.progress = t.progress; continue; }
+      if (!f.summary) { f.start = t.start; f.end = this.finish(t); f.progress = t.progress; continue; }
       let s = Infinity, e = -Infinity, w = 0, pw = 0;
       for (let j = f.i + 1; j <= f.sub; j++) {
         if (info.get(T[j].id).summary) continue;
-        s = Math.min(s, T[j].start); e = Math.max(e, T[j].start + T[j].dur);
+        s = Math.min(s, T[j].start); e = Math.max(e, this.finish(T[j]));
         const wt = Math.max(T[j].dur, 0.0001); w += wt; pw += wt * T[j].progress;
       }
       f.start = s; f.end = e; f.progress = w ? pw / w : 0;
@@ -446,26 +490,37 @@ export class Store {
     // CPM on leaves (zero total float against the current schedule = critical)
     const order = this.topo(), leaves = order.map((id) => this.byId.get(id));
     let pend = -Infinity, pstart = Infinity;
-    for (const t of leaves) { pend = Math.max(pend, t.start + t.dur); pstart = Math.min(pstart, t.start); }
-    const LF = new Map(leaves.map((t) => [t.id, pend]));
+    for (const t of leaves) { pend = Math.max(pend, this.finish(t)); pstart = Math.min(pstart, t.start); }
+    const latestStarts = new Map();
     for (let k = order.length - 1; k >= 0; k--) {
-      const t = this.byId.get(order[k]); let lf = pend;
-      for (const l of this.outgoing(t.id)) {
-        const s = this.byId.get(l.to), lfs = LF.get(l.to), lss = lfs - s.dur;
-        if (l.type === 'FS') lf = Math.min(lf, lss - l.lag);
-        else if (l.type === 'SS') lf = Math.min(lf, lss - l.lag + t.dur);
-        else if (l.type === 'FF') lf = Math.min(lf, lfs - l.lag);
-        else lf = Math.min(lf, lfs - l.lag + t.dur);
+      const t = this.byId.get(order[k]);
+      let latest = t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      // Invert the same endpoint constraints used by forward scheduling. Searching actual
+      // workday starts also handles milestones and finishes beside weekends/holidays.
+      const fits = (day) => {
+        const start = this.work.next(day, -1), end = this.work.finish(start, t.dur);
+        return this.outgoing(t.id).every((l) => {
+          const successor = this.byId.get(l.to), ss = latestStarts.get(l.to) ?? successor.start;
+          const source = l.type[0] === 'F' ? end : start;
+          const required = l.type[1] === 'S' ? this.work.shift(source, l.lag) : this.work.shiftEnd(source, l.lag);
+          return required <= (l.type[1] === 'S' ? ss : this.work.finish(ss, successor.dur));
+        });
+      };
+      if (!fits(latest)) {
+        let lo = Math.min(t.start, latest), hi = latest, step = 7;
+        while (!fits(lo)) { lo -= step; step *= 2; }
+        while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (fits(mid)) lo = mid; else hi = mid - 1; }
+        latest = this.work.next(lo, -1);
       }
-      LF.set(t.id, lf);
-      const f = info.get(t.id); f.float = lf - (t.start + t.dur); f.critical = f.float <= 0 && t.progress < 100;
+      latestStarts.set(t.id, latest);
+      const f = info.get(t.id); f.float = this.work.count(t.start, latest); f.critical = f.float <= 0 && t.progress < 100;
     }
     for (const t of T) { const f = info.get(t.id); if (f.summary) { f.float = null; f.critical = false; } }
     // a summary is "critical" if any of its children is
     for (const t of T) { const f = info.get(t.id); if (f.summary) for (let j = f.i + 1; j <= f.sub; j++) if (info.get(T[j].id).critical) { f.critical = true; break; } }
     for (const l of this.links) {
-      const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = p.start + p.dur, se = s.start + s.dur;
-      l.slack = l.type === 'FS' ? s.start - (pe + l.lag) : l.type === 'SS' ? s.start - (p.start + l.lag) : l.type === 'FF' ? se - (pe + l.lag) : se - (p.start + l.lag);
+      const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = this.finish(p), se = this.finish(s);
+      l.slack = l.type === 'FS' ? s.start - this.work.shift(this.work.next(pe), l.lag) : l.type === 'SS' ? s.start - this.work.shift(p.start, l.lag) : l.type === 'FF' ? se - this.work.shiftEnd(pe, l.lag) : se - this.work.shiftEnd(p.start, l.lag);
       l.violated = l.slack < 0;
       l.critical = l.slack <= 0 && info.get(l.from).critical && info.get(l.to).critical;
     }
@@ -487,52 +542,115 @@ export class Store {
     const f = this.info.get(id);
     if (f.summary) {
       const ids = this.descLeaves(id), set = new Set(ids); let d = delta;
-      if (this.auto) for (const lid of ids) d = Math.max(d, this.lowerBound(lid, set) - this.byId.get(lid).start);
-      for (const lid of ids) this.byId.get(lid).start += d;
+      if (this.auto) for (const lid of ids) if (!this.byId.get(lid).scheduling) d = Math.max(d, this.lowerBound(lid, set) - this.byId.get(lid).start);
+      for (const lid of ids) { const t = this.byId.get(lid); if (t.scheduling === 'auto') t.scheduling = 'manual'; t.start = this.work.next(t.start + d); }
     } else {
       const t = this.byId.get(id); let s = t.start + delta;
-      if (this.auto) s = Math.max(s, this.lowerBound(id));
-      t.start = s;
+      if (t.scheduling === 'auto') t.scheduling = 'manual';
+      if (this.auto && !t.scheduling) s = Math.max(s, this.lowerBound(id));
+      t.start = this.work.next(s);
     }
   }
   dragResize(id, side, delta) {
-    const t = this.byId.get(id), end = t.start + t.dur;
+    const t = this.byId.get(id), end = this.finish(t);
+    if (t.scheduling === 'auto') t.scheduling = 'manual';
     if (side === 'l') {
-      let s = t.start + delta; if (this.auto) s = Math.max(s, this.startLB(id));
-      s = Math.min(s, end - 1); t.start = s; t.dur = end - s;
+      let s = t.start + delta; if (this.auto && !t.scheduling) s = Math.max(s, this.startLB(id));
+      s = Math.min(this.work.next(s), this.work.next(end - 1, -1)); t.start = s; t.dur = Math.max(1, this.work.count(s, end));
     } else {
-      let e = end + delta; if (this.auto) e = Math.max(e, this.endLB(id));
-      e = Math.max(e, t.start + 1); t.dur = e - t.start;
+      let e = end + delta; if (this.auto && !t.scheduling) e = Math.max(e, this.endLB(id));
+      t.dur = Math.max(1, this.work.count(t.start, e));
     }
   }
   dragProgress(id, pct) { this.byId.get(id).progress = Math.max(0, Math.min(100, Math.round(pct))); }
 
   // ---- structure ----
-  addTask(afterId, ms = false) {
-    return this.tx(() => {
-      const after = afterId != null ? this.byId.get(afterId) : null;
-      const f = after ? this.info.get(after.id) : null;
-      const idx = f ? f.sub + 1 : this.tasks.length;
-      const level = after ? after.level : this.tasks.length ? this.tasks[this.tasks.length - 1].level : 0;
-      const start = f ? (f.summary ? f.start : after.start) : today;
-      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level, start, dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms };
-      this.tasks.splice(idx, 0, t);
+  structureError() {
+    if (this.readOnly) return 'This project is read-only';
+    if (this.stale) return 'This project changed in another tab; reload before editing';
+    return null;
+  }
+  parentId(id) {
+    const f = this.info.get(id), t = this.byId.get(id);
+    if (!f || !t || t.level === 0) return null;
+    for (let i = f.i - 1; i >= 0; i--) if (this.tasks[i].level < t.level) return this.tasks[i].id;
+    return null;
+  }
+  canAddChild(id) {
+    const t = this.byId.get(id), f = this.info.get(id);
+    if (!t || !f) return 'Task no longer exists';
+    if (t.ms) return 'Milestones cannot contain child tasks';
+    if (!f.summary && this.links.some((l) => l.from === id || l.to === id)) return `“${t.name}” has relationships and would become a summary; remove its relationships first`;
+    return null;
+  }
+  insertion(referenceId, position = 'after') {
+    const error = this.structureError(); if (error) return { error };
+    if (!['before', 'after', 'child'].includes(position)) return { error: 'Unknown insertion position' };
+    if (referenceId == null) return position === 'child' ? { error: 'Select a parent task first' } : { index: this.tasks.length, level: 0, start: today };
+    const t = this.byId.get(referenceId), f = this.info.get(referenceId);
+    if (!t || !f) return { error: 'Task no longer exists' };
+    if (position === 'child') { const reason = this.canAddChild(referenceId); if (reason) return { error: reason }; }
+    return { index: position === 'before' ? f.i : f.sub + 1, level: t.level + (position === 'child' ? 1 : 0), start: f.start };
+  }
+  insertTask(referenceId, ms = false, position = 'after') {
+    const place = this.insertion(referenceId, position); if (place.error) return { error: place.error };
+    const id = this.tx(() => {
+      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level: place.level, start: this.work.next(place.start), dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms };
+      this.tasks.splice(place.index, 0, t);
+      if (position === 'child') this.collapsed.delete(referenceId);
       return t.id;
     });
+    return { id };
+  }
+  addTask(afterId, ms = false) { return this.insertTask(afterId, ms).id; }
+  movePlan(id, targetId, position = 'after') {
+    const place = this.insertion(targetId, position); if (place.error) return place;
+    const f = this.info.get(id), t = this.byId.get(id), target = this.info.get(targetId);
+    if (!f || !t || !target) return { error: 'Task no longer exists' };
+    if (target.i >= f.i && target.i <= f.sub) return { error: 'A cascade cannot be moved into itself or one of its children' };
+    return { ...place, from: f.i, count: f.sub - f.i + 1, delta: place.level - t.level };
+  }
+  moveTask(id, targetId, position = 'after') {
+    const place = this.movePlan(id, targetId, position); if (place.error) return place.error;
+    this.tx(() => {
+      const block = this.tasks.splice(place.from, place.count);
+      for (const t of block) t.level += place.delta;
+      this.tasks.splice(place.index > place.from ? place.index - place.count : place.index, 0, ...block);
+      if (position === 'child') this.collapsed.delete(targetId);
+    });
+    return null;
+  }
+  setTaskKind(id, milestone) {
+    const error = this.structureError(); if (error) return error;
+    const task = this.byId.get(id), info = this.info.get(id);
+    if (!task || !info) return 'Task no longer exists';
+    if (info.summary) return 'A cascade with child tasks cannot be converted to a milestone';
+    if (typeof milestone !== 'boolean') return 'Unknown task type';
+    if (task.ms === milestone) return null;
+    this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; });
+    return null;
   }
   deleteTask(id) {
     this.tx(() => { const f = this.info.get(id); const gone = new Set(this.tasks.slice(f.i, f.sub + 1).map((t) => t.id)); this.tasks.splice(f.i, f.sub - f.i + 1, ); this.links = this.links.filter((l) => !gone.has(l.from) && !gone.has(l.to)); });
   }
-  indent(id, dir) {
-    const f = this.info.get(id), T = this.tasks;
-    if (dir > 0 && (f.i === 0 || T[f.i].level > T[f.i - 1].level)) return null;
-    if (dir < 0 && T[f.i].level === 0) return null;
-    if (dir > 0) { // the previous row becomes a summary; summaries cannot carry links, so refuse rather than delete data silently
-      const p = T[f.i - 1];
-      if (!this.info.get(p.id).summary && this.links.some((l) => l.from === p.id || l.to === p.id)) return `“${p.name}” has links and would become a summary; remove its links first`;
+  indentPlan(id, dir) {
+    const error = this.structureError(); if (error) return { error };
+    const f = this.info.get(id), t = this.byId.get(id);
+    if (!f || !t) return { error: 'Select a task first' };
+    if (dir < 0) {
+      const parent = this.parentId(id);
+      return parent == null ? { error: 'This task is already at the top level' } : { targetId: parent, position: 'after' };
     }
-    this.tx(() => { for (let j = f.i; j <= f.sub; j++) T[j].level += dir; });
-    return null;
+    for (let i = f.i - 1; i >= 0; i--) {
+      const prev = this.tasks[i];
+      if (prev.level < t.level) break;
+      if (prev.level === t.level) return { targetId: prev.id, position: 'child' };
+    }
+    return { error: 'There is no previous sibling to indent under' };
+  }
+  indent(id, dir) {
+    const plan = this.indentPlan(id, dir);
+    return plan.error || this.moveTask(id, plan.targetId, plan.position);
   }
   toggle(id) { if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id); this.recalc(); this.save(); this.emit(); }
   reaches(a, b, seen = new Set()) { if (a === b) return true; if (seen.has(a)) return false; seen.add(a); return this.outgoing(a).some((l) => this.reaches(l.to, b, seen)); }
@@ -611,12 +729,12 @@ export class Store {
     if (col === 'end') {
       if (f.summary) return 'Summary dates come from their children';
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date';
-      this.tx(() => { if (t.ms) { t.start = d; } else { t.dur = Math.max(1, d - t.start + 1); if (this.auto) t.dur = Math.max(t.dur, this.endLB(id) - t.start); } });
+      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = this.work.next(d); } else { t.dur = Math.max(1, this.work.count(t.start, d + 1)); if (this.auto && !t.scheduling) t.dur = Math.max(t.dur, this.work.count(t.start, this.endLB(id))); } });
       return null;
     }
     if (col === 'dur') {
       if (f.summary || t.ms) return 'Duration is fixed for summaries and milestones';
-      const n = parseFloat(v); if (!(n >= 1)) return 'Duration must be at least 1 day';
+      const n = parseFloat(v); if (!Number.isFinite(n) || !(n >= 1) || n > 99999999 || Math.abs(this.work.finish(t.start, Math.round(n))) > 99999999) return 'Duration must be at least 1 working day and fit within the supported date range';
       this.tx(() => { t.dur = Math.round(n); }); return null;
     }
     if (col === 'progress') {

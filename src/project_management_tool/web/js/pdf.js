@@ -64,7 +64,7 @@ function projectPages(st, name, pages) {
   for (let pg = 0; pg < count; pg++) {
     const p = new Page(), i0 = pg * perPage, i1 = Math.min(n, i0 + perPage), y0 = topBlock + hdrH;
     p.text(name, M, M + 12, 16, '0F172A', true);
-    p.text(`${fmtDate(P.start)} \u2192 ${fmtDate(P.end - 1)}  \u00B7  ${P.end - P.start} days  \u00B7  ${leaves} tasks (${done} done)  \u00B7  critical path: ${st.critCount} tasks`.replace('\u2192', '>'), M, M + 26, 8.5, '64748B');
+    p.text(`${fmtDate(P.start)} \u2192 ${fmtDate(P.end - 1)}  \u00B7  ${st.work.count(P.start, P.end)} working days  \u00B7  ${leaves} tasks (${done} done)  \u00B7  critical path: ${st.critCount} tasks`.replace('\u2192', '>'), M, M + 26, 8.5, '64748B');
     p.text(`${ymd(P.start)[0]}${ymd(P.start)[0] !== ymd(P.end - 1)[0] ? `\u2013${ymd(P.end - 1)[0]}` : ''}`, PW - M, M + 12, 10, '94A3B8', true, 'r');
 
     // header band
@@ -94,8 +94,10 @@ function projectPages(st, name, pages) {
       p.clip(x, y, cols[1][1], rowH, () => p.text(fit(t.name, cols[1][1] - 8 - ind, fs, sum), tx, by, fs, c ? 'BE123C' : '0F172A', sum));
       x += cols[1][1];
       put(fmtDate(f.start), cols[2][1], 'c', '475569'); put(fmtDate(ms ? t.start : f.end - 1), cols[3][1], 'c', '475569');
-      put(ms ? '-' : f.end - f.start, cols[4][1], 'r', '475569'); put(`${Math.round(f.progress)}%`, cols[5][1], 'r', f.progress >= 100 ? '15803D' : '475569');
+      put(ms ? '-' : st.duration(t.id), cols[4][1], 'r', '475569'); put(`${Math.round(f.progress)}%`, cols[5][1], 'r', f.progress >= 100 ? '15803D' : '475569');
     }
+    // Nonworking dates follow this project's calendar, including custom holidays.
+    if (sc >= 1) for (let d = t0; d < t1; d++) if (!st.work.isWork(d)) p.rect(X(d), y0, sc, (i1 - i0) * rowH, 'EEF1F6');
     p.line(M, y0, M, y0 + (i1 - i0) * rowH, 'E2E8F0', 0.4);
     // today
     if (today >= t0 && today < t1) { const x = X(today) + sc / 2; p.line(x, topBlock + hdrH, x, y0 + (i1 - i0) * rowH, '2B59E6', 0.8, '2 2'); p.poly([[x - 3, topBlock + hdrH], [x + 3, topBlock + hdrH], [x, topBlock + hdrH + 4]], '2B59E6'); }

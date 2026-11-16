@@ -10,14 +10,14 @@
 <body>
 <div id="app">
   <header class="topbar">
-    <div class="brand"><span class="logo"></span><b>Launch plan</b><span class="muted">· sheet + gantt</span></div>
-    <button id="save-status" class="save-status" aria-live="polite" disabled>Loading saved projects…</button>
+    <div class="brand"><span class="logo"></span><b>Launch plan</b></div>
     <div class="tools">
       <button id="openprojectbtn" title="Open a Plan project file (Ctrl/⌘+O)"><svg viewBox="0 0 16 16"><path d="M2 12V4h5l2 2h5v2M2 12l2-4h10l-2 5H2z"/></svg>Open…</button>
       <button id="saveprojectbtn" title="Save this project as a .plan file (Ctrl/⌘+Shift+S)"><svg viewBox="0 0 16 16"><path d="M3 2h8l2 2v10H3zM5 2v4h5V2M5 14V9h6v5"/></svg>Save As…</button>
+      <button id="savefilebtn" title="Save to the connected .plan file (Ctrl/⌘+S)">Save</button>
       <span class="sep"></span>
-      <button data-act="add" title="Add task below selection"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Task</button>
-      <button data-act="addms" title="Add milestone"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg>Milestone</button>
+      <button data-act="add" title="Add task below selection (Ctrl/⌘+Enter)" aria-keyshortcuts="Control+Enter Meta+Enter"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Task</button>
+      <button data-act="addms" title="Add milestone below selection (Ctrl/⌘+Shift+Enter)" aria-keyshortcuts="Control+Shift+Enter Meta+Shift+Enter"><svg viewBox="0 0 16 16"><path d="M8 2l5 6-5 6-5-6z"/></svg>Milestone</button>
       <span class="sep"></span>
       <button data-act="outdent" title="Outdent (Alt+←)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M5 5L2 8l3 3"/></svg></button>
       <button data-act="indent" title="Indent (Alt+→)"><svg viewBox="0 0 16 16"><path d="M13 3H7M13 8H7M13 13H7M2 5l3 3-3 3"/></svg></button>
@@ -26,6 +26,7 @@
       <button data-act="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 16 16"><path d="M6 3L3 6l3 3M3 6h6a4 4 0 010 8H6"/></svg></button>
       <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
       <span class="sep"></span>
+      <button id="calendarbtn" title="Configure project workdays and custom holidays"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 7h12M5 1.5v3M11 1.5v3M5 10h1M9 10h1"/></svg>Calendar</button>
       <button id="sharebtn" title="Share this project read-only"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg>Share</button>
       <button id="rembtn" title="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg>Remind<span class="dot" hidden role="img" aria-label="Reminders are on"></span></button>
       <button id="impbtn" title="Import from Excel or CSV"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg>Import</button>
@@ -46,7 +47,7 @@
         <input id="fxin" spellcheck="false" autocomplete="off">
         <button id="colbtn" class="colbtn" title="Choose visible columns"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10M10 3v10"/></svg>Columns</button>
       </div>
-      <div class="gx" id="gx" tabindex="0" role="grid" aria-label="Task grid. Arrow keys move, Enter edits, Escape releases the grid so Tab can leave it.">
+      <div class="gx" id="gx" tabindex="0" role="treegrid" aria-label="Task grid. Arrows move, Enter edits, Ctrl or Command Enter inserts a task, add Shift for a milestone. Alt Right indents, Alt Left outdents. Right-click or Shift F10 opens task actions. Drag row grips to move cascades. Escape releases selection so Tab can leave.">
         <div class="ginner" id="ginner">
           <div class="g-band" id="gband"></div>
           <div class="g-letters" id="gletters"></div>
@@ -73,6 +74,7 @@
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
       </div>
       <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>
+      <div class="schedule-legend" aria-label="Scheduling indicators"><span><b class="schedule-badge auto">A</b> Auto</span><span><b class="schedule-badge manual">M</b> Manual</span><span title="Keeps its chosen date; Auto-schedule can delay it to satisfy connections"><b class="schedule-badge anchor">D</b> Date anchor</span></div>
       <div class="focusleg" id="focusleg" hidden><b>Focus</b><span class="k anc"><i></i>Parents <em class="n-anc">0</em></span><span class="k desc"><i></i>Children <em class="n-desc">0</em></span><span class="k up"><i></i>Predecessors <em class="n-up">0</em></span><span class="k down"><i></i>Successors <em class="n-down">0</em></span></div>
       <div class="gbody" id="gb">
         <div class="canvas" id="canvas">
@@ -90,6 +92,7 @@
     <div class="tabs" id="tabs" role="tablist"></div>
     <button class="addsheet" id="addsheet" title="New blank project sheet">+</button>
     <span class="grow"></span>
+    <button id="save-status" class="save-status" aria-live="polite" disabled>Loading saved projects…</button>
     <span id="stat" class="stat"></span>
     <span class="hint">Drag bar · drag edges to resize · drag <i class="dotdemo"></i> onto another bar to link · ⌘/Ctrl+wheel zoom · drag background to pan</span>
     <button class="tplbtn" id="historybtn" title="View saved app versions" disabled>History</button>

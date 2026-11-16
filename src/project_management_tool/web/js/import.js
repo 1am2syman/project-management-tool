@@ -1,6 +1,7 @@
 // Import from Excel / CSV: reads the file, maps columns by header name, builds projects, previews problems, creates sheets.
 import { parseDate, today, isEmail, fmtDate } from './model.js';
 import { readSpreadsheet } from './xlsxread.js';
+import { cleanCalendar, calendarError, WorkingCalendar } from './calendar.js';
 import { buildTemplate } from './xlsx.js';
 import { esc, setHTML, openModal } from './dom.js';
 
@@ -51,7 +52,24 @@ const toDur = (v) => {
 };
 
 /** Turn one sheet's cells into a project. Returns { ok, name, data, stats, issues, cols, missing }. */
-export function mapSheet(sh) {
+export function spreadsheetCalendars(sheets) {
+  const calendars = new Map();
+  for (const sheet of sheets) {
+    if (sheet.rows[0]?.[0] !== 'Plan calendars' || sheet.rows[0]?.[1] !== 1) continue;
+    for (const row of sheet.rows.slice(2)) {
+      if (!row?.[0]) continue;
+      const key = String(row[0]), workdays = String(row[1] ?? '').split(',').map(Number);
+      if (!calendars.has(key)) calendars.set(key, { workdays, holidays: [] });
+      const calendar = calendars.get(key);
+      if (calendar.workdays.join(',') !== workdays.join(',')) throw new Error(`Conflicting calendar workdays for ${key}`);
+      if (row[2]) calendar.holidays.push({ date: String(row[2]), name: String(row[3] || '') });
+      const error = calendarError(calendar); if (error) throw new Error(`Invalid calendar for ${key}: ${error}`);
+    }
+  }
+  return calendars;
+}
+export function mapSheet(sh, calendar) {
+  const work = new WorkingCalendar(calendar);
   const issues = [], warn = (row, msg) => issues.push({ row, msg, lv: 'warn' }), err = (msg) => issues.push({ row: 0, msg, lv: 'error' });
   const H = findHeader(sh.rows);
   if (!H) { err('No header row found. The first rows need column titles such as Task, Start, Days, Depends on.'); return { ok: false, name: sh.name, issues, stats: null, cols: [], missing: [] }; }
@@ -119,8 +137,8 @@ export function mapSheet(sh) {
     let start = s ?? undefined, dur = d ?? undefined;
     if (isMs) { t.ms = true; t.dur = 0; start = start ?? e ?? undefined; }
     else {
-      if (dur === undefined && start != null && e != null) { dur = e - start + 1; if (dur < 1) { warn(x.r, 'End is before Start — set to 1 day'); dur = 1; } }
-      if (start == null && e != null && dur != null) start = e - Math.max(1, dur) + 1;
+      if (dur === undefined && start != null && e != null) { dur = work.count(start, e + 1); if (dur < 1) { warn(x.r, 'End is before Start — set to 1 day'); dur = 1; } }
+      if (start == null && e != null && dur != null) start = work.start(e + 1, Math.max(1, dur));
       if (start == null && e != null && dur == null) { start = e; dur = 1; }
       if (dur === undefined) { dur = 1; if (m.dur != null || m.end != null) warn(x.r, 'No duration — set to 1 day'); }
       t.dur = Math.max(1, dur);
@@ -158,7 +176,7 @@ export function mapSheet(sh) {
   }
   const tasks = recs.map((x) => x.t);
   const stats = { tasks: tasks.filter((t, i) => !t.ms && !recs[i].summary).length, ms: tasks.filter((t, i) => t.ms && !recs[i].summary).length, summaries: recs.filter((x) => x.summary).length, links: links.length, unscheduled: noStart.length, first: anchor };
-  return { ok: !issues.some((x) => x.lv === 'error'), name: sh.name, data: { tasks, links, collapsed: [], nextId: tasks.length + 1, nextLink: nl }, stats, issues, cols, missing };
+  return { ok: !issues.some((x) => x.lv === 'error'), name: sh.name, data: { calendar: cleanCalendar(calendar), tasks, links, collapsed: [], nextId: tasks.length + 1, nextLink: nl }, stats, issues, cols, missing };
 }
 
 export function createImport(ctx) {
@@ -202,8 +220,9 @@ export function createImport(ctx) {
     state = { file, sheets: [], busy: true, error: '' }; paint();
     try {
       const raw = await readSpreadsheet(file);
-      state.sheets = raw.filter((s) => s.rows.some((r) => r && r.length)).map((s, i) => {
-        const res = mapSheet(s), skip = /\bgantt$/i.test(s.name) || /^instructions?$/i.test(s.name) || s.hidden;
+      const calendars = spreadsheetCalendars(raw);
+      state.sheets = raw.filter((s) => s.rows.some((r) => r && r.length) && s.rows[0]?.[0] !== 'Plan calendars').map((s, i) => {
+        const res = mapSheet(s, calendars.get(s.name)), skip = /\bgantt$/i.test(s.name) || /^instructions?$/i.test(s.name) || s.hidden;
         return { ...res, src: s.name, title: raw.length === 1 || /^(csv|tasks?|sheet\d*|import|plan)$/i.test(s.name) ? baseName(file) : s.name, on: res.ok && !skip, i };
       });
       if (!state.sheets.length) state.error = 'The file is empty.';
@@ -235,7 +254,7 @@ export function createImport(ctx) {
           ${ws.length ? `<details class="im-warns"><summary>${ws.length} thing${ws.length === 1 ? '' : 's'} to check</summary><ul>${ws.slice(0, 60).map((x) => `<li><i>row ${x.row}</i> ${esc(x.msg)}</li>`).join('')}${ws.length > 60 ? `<li class="mut">…and ${ws.length - 60} more</li>` : ''}</ul></details>` : ''}
         </div>`;
       }).join('');
-      h += `<div class="im-foot"><span class="mut">Each ticked sheet becomes a new project tab; nothing existing is changed. Durations are read as calendar days.</span><button class="primary" data-im="go"${pick.length ? '' : ' disabled'}>Import ${pick.length > 1 ? `${pick.length} projects` : 'project'}${nT ? ` · ${nT} rows` : ''}</button></div>`;
+      h += `<div class="im-foot"><span class="mut">Each ticked sheet becomes a new project tab; nothing existing is changed. Durations use the workbook’s project calendar when included, otherwise every day. Configure workdays and holidays with Calendar after import.</span><button class="primary" data-im="go"${pick.length ? '' : ' disabled'}>Import ${pick.length > 1 ? `${pick.length} projects` : 'project'}${nT ? ` · ${nT} rows` : ''}</button></div>`;
     }
     const keep = root.querySelector('details')?.open, scroll = dlg.body.scrollTop;
     setHTML(root, h);

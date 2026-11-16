@@ -1,8 +1,10 @@
 import { cleanRem, isEmail, LINK_TYPES } from './model.js';
+import { createFileBindings } from './filebindings.js';
+import { calendarError, WorkingCalendar } from './calendar.js';
 
 export const PROJECT_FILE_EXTENSION = '.plan';
 export const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
-const FORMAT = 'plan-project', VERSION = 1;
+const FORMAT = 'plan-project', VERSION = 3;
 const TYPES = [{ description: 'Plan project', accept: { 'application/json': [PROJECT_FILE_EXTENSION] } }];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const integer = (v, min, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -17,6 +19,7 @@ function validateTasks(tasks) {
     if (!integer(t.level, 0, previousLevel + 1)) invalid(`task ${t.id} has an invalid hierarchy level.`);
     // Stay inside JavaScript's representable date range, including the exclusive finish date.
     if (!integer(t.start, -99999999, 99999999) || typeof t.ms !== 'boolean' || !integer(t.dur, t.ms ? 0 : 1, 99999999) || (t.ms && t.dur !== 0) || Math.abs(t.start + t.dur) > 99999999) invalid(`task ${t.id} has an invalid date or duration.`);
+    if (t.scheduling != null && !['auto', 'manual'].includes(t.scheduling)) invalid(`task ${t.id} has invalid scheduling mode.`);
     if (!integer(t.progress, 0, 100) || typeof t.noRem !== 'boolean') invalid(`task ${t.id} has invalid progress or reminder settings.`);
     ids.add(t.id); maxId = Math.max(maxId, t.id); previousLevel = t.level;
   }
@@ -53,13 +56,20 @@ function validateReminders(r) {
 // Validate before the model's forgiving storage sanitizer can discard or repair file contents.
 function validateDocument(doc) {
   if (!object(doc) || doc.format !== FORMAT) invalid('choose a .plan file saved by Plan.');
-  if (doc.version !== VERSION) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
+  if (![1, 2, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
   const p = doc.project, prefs = doc.preferences;
   if (!object(p) || !text(p.name, 60) || !p.name.trim()) invalid('the project name is missing or too long.');
   if (!object(prefs) || typeof prefs.auto !== 'boolean' || typeof prefs.critical !== 'boolean') invalid('scheduling preferences are missing.');
   const d = p.data;
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links) || !Array.isArray(d.collapsed)) invalid('tasks, relationships or collapsed groups are missing.');
   const { ids, maxId, summaries } = validateTasks(d.tasks);
+  if (doc.version < 3 && d.tasks.some((t) => t.scheduling != null)) invalid('explicit scheduling modes require file version 3.');
+  if (doc.version >= 2 || d.calendar != null) {
+    const reason = calendarError(d.calendar); if (reason) invalid(`calendar: ${reason}.`);
+    if (doc.version === 1 && (d.calendar.workdays.length !== 7 || d.calendar.holidays.length)) invalid('a working calendar requires file version 2.');
+    const work = new WorkingCalendar(d.calendar);
+    if (d.tasks.some((t) => Math.abs(work.finish(t.start, t.dur)) > 99999999)) invalid('a task finish is outside the supported date range.');
+  }
   const maxLink = validateLinks(d.links, ids, summaries);
   if (d.collapsed.some((id) => !ids.has(id)) || new Set(d.collapsed).size !== d.collapsed.length) invalid('collapsed groups refer to missing or repeated tasks.');
   if (!integer(d.nextId, maxId + 1) || !integer(d.nextLink, maxLink + 1)) invalid('the next task or relationship ID is invalid.');
@@ -71,8 +81,10 @@ export function encodeProjectFile(store) {
   const data = JSON.parse(store.serialize());
   // Newly inserted tasks acquire their default reminder flag on the next model load.
   for (const task of data.tasks) task.noRem = !!task.noRem;
+  let version = store.calendar.workdays.length === 7 && !store.calendar.holidays.length ? 1 : 2;
+  if (data.tasks.some((t) => t.scheduling)) version = VERSION;
   const doc = validateDocument({
-    format: FORMAT, version: VERSION,
+    format: FORMAT, version,
     project: { name: store.sheet().name, data, rem: cleanRem(store.sheet().rem) },
     preferences: { auto: store.readOnly ? false : store.auto, critical: store.critical },
   });
@@ -111,8 +123,13 @@ export function projectFileName(name) {
 export function createProjectFiles(ctx, browser = window) {
   const { store } = ctx, doc = browser.document;
   const openButton = doc.querySelector('#openprojectbtn'), saveButton = doc.querySelector('#saveprojectbtn');
+  const normalSave = doc.querySelector('#savefilebtn'), bindings = createFileBindings(browser);
   let busy = false;
-  const lock = (value) => { busy = value; openButton.disabled = value; saveButton.disabled = value; };
+  const tokenFor = (sheet) => sheet.fileToken ||= (browser.crypto?.randomUUID?.() || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  async function connect(sheet, handle, contents) {
+    await bindings.write(tokenFor(sheet), { handle, contents }); store.save(); paintSave();
+  }
+  const lock = (value) => { busy = value; openButton.disabled = value; saveButton.disabled = value; if (normalSave) normalSave.disabled = value; };
   const report = (action, e) => { if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}`); };
   const canOpen = () => {
     if (!store.stale) return true;
@@ -121,9 +138,10 @@ export function createProjectFiles(ctx, browser = window) {
 
   async function loadFile(file) {
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
-    const id = openProjectFile(store, await file.text());
+    const contents = await file.text();
+    const id = openProjectFile(store, contents);
     ctx.toast(`Opened “${store.sheet(id).name}” · reminders are off`);
-    return id;
+    return { id, contents };
   }
 
   function fallbackOpen() {
@@ -141,27 +159,43 @@ export function createProjectFiles(ctx, browser = window) {
     if (busy || !canOpen()) return;
     lock(true);
     try {
-      let file;
+      let file, handle;
       if (typeof browser.showOpenFilePicker === 'function') {
-        const [handle] = await browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false });
+        [handle] = await browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false });
         file = await handle.getFile();
       } else file = await fallbackOpen();
-      if (file) await loadFile(file);
+      if (file) { const { id, contents } = await loadFile(file); if (handle) await connect(store.sheet(id), handle, contents); }
     } catch (e) { report('open', e); }
     finally { lock(false); }
   }
 
-  async function saveAs() {
+  async function writeProject(asNew = false) {
     if (busy) return;
     lock(true); let writable = null, closing = false;
     try {
       // Snapshot before awaiting the dialog: a later tab switch must not change what is saved.
-      const contents = encodeProjectFile(store), name = projectFileName(store.sheet().name);
-      if (typeof browser.showSaveFilePicker === 'function') {
-        const handle = await browser.showSaveFilePicker({ id: 'plan-projects', suggestedName: name, types: TYPES });
+      const sheet = store.sheet(), contents = encodeProjectFile(store), name = projectFileName(sheet.name);
+      let record = !asNew && sheet.fileToken ? await bindings.read(sheet.fileToken) : null;
+      // Stale/read-only windows may export a copy, but must not replace a connected file.
+      if (record && (store.stale || sheet.readOnly)) throw new Error('Use Save As to save a copy from this read-only or outdated window.');
+      if (record) {
+        const { handle } = record;
+        if (handle.queryPermission && await handle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+          if (!handle.requestPermission || await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw new Error('File access denied. Allow access or use Save As.');
+        }
+        const current = await (await handle.getFile()).text();
+        if (current !== record.contents && current !== record.pending) throw new Error('This file changed outside Plan. Open it to review the changes, or use Save As for a separate copy.');
+      }
+      if (record || typeof browser.showSaveFilePicker === 'function') {
+        const handle = record?.handle || await browser.showSaveFilePicker({ id: 'plan-projects', suggestedName: name, types: TYPES });
+        // Remember the attempted snapshot if close loses its acknowledgement. Next Save first
+        // reconciles the actual file with either the last confirmed or attempted contents.
+        if (record) await bindings.write(sheet.fileToken, { ...record, pending: contents });
+        if (record && (store.stale || sheet.readOnly)) throw new Error('The project changed in another window. Reload, or use Save As for a copy.');
         writable = await handle.createWritable();
         await writable.write(contents); closing = true;
         await writable.close(); writable = null;
+        await connect(sheet, handle, contents);
         ctx.toast(`Saved ${handle.name || name}`);
       } else {
         const url = browser.URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
@@ -176,7 +210,15 @@ export function createProjectFiles(ctx, browser = window) {
     } finally { lock(false); }
   }
 
+  function paintSave() {
+    if (!normalSave) return;
+    normalSave.textContent = store.sheet().fileToken ? 'Save' : 'Save…';
+    normalSave.title = store.sheet().fileToken ? 'Save changes to the connected .plan file (Ctrl/⌘+S)' : 'Choose a .plan file for this project (Ctrl/⌘+S)';
+  }
+  store.on(paintSave); paintSave();
+  const save = () => writeProject(false), saveAs = () => writeProject(true);
   openButton.addEventListener('click', open);
+  normalSave?.addEventListener('click', save);
   saveButton.addEventListener('click', saveAs);
   doc.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || !['o', 's'].includes(e.key.toLowerCase())) return;
@@ -185,7 +227,7 @@ export function createProjectFiles(ctx, browser = window) {
     e.stopPropagation();
     // Commit an in-progress grid/formula edit before capturing the project.
     doc.activeElement?.blur();
-    if (e.key.toLowerCase() === 'o') void open(); else void saveAs();
+    if (e.key.toLowerCase() === 'o') void open(); else if (e.shiftKey) void saveAs(); else void save();
   }, true);
-  return { open, saveAs };
+  return { open, save, saveAs };
 }

@@ -43,7 +43,7 @@ export function createGrid(ctx) {
   const $ = (s) => document.querySelector(s);
   const gx = $('#gx'), inner = $('#ginner'), band = $('#gband'), letters = $('#gletters'), head = $('#ghead'), body = $('#gbody');
   const namebox = $('#namebox'), fxin = $('#fxin');
-  let editing = null, headKey = '', restoringScroll = true;
+  let editing = null, commitEditing = null, headKey = '', restoringScroll = true;
   try {
     const widths = JSON.parse(appState.getItem('pm-column-widths') || '{}');
     for (const col of COLS) if (Number.isFinite(widths?.[col.id])) col.w = Math.max(44, Math.min(1000, widths[col.id]));
@@ -91,7 +91,7 @@ export function createGrid(ctx) {
       case 'name': return t.name;
       case 'start': return fmtISO(f.start);
       case 'end': return fmtISO(t.ms && !f.summary ? t.start : f.end - 1);
-      case 'dur': return String(f.end - f.start);
+      case 'dur': return String(store.duration(id));
       case 'progress': return String(Math.round(f.progress));
       case 'float': return f.float == null ? '' : String(f.float);
       case 'pred': return store.predText(id);
@@ -105,11 +105,11 @@ export function createGrid(ctx) {
     const sel = t.id === ui.selId && c.id === ui.col;
     const hl = edge(c);
     let cls = 'c' + (sel ? ' sel' : '') + hl + (c.num ? ' num' : '') + (c.ctr ? ' ctr' : ''), style = '', html = '';
-    const dur = f.end - f.start;
+    const dur = store.duration(t.id);
     switch (c.id) {
       case 'name':
         cls += ' nm'; style = `padding-left:${9 + t.level * 16}px`;
-        html = (f.summary ? `<span class="tog${store.collapsed.has(t.id) ? '' : ' open'}">▸</span>` : '<span class="tog sp"></span>') + (t.ms ? '<i class="dm"></i>' : '') + `<span class="t">${esc(t.name)}</span>`;
+        html = (f.summary ? `<span class="tog${store.collapsed.has(t.id) ? '' : ' open'}">▸</span>` : '<span class="tog sp"></span>') + (t.ms ? '<i class="dm"></i>' : '') + `<span class="t">${esc(t.name)}</span>` + (!f.summary ? `<span class="schedule-badge ${store.scheduling(t.id).mode}" title="${esc(store.scheduling(t.id).detail)}" aria-label="${esc(store.scheduling(t.id).label)}">${store.scheduling(t.id).mark}</span>` : '');
         break;
       case 'start': html = fmtDate(f.start); break;
       case 'end': html = fmtDate(t.ms && !f.summary ? t.start : f.end - 1); break;
@@ -151,13 +151,13 @@ export function createGrid(ctx) {
     if (editing) return;
     applyTpl(); renderHead();
     const rows = store.rows;
-    let maxDur = 1; for (const t of store.tasks) { const f = store.info.get(t.id); if (!f.summary) maxDur = Math.max(maxDur, f.end - f.start); }
+    let maxDur = 1; for (const t of store.tasks) { const f = store.info.get(t.id); if (!f.summary) maxDur = Math.max(maxDur, store.duration(t.id)); }
     const rowHtml = [];
     for (const t of rows) {
       const f = store.info.get(t.id);
-      rowHtml.push([t.id, `<div role="row" class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}"><div class="c rn" data-col="rn">${f.i + 2}</div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`]);
+      rowHtml.push([t.id, `<div role="row" class="r${ctx.relClass(t.id)}${t.id === ui.selId ? ' on' : ''}${f.summary ? ' sum' : ''}${f.critical && store.critical && !f.summary ? ' crit' : ''}" data-id="${t.id}" aria-level="${t.level + 1}"${f.summary ? ` aria-expanded="${!store.collapsed.has(t.id)}"` : ''}><div class="c rn" data-col="rn">${store.readOnly ? '' : '<span class="row-handle" aria-hidden="true" title="Drag to reorder; drop in the middle of a row to nest">⠿</span>'}<span>${f.i + 2}</span></div>${VIS().map((c) => cell(t, f, c, maxDur)).join('')}</div>`]);
     }
-    const P = store.project, pd = P.end - P.start;
+    const P = store.project, pd = store.work.count(P.start, P.end);
     let tot = '<div class="c rn">Σ</div>';
     const allProg = (() => { let w = 0, s = 0; for (const t of store.tasks) { const f = store.info.get(t.id); if (f.summary) continue; const wt = Math.max(t.dur, 0.0001); w += wt; s += wt * t.progress; } return w ? s / w : 0; })();
     for (const c of VIS()) {
@@ -193,16 +193,18 @@ export function createGrid(ctx) {
     editing = { id, col, inp };
     let picked = null, unpick = null;
     const finish = (commit, move) => {
-      if (!editing) return; const e = editing; editing = null;
+      if (!editing) return; const e = editing; editing = null; commitEditing = null;
       const val = e.inp.value; e.inp.remove(); unpick?.();
       if (commit && picked) store.setOwner(e.id, picked.name, picked.email);
       else if (commit && val !== raw(e.id, e.col)) { const err = store.setCell(e.id, e.col, val); if (err) ctx.toast(err); }
       if (move) { render(); move(); } else ctx.requestRender();
       if (document.activeElement?.tagName === 'INPUT') document.activeElement.blur();
     };
+    commitEditing = () => finish(true);
     inp.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.key === 'Enter') { e.preventDefault(); finish(true, () => moveSel(1, 0)); }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Enter') { e.preventDefault(); finish(true); ctx.insertTask(e.shiftKey); }
+      else if (e.key === 'Enter') { e.preventDefault(); finish(true, () => moveSel(1, 0)); }
       else if (e.key === 'Tab') { e.preventDefault(); const d = e.shiftKey ? -1 : 1; finish(true, () => moveSel(0, d)); }
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
@@ -228,7 +230,7 @@ export function createGrid(ctx) {
     const tog = e.target.closest('.tog:not(.sp)'), r = e.target.closest('.r[data-id]'); if (!r) return;
     const id = +r.dataset.id;
     if (tog) { store.toggle(id); return; }
-    const c = e.target.closest('.c'); if (c && c.dataset.col && !c.querySelector('.editor')) ctx.select(id, c.dataset.col === 'rn' ? ui.col : c.dataset.col);
+    const c = e.target.closest('.c'); if (c && c.dataset.col && !c.querySelector('.editor')) { gx.focus({ preventScroll: true }); ctx.select(id, c.dataset.col === 'rn' ? ui.col : c.dataset.col); }
     // the first click re-renders the rows, which can swallow the browser's dblclick: use the click count instead
     if (e.detail >= 2 && c && c.dataset.col && c.dataset.col !== 'rn') startEdit(id, c.dataset.col);
   });
@@ -267,7 +269,12 @@ export function createGrid(ctx) {
     if (fxin.value !== raw(ui.selId, ui.col)) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); }
   });
   fxin.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); fxcancel = true; fxin.blur(); render(); }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Enter') {
+      e.preventDefault();
+      if (ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) { ctx.toast(err); e.stopPropagation(); return; } }
+      fxcancel = true; fxin.blur(); ctx.insertTask(e.shiftKey);
+    }
+    else if (e.key === 'Enter' && ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); fxcancel = true; fxin.blur(); render(); }
     else if (e.key === 'Escape') { fxcancel = true; fxin.value = ui.selId != null ? raw(ui.selId, ui.col) : ''; fxin.blur(); render(); }
     e.stopPropagation();
   });
@@ -302,5 +309,5 @@ export function createGrid(ctx) {
   document.addEventListener('pointerdown', (e) => { if (!colpop.hidden && !colpop.contains(e.target) && !colbtn.contains(e.target)) colpop.hidden = true; }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') colpop.hidden = true; });
 
-  return { render, startEdit, moveSel, restoreScroll, resetScroll: () => { restoringScroll = true; }, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
+  return { render, startEdit, commitEdit: () => commitEditing?.(), moveSel, restoreScroll, resetScroll: () => { restoringScroll = true; }, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
 }

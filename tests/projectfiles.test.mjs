@@ -25,7 +25,7 @@ function fixture() {
 }
 
 class Element {
-  constructor(tag = '') { this.tag = tag; this.listeners = new Map(); this.registrations = []; this.disabled = false; this.removed = false; }
+  constructor(tag = '') { this.tag = tag; this.listeners = new Map(); this.registrations = []; this.disabled = false; this.removed = false; this.onClick = null; }
   addEventListener(type, fn, options) { this.registrations.push({ type, options }); if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); }
   async dispatch(type, e = {}) { await Promise.all((this.listeners.get(type) || []).map((fn) => fn(e))); }
   click() { this.clicked = true; this.onClick?.(); return this.dispatch('click'); }
@@ -106,7 +106,7 @@ test('an empty project is a valid native file', () => {
 test('reject malformed, unrelated, future-version and invalid project files without modifying any app state', () => {
   const store = fixture(), good = JSON.parse(encodeProjectFile(store));
   const corruptions = [
-    (d) => { d.version = 2; }, (d) => { d.format = 'other'; },
+    (d) => { d.version = 4; }, (d) => { d.format = 'other'; },
     (d) => { delete d.project; }, (d) => { d.project.name = ''; },
     (d) => { delete d.preferences; }, (d) => { d.preferences.auto = 'true'; },
     (d) => { d.project.data.tasks = {}; }, (d) => { d.project.data.tasks[1].id = d.project.data.tasks[0].id; },
@@ -241,4 +241,66 @@ test('portable filenames handle path characters, reserved Windows names and empt
   assert.equal(projectFileName('Budget: Q1 / Q2?'), 'Budget_ Q1 _ Q2_.plan');
   assert.equal(projectFileName('CON'), '_CON.plan'); assert.equal(projectFileName('.. '), 'Project.plan');
   assert.equal(projectFileName('Release.plan'), 'Release.plan');
+});
+
+function nativeHandle(contents, name = 'connected.plan') {
+  const h = { contents, name, writes: [], fail: null, permission: 'granted', requests: 0,
+    getFile: async () => file(h.contents, h.name),
+    queryPermission: async () => h.permission,
+    requestPermission: async () => { h.requests++; return h.permission; },
+    createWritable: async () => {
+      let pending;
+      return { write: async (text) => { if (h.fail === 'write') throw new Error('Write failed'); pending = text; },
+        close: async () => { h.contents = pending; h.writes.push(pending); if (h.fail === 'close') throw new Error('Lost acknowledgement'); }, abort: async () => {} };
+    },
+  }; return h;
+}
+test('Open connects the file: subsequent Save writes the same handle without a picker, independently per sheet', async () => {
+  const h = harness(), a = nativeHandle(encodeProjectFile(h.store)); let picks = 0;
+  h.browser.showOpenFilePicker = async () => [a]; h.browser.showSaveFilePicker = async () => { picks++; throw new Error('Unexpected picker'); };
+  await h.files.open(); const openedId = h.store.wb.active;
+  h.store.setCell(3, 'name', 'Changed task'); await h.files.save();
+  assert.equal(picks, 0); assert.equal(a.writes.length, 1); assert.match(a.contents, /Changed task/);
+  h.store.newBlank(); await h.files.save(); assert.equal(picks, 1);
+  h.store.switchSheet(openedId); h.store.setCell(3, 'name', 'Changed again'); await h.files.save();
+  assert.equal(picks, 1); assert.equal(a.writes.length, 2); assert.match(a.contents, /Changed again/);
+});
+test('Save As reconnects only after success; cancellation and failed writes retain the previous file', async () => {
+  const h = harness(), a = nativeHandle(encodeProjectFile(h.store)), b = nativeHandle('', 'new.plan');
+  h.browser.showOpenFilePicker = async () => [a]; await h.files.open();
+  h.browser.showSaveFilePicker = async () => { throw new DOMException('Cancelled', 'AbortError'); };
+  await h.files.saveAs(); await h.files.save(); assert.equal(a.writes.length, 1);
+  b.fail = 'write'; h.browser.showSaveFilePicker = async () => b;
+  await h.files.saveAs(); await h.files.save(); assert.equal(a.writes.length, 2);
+  b.fail = null; await h.files.saveAs(); h.store.setCell(3, 'name', 'New binding'); await h.files.save();
+  assert.equal(a.writes.length, 2); assert.equal(b.writes.length, 2); assert.match(b.contents, /New binding/);
+});
+test('connected Save refuses external modifications, permission denial, stale and read-only windows', async () => {
+  const h = harness(), original = encodeProjectFile(h.store), a = nativeHandle(original);
+  h.browser.showOpenFilePicker = async () => [a]; await h.files.open();
+  a.contents = original.replace('Release & delivery', 'Externally edited'); await h.files.save();
+  assert.match(h.notices.at(-1), /changed outside Plan/); assert.equal(a.writes.length, 0);
+  a.contents = original; a.permission = 'denied'; await h.files.save();
+  assert.equal(a.requests, 1); assert.equal(a.writes.length, 0); assert.match(h.notices.at(-1), /File access denied/);
+  a.permission = 'granted'; h.store.stale = true; await h.files.save(); assert.equal(a.writes.length, 0); assert.match(h.notices.at(-1), /outdated window/);
+  h.store.stale = false; h.store.sheet().readOnly = true; await h.files.save(); assert.equal(a.writes.length, 0);
+});
+test('a connected save with uncertain close reconciles the file before the next write', async () => {
+  const h = harness(), a = nativeHandle(encodeProjectFile(h.store)); h.browser.showOpenFilePicker = async () => [a]; await h.files.open();
+  h.store.setCell(3, 'name', 'First write'); a.fail = 'close'; await h.files.save(); assert.match(h.notices.at(-1), /Could not confirm/);
+  a.fail = null; h.store.setCell(3, 'name', 'Reconciled write'); await h.files.save();
+  assert.equal(a.writes.length, 2); assert.match(h.notices.at(-1), /^Saved/); assert.match(a.contents, /Reconciled write/);
+});
+test('save connection follows the sheet captured before an asynchronous picker, and duplication gets no file connection', async () => {
+  const h = harness(), first = h.store.wb.active, a = nativeHandle('');
+  h.browser.showSaveFilePicker = async () => { h.store.newBlank(); return a; };
+  await h.files.saveAs(); assert(h.store.sheet(first).fileToken); assert.equal(h.store.sheet().fileToken, undefined);
+  h.store.switchSheet(first); const copy = h.store.duplicateSheet(first); assert.equal(h.store.sheet(copy).fileToken, undefined);
+  h.store.switchSheet(first); await h.files.save(); assert.equal(a.writes.length, 2);
+});
+
+test('a stale conflict arriving during a connected-file read stops the write', async () => {
+  const h = harness(), a = nativeHandle(encodeProjectFile(h.store)); h.browser.showOpenFilePicker = async () => [a]; await h.files.open();
+  a.getFile = async () => { h.store.stale = true; return file(a.contents); };
+  await h.files.save(); assert.equal(a.writes.length, 0); assert.match(h.notices.at(-1), /another window/);
 });

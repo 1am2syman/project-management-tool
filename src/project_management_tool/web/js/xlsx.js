@@ -96,7 +96,7 @@ function tasksSheet(S, st, name, tab) {
     sh.set(r, 2, sum ? 'Summary' : ms ? 'Milestone' : 'Task', fl({ color: '64748B' }));
     sh.set(r, 3, serial(f.start), fl({ fmt: 'mmm d, yyyy', h: 'center' }));
     sh.set(r, 4, serial(ms ? t.start : f.end - 1), fl({ fmt: 'mmm d, yyyy', h: 'center' }));
-    sh.set(r, 5, ms ? 0 : f.end - f.start, fl({ fmt: '0', h: 'center' }));
+    sh.set(r, 5, ms ? 0 : st.duration(t.id), fl({ fmt: '0', h: 'center' }));
     sh.set(r, 6, Math.round(f.progress) / 100, fl({ fmt: '0%', h: 'center' }));
     sh.set(r, 7, f.float == null ? '' : f.float, fl({ fmt: '0', h: 'center', color: f.float === 0 ? 'BE123C' : f.float > 0 ? '15803D' : base.color, b: f.float === 0 ? 1 : base.b }));
     sh.set(r, 8, f.critical && !sum ? 'Yes' : '', fl({ h: 'center', color: 'BE123C', b: 1 }));
@@ -127,7 +127,7 @@ function ganttSheet(S, st, name, tab) {
     i = j + 1;
   }
   cols.forEach((c, i) => {
-    const we = day && (dow(c.a) === 0 || dow(c.a) === 6), td = today >= c.a && today < c.b;
+    const we = day && !st.work.isWork(c.a), td = today >= c.a && today < c.b;
     sh.set(1, C0 + i, ymd(c.a)[2], S.get({ sz: 8, h: 'center', color: td ? 'FFFFFF' : we ? '94A3B8' : '475569', fill: td ? '2B59E6' : we ? WK.wknd : 'F6F7FA', bb: 'CBD5E1', b: td ? 1 : 0 }));
   });
   st.tasks.forEach((t, i) => {
@@ -140,7 +140,7 @@ function ganttSheet(S, st, name, tab) {
     if (t.level > 0) sh.outline.set(r, Math.min(7, t.level));
     const doneEnd = f.start + (f.end - f.start) * p;
     cols.forEach((c, k) => {
-      const we = day && (dow(c.a) === 0 || dow(c.a) === 6), mid = (c.a + c.b) / 2;
+      const we = day && !st.work.isWork(c.a), mid = (c.a + c.b) / 2;
       let s = null, v = '';
       if (sum) { if (c.a < f.end && c.b > f.start) s = S.get({ fill: WK.sum }); }
       else if (ms) { if (f.start >= c.a && f.start < c.b) { s = S.get({ b: 1, sz: 11, h: 'center', color: crit ? WK.cn : p >= 1 ? WK.done : WK.ms, fill: we ? WK.wknd : null }); v = '◆'; } }
@@ -191,12 +191,25 @@ const PAL = ['5B7CFA', '10B981', 'F59E0B', 'EC4899', '8B5CF6', '06B6D4', 'EF4444
 
 /** projects: [{ name, store }] where store is a computed Store view. */
 export async function buildXlsx(projects) {
-  const S = new Styles(), sheets = [], used = new Set();
+  const withCalendars = projects.some((p) => p.store.calendar.workdays.length !== 7 || p.store.calendar.holidays.length);
+  const S = new Styles(), sheets = [], used = new Set(withCalendars ? ['plan calendars'] : []);
+  const calendars = new Sheet('Plan calendars', '64748B');
+  calendars.widths = [32, 22, 14, 40];
+  calendars.set(0, 0, 'Plan calendars', 0); calendars.set(0, 1, 1, 0);
+  ['Task sheet', 'Workdays (0=Sun)', 'Holiday date', 'Holiday name'].forEach((value, i) => calendars.set(1, i, value, 0));
+  let calendarRow = 2;
   projects.forEach((p, i) => {
-    const tab = PAL[i % PAL.length];
-    sheets.push(tasksSheet(S, p.store, safeName(p.name, used), tab));
+    const tab = PAL[i % PAL.length], name = safeName(p.name, used);
+    sheets.push(tasksSheet(S, p.store, name, tab));
+    const calendar = p.store.calendar;
+    const holidays = calendar.holidays.length ? calendar.holidays : [{ date: '', name: '' }];
+    for (const holiday of holidays) {
+      [name, calendar.workdays.join(','), holiday.date, holiday.name].forEach((value, col) => calendars.set(calendarRow, col, value, 0));
+      calendarRow++;
+    }
     sheets.push(ganttSheet(S, p.store, safeName(`${p.name.slice(0, 24)} Gantt`, used), tab));
   });
+  if (withCalendars) sheets.push(calendars);
   return pack(S, sheets);
 }
 
@@ -217,7 +230,7 @@ export const TEMPLATE_COLS = ['#', 'Task', 'Type', 'Level', 'Start', 'Days', '% 
 
 /** Blank, documented import template: a Tasks sheet with a worked example and an Instructions sheet. */
 export async function buildTemplate() {
-  const S = new Styles(), used = new Set();
+  const S = new Styles();
   const sh = new Sheet('Tasks', '2B59E6'); sh.freeze = [2, 1]; sh.widths = [6, 38, 12, 8, 13, 8, 9, 16, 18, 30];
   const head = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', h: 'center', wrap: 1, bb: '0F172A' });
   TEMPLATE_COLS.forEach((h, c) => sh.set(0, c, h, head)); sh.heights.set(0, 22);
