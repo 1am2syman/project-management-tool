@@ -37,6 +37,28 @@ class Chooser:
                 future.set_result(None)
 
 
+class ControlledChooser(Chooser):
+    """Chooser exposing the native adapter's optional control and diagnostics methods."""
+    def __init__(self):
+        super().__init__()
+        self.controls = []
+
+    def cancel(self):
+        self.controls.append('cancel')
+        self.requests[-1][2].set_result(None)
+        return True
+
+    def raise_dialog(self):
+        self.controls.append('raise')
+        return {'shown': True, 'foreground': False}
+
+    def state(self):
+        return {'shown': True, 'foreground': False}
+
+    def diagnostics(self):
+        return [{'event': 'chooser.shown', 'shown': True, 'foreground': False}]
+
+
 def authorize(_row):
     return contextlib.nullcontext()
 
@@ -126,6 +148,40 @@ class FileServiceTests(unittest.TestCase):
             self.assertEqual(self.choose('large', 'open', self.source)['error'], 'too_large')
         self.service.release('client', 'invalid')
         self.assertEqual(self.service.status('client', 'invalid')['stage'], 'released')
+
+    def test_only_the_operation_that_opened_the_chooser_can_cancel_or_raise_it(self):
+        self.chooser = ControlledChooser()
+        controls = self.chooser.controls
+        self.service.close()
+        self.service = pf.FileService(self.registry, self.workspace, self.chooser)
+        self.addCleanup(self.service.close)
+        self.assertEqual(self.service.start('client', 'mine', 'open')['chooser'], {'shown': True, 'foreground': False})
+        self.service.start('other', 'stale', 'open')  # refused as busy by a real chooser; this fake accepts it
+        self.chooser.requests[-1][2].set_result(None)
+        self.assertEqual(self.wait_status_for('other', 'stale')['stage'], 'cancelled')
+        # The second start took ownership of the chooser, so the first operation cannot steer it.
+        self.assertEqual(self.service.raise_chooser('client', 'mine'), {'shown': False, 'foreground': False})
+        self.assertNotIn('chooser', self.service.status('client', 'mine'))
+        self.service.start('client', 'next', 'open')
+        self.assertEqual(self.service.raise_chooser('client', 'next'), {'shown': True, 'foreground': False})
+        self.assertEqual(self.service.cancel_chooser('client', 'mine')['stage'], 'choosing')
+        self.assertEqual(controls, ['raise'])
+        with self.assertRaises(LookupError):
+            self.service.cancel_chooser('intruder', 'next')
+        self.service.cancel_chooser('client', 'next')
+        self.assertEqual(self.wait_status_for('client', 'next')['stage'], 'cancelled')
+        self.assertEqual(controls, ['raise', 'cancel'])
+        self.assertEqual(self.service.raise_chooser('client', 'next'), {'shown': False, 'foreground': False})
+        self.assertIn({'backend': 'python', 'event': 'chooser.shown', 'shown': True, 'foreground': False}, self.service.diagnostics())
+
+    def wait_status_for(self, client, operation):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = self.service.status(client, operation)
+            if status['stage'] != 'choosing':
+                return status
+            time.sleep(0.005)
+        self.fail('selection did not finish')
 
     def test_save_existing_and_new_destination_and_conflict(self):
         token = self.connect()

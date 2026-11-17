@@ -64,6 +64,7 @@ class PlanServer(http.server.ThreadingHTTPServer):
     file_session: str
     file_service: FileService | None
     file_failed: bool
+    file_attempted: bool
     file_lock: threading.Lock
     file_storage: ProjectStorage
 
@@ -72,6 +73,7 @@ class PlanServer(http.server.ThreadingHTTPServer):
         with self.file_lock:
             self.file_service = service
             self.file_failed = False
+            self.file_attempted = True
 
     def ensure_file_service(self):
         if not native_windows_available() or self.file_service is not None:
@@ -80,6 +82,7 @@ class PlanServer(http.server.ThreadingHTTPServer):
             if self.file_service is not None:
                 return
             chooser = None
+            self.file_attempted = True
             try:
                 local = os.environ.get('LOCALAPPDATA')
                 if not local:
@@ -169,37 +172,7 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             elif len(parts) in (3, 4) and parts[:2] == ['api', 'file-operations']:
                 operation = parts[2]
                 action = parts[3] if len(parts) == 4 else ''
-                if self.command == 'GET' and not action:
-                    self.send_json(200, service.status(client, operation))
-                elif self.command == 'GET' and action == 'content':
-                    raw = service.content(client, operation)
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/plain; charset=utf-8')
-                    self.send_header('Content-Length', str(len(raw)))
-                    self.end_headers()
-                    self.wfile.write(raw)
-                elif self.command == 'PUT' and action == 'snapshot':
-                    service.stage_snapshot(client, operation, self.file_body(MAX_BYTES))
-                    self.send_json(200, service.status(client, operation))
-                elif self.command == 'POST' and action == 'commit':
-                    self.file_json()
-                    self.send_json(200, service.write_staged(client, operation, authorize=self.storage.file_authorization,
-                                                             revision=self.headers.get('X-Plan-Revision')))
-                elif self.command == 'PUT' and action == 'content':
-                    raw = self.file_body(MAX_BYTES)
-                    self.send_json(200, service.write(client, operation, raw, authorize=self.storage.file_authorization,
-                                                      revision=self.headers.get('X-Plan-Revision')))
-                elif self.command == 'POST' and action == 'attach':
-                    body = self.file_json()
-                    status = service.status(client, operation)
-                    with self.storage.file_attach_authorization(body.get('sheet'), status.get('token'), body.get('revision')):
-                        token = service.attach(client, operation, body.get('sheet'))
-                    self.send_json(200, {'token': token})
-                elif self.command == 'POST' and action == 'release':
-                    service.release(client, operation)
-                    self.send_json(200, {'released': True})
-                else:
-                    self.send_json(404, {'error': 'Unknown file operation endpoint'})
+                self.file_operation(service, client, operation, action)
             else:
                 self.send_json(404, {'error': 'Unknown file operation endpoint'})
         except LookupError:
@@ -221,6 +194,46 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         except sqlite3.Error:
             self.send_json(503, {'error': 'File operation could not be completed'})
         return True
+
+    def file_operation(self, service, client, operation, action):
+        # Per-operation endpoints; errors are mapped by file_api.
+        if self.command == 'GET' and not action:
+            self.send_json(200, service.status(client, operation))
+        elif self.command == 'GET' and action == 'content':
+            raw = service.content(client, operation)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+        elif self.command == 'PUT' and action == 'snapshot':
+            service.stage_snapshot(client, operation, self.file_body(MAX_BYTES))
+            self.send_json(200, service.status(client, operation))
+        elif self.command == 'POST' and action == 'commit':
+            self.file_json()
+            self.send_json(200, service.write_staged(client, operation, authorize=self.storage.file_authorization,
+                                                     revision=self.headers.get('X-Plan-Revision')))
+        elif self.command == 'PUT' and action == 'content':
+            raw = self.file_body(MAX_BYTES)
+            self.send_json(200, service.write(client, operation, raw, authorize=self.storage.file_authorization,
+                                              revision=self.headers.get('X-Plan-Revision')))
+        elif self.command == 'POST' and action == 'attach':
+            body = self.file_json()
+            status = service.status(client, operation)
+            with self.storage.file_attach_authorization(body.get('sheet'), status.get('token'), body.get('revision')):
+                token = service.attach(client, operation, body.get('sheet'))
+            self.send_json(200, {'token': token})
+        elif self.command == 'POST' and action == 'cancel':
+            self.file_json()
+            self.send_json(200, service.cancel_chooser(client, operation))
+        elif self.command == 'POST' and action == 'raise':
+            self.file_json()
+            self.send_json(200, service.raise_chooser(client, operation))
+        elif self.command == 'POST' and action == 'release':
+            service.release(client, operation)
+            self.send_json(200, {'released': True})
+        else:
+            self.send_json(404, {'error': 'Unknown file operation endpoint'})
 
     def file_body(self, limit):
         length = int(self.headers.get('Content-Length', '-1'))
@@ -247,8 +260,12 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 info = runtime_diagnostics()
                 service = cast(PlanServer, self.server).file_service
-                info['fileAccess'] = {'backend': 'python' if service else 'browser',
-                                      'status': 'failed' if cast(PlanServer, self.server).file_failed else ('available' if service else 'unsupported'),
+                server = cast(PlanServer, self.server)
+                # Native access starts on first use, so a fresh page reports it as not started yet.
+                status = 'available' if service else ('unsupported' if not server.file_failed else
+                                                      'failed' if server.file_attempted else 'not started')
+                info['fileAccess'] = {'backend': 'python' if service else ('pending' if status == 'not started' else 'browser'),
+                                      'status': status,
                                       'events': service.diagnostics() if service else []}
                 self.send_json(200, info)
             except OSError:
@@ -325,6 +342,7 @@ def create_server(port, data_dir, *, native_files=True):
     server.file_session = secrets.token_urlsafe(32)
     server.file_service = None
     server.file_failed = False
+    server.file_attempted = False
     server.file_lock = threading.Lock()
     server.file_storage = storage
     # Automated tests pass native_files=False: no chooser, no %LOCALAPPDATA%, and the browser

@@ -92,6 +92,29 @@ class NativeDialogAvailabilityTests(unittest.TestCase):
         dialog._send_stop.assert_called_once_with(123, 0x8002, 0, 0)
         dialog._fallback_stop.assert_not_called()
 
+    def test_cancel_and_raise_only_reach_an_open_chooser(self):
+        dialog = object.__new__(native_dialogs.WindowsDialogs)
+        dialog._lock = threading.Lock()
+        dialog._closed = False
+        dialog._busy = False
+        dialog._events = native_dialogs.collections.deque(maxlen=5)
+        dialog._cancel = mock.Mock(return_value=True)
+        dialog._raise = mock.Mock(return_value={'shown': True, 'foreground': False})
+        dialog._state = mock.Mock(return_value={'shown': True, 'foreground': True})
+        self.assertFalse(dialog.cancel())
+        self.assertEqual(dialog.raise_dialog(), {'shown': False, 'foreground': False})
+        self.assertIsNone(dialog.state())
+        dialog._cancel.assert_not_called()
+        dialog._raise.assert_not_called()
+        dialog._busy = True
+        self.assertTrue(dialog.cancel())
+        self.assertEqual(dialog.raise_dialog(), {'shown': True, 'foreground': False})
+        self.assertEqual(dialog.state(), {'shown': True, 'foreground': True})
+        self.assertEqual(dialog.diagnostics(), [{'event': 'chooser.raise', 'shown': True, 'foreground': False}])
+        dialog._closed = True
+        self.assertFalse(dialog.cancel())
+        self.assertEqual(dialog._cancel.call_count, 1)
+
     def test_worker_death_fails_queued_selection_and_rejects_new_work(self):
         stop = threading.Event()
         def worker(dialog):

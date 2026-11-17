@@ -13,13 +13,39 @@ root = Path(sys.argv[1]).resolve()
 
 
 class TestChooser:
+    """Selects a fixed file after 250 ms. A 'hold-chooser' marker keeps it open, like a
+    Windows chooser hidden behind the browser, until the page cancels it."""
+    def __init__(self):
+        self.pending = None
+        self.raised = 0
+
     def choose(self, kind, *_):
         result = Future()
         path = root / ('opened.plan' if kind == 'open' else 'saved.plan')
-        threading.Timer(0.25, result.set_result, args=(path,)).start()
+        if (root / 'hold-chooser').exists():
+            self.pending = result
+        else:
+            threading.Timer(0.25, result.set_result, args=(path,)).start()
         return result
+
+    def cancel(self):
+        pending, self.pending = self.pending, None
+        if pending and not pending.done():
+            pending.set_result(None)
+        return pending is not None
+
+    def raise_dialog(self):
+        self.raised += 1
+        return {'shown': self.pending is not None, 'foreground': False}
+
+    def state(self):
+        return {'shown': True, 'foreground': False} if self.pending else None
+
+    def diagnostics(self):
+        return [{'event': 'chooser.raise', 'count': self.raised}] if self.raised else []
+
     def close(self):
-        pass
+        self.cancel()
 
 
 server = create_server(int(sys.argv[2]) if len(sys.argv) > 2 else 0, root / 'workspace', native_files=False)

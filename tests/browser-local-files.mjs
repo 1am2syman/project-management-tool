@@ -301,6 +301,24 @@ try {
   assert.equal((await (await afterAttach).json()).stage, 'succeeded');
   await page.waitForFunction(() => !sessionStorage.getItem('plan-file-pending'));
   await savedState();
+  // C. A chooser that never comes forward (Windows foreground lock) offers Show and Cancel instead of
+  // an endless wait, and Cancel ends the operation without an error.
+  await writeFile(join(temp, 'hold-chooser'), '');
+  await page.locator('#openprojectbtn').click();
+  await page.locator('#chooserhint').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#chooserhint').textContent(), /project to open in the Windows file window/);
+  assert.equal(await page.locator('#openprojectbtn').isDisabled(), true);
+  const raised = page.waitForResponse(response => response.url().endsWith('/raise') && response.ok());
+  await page.locator('[data-chooser-raise]').click();
+  assert.deepEqual(await (await raised).json(), { shown: true, foreground: false });
+  await page.locator('[data-chooser-cancel]').click();
+  await page.locator('#chooserhint').waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => !document.querySelector('#openprojectbtn').disabled && !sessionStorage.getItem('plan-file-pending'));
+  assert.doesNotMatch(await page.locator('#toast').textContent(), /Could not open/);
+  const chooserEvents = (await (await fetch(new URL('/api/diagnostics', url))).json()).fileAccess.events;
+  assert.ok(chooserEvents.some(event => event.event === 'chooser.raise' && event.count === 1));
+  assert.ok(chooserEvents.some(event => event.kind === 'open' && event.stage === 'cancelled'));
+  await rm(join(temp, 'hold-chooser'));
   const secondContext = await browser.newContext();
   await secondContext.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
   const secondPage = await secondContext.newPage();
@@ -315,7 +333,7 @@ try {
   await secondContext.close();
   assert.deepEqual(errors, []);
   assert.deepEqual(lost, { startBefore: false, startAfter: false, attach: false, write: false, startup: false });
-  console.log('PASS local API browser Open, Save As, refresh/reconnect and Save without browser picker or IndexedDB; lost start, attach and write responses reconciled');
+  console.log('PASS local API browser Open, Save As, refresh/reconnect, Save and hidden-chooser cancel without browser picker or IndexedDB; lost start, attach and write responses reconciled');
 } finally {
   if (browser) await browser.close();
   await stopServer();

@@ -77,6 +77,42 @@ class FileApiTests(unittest.TestCase):
             self.assertIn(message, result['error'])
             self.assertNotIn('private destination', result['error'])
 
+    def test_chooser_controls_require_the_owning_operation(self):
+        status, _, raw = self.request('POST', '/api/file-operations', self.headers(), json.dumps({'id': 'op', 'kind': 'open'}))
+        self.assertEqual((status, json.loads(raw)['stage']), (200, 'choosing'))
+        with mock.patch.object(self.chooser, 'raise_dialog', create=True, return_value={'shown': True, 'foreground': False}) as raised, \
+             mock.patch.object(self.chooser, 'cancel', create=True, side_effect=lambda: self.chooser.requests[-1].set_result(None)) as cancel:
+            status, _, raw = self.request('POST', '/api/file-operations/op/raise', self.headers(), '{}')
+            self.assertEqual((status, json.loads(raw)), (200, {'shown': True, 'foreground': False}))
+            other = {**self.headers(), 'X-Plan-Client': 'other'}
+            self.assertEqual(self.request('POST', '/api/file-operations/op/cancel', other, '{}')[0], 404)
+            no_session = {**self.headers(), 'X-Plan-Session': 'wrong'}
+            self.assertEqual(self.request('POST', '/api/file-operations/op/cancel', no_session, '{}')[0], 403)
+            cancel.assert_not_called()
+            status, _, _ = self.request('POST', '/api/file-operations/op/cancel', self.headers(), '{}')
+            self.assertEqual(status, 200)
+            raised.assert_called_once_with()
+            cancel.assert_called_once_with()
+        deadline = time.monotonic() + 5
+        while json.loads(self.request('GET', '/api/file-operations/op', self.headers())[2])['stage'] == 'choosing':
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        self.assertEqual(json.loads(self.request('GET', '/api/file-operations/op', self.headers())[2])['stage'], 'cancelled')
+
+    def test_diagnostics_report_native_access_before_first_use_as_not_started(self):
+        service = self.server.file_service
+        self.addCleanup(setattr, self.server, 'file_service', service)
+        # Production state before the first file action: native access is expected but not yet started.
+        self.server.file_service, self.server.file_failed, self.server.file_attempted = None, True, False
+        access = json.loads(self.request('GET', '/api/diagnostics')[2])['fileAccess']
+        self.assertEqual((access['backend'], access['status']), ('pending', 'not started'))
+        self.server.file_attempted = True
+        access = json.loads(self.request('GET', '/api/diagnostics')[2])['fileAccess']
+        self.assertEqual((access['backend'], access['status']), ('browser', 'failed'))
+        self.server.use_file_service(service)
+        access = json.loads(self.request('GET', '/api/diagnostics')[2])['fileAccess']
+        self.assertEqual((access['backend'], access['status']), ('python', 'available'))
+
     def test_startup_failure_is_explicit_and_bootstrap_can_retry(self):
         assert self.server.file_service is not None
         self.server.file_service.close()

@@ -66,3 +66,32 @@ test('locked-file guidance survives reconciliation without clearing an uncertain
     }
   }
 });
+
+test('a slow Windows chooser shows recovery controls that raise or cancel only that operation', async () => {
+  const control = () => { const handlers = new Map(); return { disabled: false, handlers, addEventListener: (type, fn) => handlers.set(type, fn), removeEventListener: (type, fn) => { if (handlers.get(type) === fn) handlers.delete(type); }, click: () => handlers.get('click')?.() }; };
+  const text = { textContent: '' }, raise = control(), cancel = control();
+  const panel = { hidden: true, querySelector: selector => ({ '[data-chooser-text]': text, '[data-chooser-raise]': raise, '[data-chooser-cancel]': cancel })[selector] };
+  const posts = []; let cancelled = false;
+  const browser = fakeBrowser(async (url, options) => {
+    if (url.pathname.endsWith('/file-access')) return response(200, { version: 1, available: true, session: 'session' });
+    if (options.method === 'POST') {
+      posts.push(url.pathname.replace(/^.*\/api\//, ''));
+      if (url.pathname.endsWith('/cancel')) cancelled = true;
+      return response(200, url.pathname.endsWith('/raise') ? { shown: true, foreground: false } : { id: 'op', stage: 'choosing' });
+    }
+    return response(200, cancelled ? { id: 'op', kind: 'open', stage: 'cancelled' } : { id: 'op', kind: 'open', stage: 'choosing', chooser: { shown: true, foreground: false } });
+  });
+  browser.document.getElementById = id => (id === 'chooserhint' ? panel : null);
+  browser.setTimeout = (fn, delay) => setTimeout(fn, Math.min(delay, 5));
+  browser.clearTimeout = clearTimeout;
+  const service = await openLocalFiles(browser);
+  const waiting = service.wait('op');
+  while (panel.hidden) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.match(text.textContent, /project to open in the Windows file window/);
+  await raise.click();
+  await cancel.click();
+  assert.equal((await waiting).stage, 'cancelled');
+  assert.deepEqual(posts, ['file-operations/op/raise', 'file-operations/op/cancel']);
+  assert.equal(panel.hidden, true);
+  assert.equal(raise.handlers.size + cancel.handlers.size, 0);
+});

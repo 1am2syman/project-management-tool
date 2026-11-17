@@ -246,6 +246,7 @@ class FileService:
         self._lifecycle = threading.RLock()
         self._event_lock = threading.Lock()
         self._events = deque(maxlen=200)
+        self._choosing = None
         self._event_stages = {}
         self._closed = False
         self.fault = fault or (lambda stage: None)
@@ -346,7 +347,9 @@ class FileService:
 
     def diagnostics(self):
         with self._event_lock:
-            return list(self._events)
+            events = list(self._events)
+        chooser_events = self.chooser.diagnostics() if hasattr(self.chooser, 'diagnostics') else []
+        return events + [{'backend': 'python', **event} for event in chooser_events]
 
     def status(self, client, operation):
         with contextlib.closing(self._connect()) as db:
@@ -358,6 +361,12 @@ class FileService:
             self.reconcile()
             with contextlib.closing(self._connect()) as db:
                 result = self._public(self._get(db, client, operation))
+        if result['stage'] == 'choosing' and hasattr(self.chooser, 'state'):
+            with self._event_lock:
+                mine = self._choosing == (client, operation)
+            state = self.chooser.state() if mine else None
+            if state is not None:
+                result['chooser'] = state
         return result
 
     def connection(self, sheet, token):
@@ -426,7 +435,10 @@ class FileService:
         if kind != 'save':
             try:
                 future = self.chooser.choose('open' if kind == 'open' else 'save', suggested_name, initial_folder)
-                future.add_done_callback(lambda result: self._executor.submit(self._selected, client, operation, result))
+                key = (client, operation)
+                with self._event_lock:
+                    self._choosing = key
+                future.add_done_callback(lambda result: self._chooser_done(key, client, operation, result))
             except DialogBusy:
                 self._finish_error(client, operation, 'busy')
             except Exception:
@@ -437,6 +449,29 @@ class FileService:
         with contextlib.closing(self._connect()) as db, db:
             db.execute('UPDATE operations SET stage=?,error=?,content=NULL WHERE workspace=? AND client=? AND id=? AND stage=?',
                        ('failed', code, self.workspace, client, operation, 'choosing'))
+
+    def _chooser_done(self, key, client, operation, future):
+        with self._event_lock:
+            if self._choosing == key:
+                self._choosing = None
+        self._executor.submit(self._selected, client, operation, future)
+
+    def _chooser_owner(self, client, operation):
+        # The process has one chooser; only the operation that opened it may control it.
+        with contextlib.closing(self._connect()) as db:
+            row = self._get(db, client, operation)
+        with self._event_lock:
+            return row['stage'] == 'choosing' and self._choosing == (client, operation)
+
+    def cancel_chooser(self, client, operation):
+        if self._chooser_owner(client, operation) and hasattr(self.chooser, 'cancel'):
+            self.chooser.cancel()
+        return self.status(client, operation)
+
+    def raise_chooser(self, client, operation):
+        if self._chooser_owner(client, operation) and hasattr(self.chooser, 'raise_dialog'):
+            return self.chooser.raise_dialog()
+        return {'shown': False, 'foreground': False}
 
     def _selected(self, client, operation, future):
         try:

@@ -102,15 +102,60 @@ export async function openLocalFiles(browser = window) {
     pending() { try { return JSON.parse(browser.sessionStorage.getItem('plan-file-pending') || 'null'); } catch { return null; } },
     remember(fields) { browser.sessionStorage.setItem('plan-file-pending', JSON.stringify({ ...this.pending(), ...fields })); },
     clear() { browser.sessionStorage.removeItem('plan-file-pending'); },
+    cancelChooser: id => post(`file-operations/${encodeURIComponent(id)}/cancel`, {}),
+    raiseChooser: id => post(`file-operations/${encodeURIComponent(id)}/raise`, {}),
     async wait(id) {
       let delay = 150;
-      for (;;) {
-        const value = await this.status(id);
-        diagnostics.record('file.local.stage', { stage: value.stage, kind: value.kind });
-        if (!['choosing', 'reading', 'selected'].includes(value.stage)) return value; // writing is reported, never polled
-        await new Promise(resolve => browser.setTimeout(resolve, delay));
-        delay = Math.min(1500, Math.round(delay * 1.5));
-      }
+      const notice = chooserNotice(browser, id, this);
+      try {
+        for (;;) {
+          const value = await this.status(id);
+          diagnostics.record('file.local.stage', { stage: value.stage, kind: value.kind, ...(value.chooser ? { chooser: value.chooser } : {}) });
+          notice.update(value);
+          if (!['choosing', 'reading', 'selected'].includes(value.stage)) return value; // writing is reported, never polled
+          await new Promise(resolve => browser.setTimeout(resolve, delay));
+          delay = Math.min(1500, Math.round(delay * 1.5));
+        }
+      } finally { notice.close(); }
+    },
+  };
+}
+
+// The Windows chooser belongs to the Plan server, a background process. Windows may keep it
+// behind the browser or without focus, so the page explains where it is and offers recovery.
+function chooserNotice(browser, id, service) {
+  const panel = browser.document.getElementById?.('chooserhint');
+  if (!panel) return { update() {}, close() {} };
+  const text = panel.querySelector('[data-chooser-text]'), raise = panel.querySelector('[data-chooser-raise]'), cancel = panel.querySelector('[data-chooser-cancel]');
+  const started = Date.now();
+  let timer = null, closed = false, kind = 'open';
+  const show = () => { if (!closed) panel.hidden = false; };
+  const onRaise = async () => {
+    try { diagnostics.record('file.local.raise', await service.raiseChooser(id)); }
+    catch (error) { diagnostics.record('file.local.raise', { error }, 'warn'); }
+  };
+  const onCancel = async () => {
+    cancel.disabled = true;
+    // Re-enable after a pause in case the chooser could not be closed (for example, a prompt was open).
+    try { await service.cancelChooser(id); diagnostics.record('file.local.cancel'); browser.setTimeout(() => { cancel.disabled = false; }, 2000); }
+    catch (error) { cancel.disabled = false; diagnostics.record('file.local.cancel', { error }, 'warn'); }
+  };
+  raise.addEventListener('click', onRaise);
+  cancel.addEventListener('click', onCancel);
+  return {
+    update(value) {
+      if (value.stage !== 'choosing') { panel.hidden = true; return; }
+      kind = value.kind;
+      const target = kind === 'open' ? 'the project to open' : 'where to save the project';
+      text.textContent = value.chooser?.shown === false && Date.now() - started > 3000
+        ? 'Opening the Windows file window…'
+        : `Choose ${target} in the Windows file window. If you cannot see it, select Show file window.`;
+      if (panel.hidden && timer === null) timer = browser.setTimeout(show, 700);
+    },
+    close() {
+      closed = true; if (timer !== null) browser.clearTimeout?.(timer);
+      panel.hidden = true; cancel.disabled = false;
+      raise.removeEventListener('click', onRaise); cancel.removeEventListener('click', onCancel);
     },
   };
 }
