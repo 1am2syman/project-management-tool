@@ -214,7 +214,7 @@ export function createProjectFiles(ctx, browser = window) {
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
     const contents = await diagnostics.trace('file.open.readText', () => file.text());
     const id = openProjectFile(store, contents);
-    ctx.toast(`Opened “${store.sheet(id).name}” · reminders are off`);
+    ctx.toast(`Opened “${store.sheet(id).name}”`);
     return { id, contents };
   }
 

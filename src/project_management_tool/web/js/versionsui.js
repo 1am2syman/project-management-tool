@@ -2,7 +2,6 @@
 // restore / copy / rename / delete. Versions belong to the active project tab.
 import { esc, openModal, setHTML } from './dom.js';
 import { metrics, fmtDay } from './versiondiff.js';
-import * as m365 from './m365.js';
 
 const when = (ts) => (ts ? new Date(ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'unknown date');
 export const versionLabel = (v) => `v${v.n} · ${v.name}`;
@@ -100,7 +99,7 @@ export function createVersionsUI(ctx) {
     const body = dialog.body, name = body.querySelector('#vname'), err = body.querySelector('.set-err');
     setTimeout(() => { name.focus(); name.select(); }, 0);
     const save = () => {
-      const r = store.snapshotVersion({ name: name.value, note: body.querySelector('#vnote').value, by: m365.currentAccount?.()?.name || '' });
+      const r = store.snapshotVersion({ name: name.value, note: body.querySelector('#vnote').value, by: '' });
       if (r.error) { err.textContent = r.error; return; }
       dialog.close(); ctx.toast(`Saved ${versionLabel(r.version)}`);
     };
@@ -141,7 +140,7 @@ export function createVersionsUI(ctx) {
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
     body.querySelector('[data-restore]').addEventListener('click', () => {
       if (body.querySelector('#vkeep').checked) {
-        const r = store.snapshotVersion({ name: `Before restoring v${v.n}`, by: m365.currentAccount?.()?.name || '' });
+        const r = store.snapshotVersion({ name: `Before restoring v${v.n}`, by: '' });
         if (r.error) { body.querySelector('.set-err').textContent = r.error; return; }
       }
       const e = store.restoreVersion(vid);

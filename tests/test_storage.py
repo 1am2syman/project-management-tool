@@ -60,6 +60,28 @@ class StorageTests(unittest.TestCase):
         status, _, response = http_request(self.server.server_port, path, raw, {"Content-Type": "application/json", **(headers or {})})
         return status, json.loads(response)
 
+    def test_removed_integration_routes_assets_and_launcher_options_are_unavailable(self):
+        port = self.server.server_port
+        for path in ['/api/native/status', '/api/reminder-feasibility/status', '/m365.config.json', '/redirect.html', '/reminder-feasibility.html', '/js/m365.js', '/vendor/msal-browser.min.js']:
+            with self.subTest(path=path):
+                self.assertEqual(http_request(port, path)[0], 404)
+        for path in ['/api/native/connect', '/api/native/install', '/api/native/mail-send', '/api/reminder-feasibility/install']:
+            self.assertEqual(http_request(port, path, b'{}', {'Content-Type': 'application/json'})[0], 404)
+        self.assertFalse((self.directory / 'plan.db').exists())
+        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'start.py'), '--help'], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        for option in ['reminder-feasibility', 'background-setup', 'production', 'browser-only-test']:
+            self.assertNotIn(option, result.stdout)
+
+    def test_legacy_metadata_roundtrips_as_inert_local_data(self):
+        state = copy.deepcopy(STATE)
+        state['browser'].update({'pm-reminder-owner-v2': 'native-v1', 'pm-rem-ledger-v1:test@example.com': '{"old":"record"}'})
+        state['workbook']['sheets'][0]['rem'] = {'on': True, 'auto': True, 'timezone': 'UTC'}
+        self.assertEqual(self.request({'revision': None, 'state': state})[0], 200)
+        self.assertEqual(self.request()[1]['state'], state)
+        self.assertEqual(self.request(path='/api/history')[1]['entries'][0]['revision'], '1')
+        self.assertEqual({p.name for p in self.directory.iterdir()}, {'plan.db'})
+
     def test_runtime_diagnostics_describes_build_without_reading_or_exposing_user_data(self):
         self.assertFalse((self.directory / "plan.db").exists())
         status, result = self.request(path="/api/diagnostics")

@@ -8,7 +8,7 @@ Run these commands from the repository root:
 
 ```sh
 python -B -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/localfiles.test.mjs tests/storage-barrier.test.mjs tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs tests/versions.test.mjs tests/versiondiff.test.mjs tests/waterfall.test.mjs
+node --test tests/*.test.mjs
 ```
 
 Use `python3` if that is your Python command. These commands use an existing development Python installation; with an already configured uv environment, `uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v` is equivalent.
@@ -48,6 +48,7 @@ node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
+node tests/browser-local-only.mjs
 node tests/browser-versions.mjs
 ```
 
@@ -57,6 +58,7 @@ All suites start their own server on an available local port, use a temporary SQ
 |---|---|
 | `browser-local-files.mjs` | Isolated local API, injected delayed chooser, no browser picker or IndexedDB dependency, lost start/attach/commit responses, refresh while a chooser is pending, connection reuse across browser profiles and server restart, and the Show file window/Cancel notice for a chooser that stays open. The injected chooser does not test Windows dialogs. |
 | `browser-versions.mjs` | Snapshot dialog and unchanged-plan notice, version list and keyboard closing, read-only preview (blocked typing, undo and toolbar actions; live plan unchanged on the server), Back to current, restore with “save current first”, undo/redo of a restore, rename and delete, version analysis sections, baseline/compared selection and swap, finish waterfall (unchanged/delayed/earlier comparison, single-source attribution, connected added/removed scope with labelled items imported through a real `.plan` document, table/chart selection, keyboard arrows and Home/End, multi-step details, smaller-width fit and screenshots at 100%, 150% and 200% display scaling), change-log filters and search, *Only changed rows*, keyboard isolation from the plan, PDF/Excel downloads, Compare to current, exporting the version on screen, Copy as new project, `.plan` Save/Open with versions while a version is shown, reload returning to the current plan, the empty analysis state, and banner/card fit at 1366px with screenshots at 1366 and 1920px. |
+| `browser-local-only.mjs` | No Microsoft controls or integration/external requests, workbook owner suggestions and manual entry, inert legacy settings, editable copies of older read-only snapshots, and SQLite restoration in a fresh profile. |
 | `browser-slack.mjs` | Total/free slack cells and keyboard inspection, latest dates and limiting successors, milestone scope and summaries, Off/Selected/All overlays, Fit bounds, passive slack tails during move/resize/cancel/undo, unchanged project data, SQLite preference restoration across profiles, Excel values and re-import, PDF columns/options/download, read-only inspection, narrow dialog layout, and row/tail alignment, working-calendar tail end plus screenshots at 100%, 150% and 200% device scaling in both densities. |
 | `browser-diagnostics.mjs` | Bottom-bar Log clicks, JSON downloads, browser/runtime metadata, cookie/storage checks, errors and request metadata, secret/project-content exclusion, retention through refresh, keyboard isolation, narrow footer and Log availability when the main module cannot load. |
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
@@ -127,6 +129,11 @@ runtime\windows-x64\python.exe -B start.py --port 5174 --no-open --data-dir (Joi
 ```
 
 Open `http://127.0.0.1:5174/` in Chrome, Edge and Firefox, each with a fresh profile, for example `chrome.exe --user-data-dir="$work\chrome-profile" http://127.0.0.1:5174/`. Use only sample `.plan` files stored under `$work`. Afterward, confirm that the registry is under `$work\localappdata\Plan\file-access` and that nothing changed under your real `%LOCALAPPDATA%\Plan`, then stop the server and delete `$work`.
+## Local-only scope checks
+
+Microsoft 365, native mail workers and cloud sharing are removed. There are no tenant, login, mail-delivery or scheduled-task release gates. Local compatibility tests retain old reminder/sharing metadata without executing it.
+
+`node tests/browser-local-only.mjs` uses a temporary database and fresh Chromium profile. It checks that sign-in/reminder/cloud-sharing controls are absent, local owner suggestions work, older read-only snapshots can be copied, legacy metadata remains inert, and no integration or external requests occur. Removed native/feasibility routes and command-line options are covered by Python regressions.
 
 ## Verification limits
 
@@ -144,4 +151,4 @@ The finish waterfall was also reviewed at 100%, 150% and 200% display scaling, i
 
 Slack tails were reviewed visually in Chromium on Linux at 100%, 150% and 200% device scaling in both densities; other browsers and Windows display scaling have not been reviewed.
 
-Microsoft 365 behavior has been checked with mocked Graph responses, not a live tenant. Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.
+Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.

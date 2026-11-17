@@ -74,7 +74,7 @@ This is a complete version 3 file containing one automatic task:
 | `tasks[].scheduling` | Optional `"auto"`, `"manual"` or `"anchor"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Anchors may be delayed but are not pulled earlier. An absent mode defaults to Auto, including in older files; enabling Auto-schedule can therefore remove existing gaps. Explicit Manual and Anchor modes are preserved. Summary dates still roll up from children. |
 | `tasks[].progress` | Integer percentage from 0 through 100. |
 | `tasks[].owner`, `tasks[].email` | Owner display name (at most 80 characters) and email address (at most 254 characters). Both can be empty strings; a nonempty email must pass the app's email validation. |
-| `tasks[].noRem`, `tasks[].ms` | Boolean flags for skipping reminders and marking a milestone. |
+| `tasks[].noRem`, `tasks[].ms` | `noRem` is an inert legacy flag retained for compatibility. `ms` marks a milestone. |
 | `links` | Relationships between existing, distinct tasks. Summary endpoints and dependency cycles are rejected. |
 | `links[].id` | Unique ID such as `"l1"`: `l` followed by a positive safe integer without leading zeros. |
 | `links[].from`, `links[].to` | IDs of the predecessor and successor tasks. |
@@ -137,22 +137,22 @@ Both fields sit inside `project` and must appear together; version 1–3 files m
 | `versions[].n` | Version number shown as `v1`, `v2`, …: a unique positive safe integer. |
 | `versions[].name`, `versions[].note` | Nonblank name of at most 80 characters; note of at most 1,000 characters (may be empty). |
 | `versions[].at` | When the version was taken: a date-time string that JavaScript can parse. Plan writes ISO 8601 in UTC. |
-| `versions[].by` | Name of the signed-in Microsoft 365 user who took it, at most 120 characters; empty when not signed in. |
+| `versions[].by` | Name of the person who took the version, at most 120 characters. Plan writes it empty; the app ignores any recorded name. |
 | `versions[].auto`, `versions[].target` | The Auto-schedule setting and critical-path milestone ID (or `null` for project completion) when the version was taken. A version is shown with the dates it was saved with. |
 | `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in version 4; collapsed groups are not saved with versions. |
 | `nextVersion` | Positive safe integer greater than every `versions[].n`. Numbers of deleted versions are not reused. |
 
 Every saved plan is validated with the same task, relationship and calendar rules before the project opens; one invalid version rejects the whole file. Opening a file adds the project with its versions; the current plan is shown first.
 
-## Preferences and reminders
+## Preferences and legacy metadata
 
 `preferences.auto` and `preferences.critical` are booleans controlling auto-scheduling and critical-path display. Opening a project applies these settings to the editor. Saving a read-only shared project writes `auto: false` so its editable copy preserves the published dates.
 
 A selected milestone critical-path target is an app view preference saved separately for each project tab. It is not included in `.plan` files; an opened project starts with **Project completion** as its target. Selecting a target changes float and highlights without moving dates or changing `tasks[].scheduling`. PDF and Excel exports use the selected analysis and identify the target, but importing those exports does not restore the target choice.
 
-`project.rem` contains these reminder settings:
+`project.rem` is retained solely for compatibility with older files. Email reminders are removed; these fields never schedule or send mail:
 
-- `on` and `auto`: boolean switches. The saved values are recorded in the file, but both become **false** in the opened copy. Enable reminders in **Remind** when ready.
+- `on` and `auto`: boolean switches. The saved values are recorded in the file, but both become **false** in the opened copy. There is no reminder-enable control.
 - `mode`: `task`, `person` or `project`.
 - `offsets`: up to eight integer lead times from 0 through 60 days. The app removes duplicates and sorts lead times on load.
 - `overdue`: boolean controlling the notice after a missed deadline.
@@ -162,7 +162,7 @@ A selected milestone critical-path target is an app view preference saved separa
 
 ## Data kept outside project files
 
-Project files include task owners, email addresses, reminder configuration and saved project versions. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
+Project files include task owners, contact email addresses, saved project versions and inert legacy reminder metadata. They exclude browser-local file handles and file connection tokens, legacy cloud sharing links and permissions, queued-message records, credentials, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
 
 On the local Windows launcher, file connections and the operation journal live in `%LOCALAPPDATA%\Plan\file-access`, separately from `plan.db` and its backups. The registry includes paths and may temporarily contain staged snapshots; secure it as project data. Connections are scoped to the canonical workspace location and may survive browser changes or server restart on that machine. Moving the database, deleting the registry or changing workspace location requires Open or Save As to reconnect. Browser-local handles from earlier releases cannot be converted to paths. On macOS/Linux and static hosting, browser-local IndexedDB handles remain the fallback; their permissions and lifetime are controlled by the browser. Duplicating a project does not duplicate its connection.
 

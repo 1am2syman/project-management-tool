@@ -30,12 +30,8 @@
       <button data-act="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 16 16"><path d="M10 3l3 3-3 3M13 6H7a4 4 0 000 8h3"/></svg></button>
       <span class="sep"></span>
       <button id="calendarbtn" title="Configure project workdays and custom holidays" aria-label="Project calendar"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 7h12M5 1.5v3M11 1.5v3M5 10h1M9 10h1"/></svg><span class="tool-label">Calendar</span></button>
-      <button id="sharebtn" title="Share this project read-only" aria-label="Share project"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c0-2.2 1.8-3.7 4-3.7s4 1.5 4 3.7M11.5 4v4M9.5 6h4"/></svg><span class="tool-label">Share</span></button>
-      <button id="rembtn" title="Deadline reminders" aria-label="Deadline reminders"><svg viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 018 0V11l1 1.5H3zM6.5 14h3"/></svg><span class="tool-label">Remind</span><span class="dot" hidden role="img" aria-label="Reminders are on"></span></button>
       <button id="impbtn" title="Import from Excel or CSV" aria-label="Import"><svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 13h10"/></svg><span class="tool-label">Import</span></button>
       <button id="expbtn" title="Export to Excel or PDF" aria-label="Export"><svg viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg><span class="tool-label">Export</span></button>
-      <span class="sep"></span>
-      <button id="m365btn" class="m365" title="Connect Microsoft 365" aria-label="Microsoft 365"><svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><rect x="9" y="9" width="5" height="5"/></svg><span id="m365lbl" class="tool-label"></span></button>
       <span class="sep"></span>
       <button data-act="reset" class="ghost" title="Restore the demo workbook (removes all sheets)" aria-label="Reset all"><svg viewBox="0 0 16 16"><path d="M3 6a5 5 0 1 1 0 5M3 2v4h4"/></svg><span class="tool-label">Reset all</span></button>
     </div>
@@ -110,7 +106,6 @@
 
 <div id="tip" class="tip"></div>
 <div id="expmenu" class="expmenu" hidden></div>
-<div id="m365menu" class="expmenu" hidden></div>
 <div id="tplpop" class="tplpop" hidden></div>
 <div id="ctxmenu" class="ctxmenu" hidden></div>
 <div id="colpop" class="colpop" hidden></div>
