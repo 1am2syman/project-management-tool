@@ -16,10 +16,6 @@ import { createExport } from './export.js';
 import { createImport } from './import.js';
 import { createProjectFiles } from './projectfiles.js';
 import { createPeople } from './people.js';
-import { createM365UI } from './m365ui.js';
-import { createReminders } from './reminders.js';
-import { createSharing } from './sharing.js';
-import * as m365 from './m365.js';
 import { initDensity, setDensity, fitDensity, dims } from './dims.js';
 
 const $ = (s) => document.querySelector(s);
@@ -76,9 +72,19 @@ createProjectFiles(ctx);
 createImport(ctx);
 createHistory();
 ctx.people = createPeople(ctx);
-ctx.m365ui = createM365UI(ctx);
-const reminders = createReminders(ctx);
-const sharing = createSharing(ctx);
+const banner = $('#robanner');
+banner.addEventListener('click', (event) => {
+  if (event.target.closest('#roCopy')) {
+    store.duplicateSheet(store.wb.active);
+    ctx.toast('Editable local copy created');
+  }
+});
+function paintReadOnly() {
+  const readOnly = store.readOnly;
+  $('#app').classList.toggle('ro', readOnly);
+  banner.hidden = !readOnly;
+  if (readOnly) setHTML(banner, '<span class="lock">Read-only local snapshot</span><span>Create a local copy to edit this older project.</span><span style="flex:1"></span><button id="roCopy">Make editable copy</button>');
+}
 const criticalUI = createCriticalUI(ctx, grid);
 ctx.slack = createSlackUI(ctx, grid);
 
@@ -99,7 +105,7 @@ function renderAll() {
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
   fitDensity($('#gb').clientHeight, store.rows.length);
   $('#density').value = dims.name;
-  grid.render(); gantt.render(); status(); sheets.render(); sharing.paintBanner(); ctx.relationships.render(); ctx.slack.render();
+  grid.render(); gantt.render(); status(); sheets.render(); paintReadOnly(); ctx.relationships.render(); ctx.slack.render();
   $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
@@ -108,7 +114,7 @@ function renderAll() {
 }
 store.on((kind) => {
   if (kind !== 'drag') diagnostics.record('model.change', { kind, taskCount: store.tasks.length, linkCount: store.links.length });
-  if (kind === 'denied') { ctx.toast(`Read-only: shared by ${(store.sheet().source || {}).by || 'its owner'}. Make an editable copy to change it.`); return; }
+  if (kind === 'denied') { ctx.toast('This local snapshot is read-only. Make an editable copy to change it.'); return; }
   if (kind === 'drag') ctx.requestRender(); // coalesced to one render per frame, however many pointer events arrive
   else if (kind === 'sheet') {
     const render = diagnostics.begin('ui.renderSheet');
@@ -220,5 +226,4 @@ if (window.ResizeObserver) {
 renderAll();
 diagnostics.record('app.ready');
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
-m365.init().then(() => { reminders.badge(); sharing.fromHash(); });
 void COLS;

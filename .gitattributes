@@ -2,6 +2,4 @@
 
 # Preserve the vendored Python distribution byte-for-byte, including text files.
 runtime/windows-x64/** -text -diff
-# Dependency manifests hash upstream wheel bytes, including original line endings.
-runtime/native-auth/windows-x64/** -text -diff
 runtime/*.spdx.json -text whitespace=cr-at-eol

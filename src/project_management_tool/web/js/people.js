@@ -1,7 +1,5 @@
-// People directory: Microsoft 365 colleagues (when signed in) + people already used in this workbook,
-// surfaced as a type-ahead picker on the Owner cell. Picking a person stores their name and email on the task.
+// Workbook-local owner suggestions. Picking a person stores their name and email on the task.
 import { esc, setHTML } from './dom.js';
-import * as m365 from './m365.js';
 
 const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
 export const initials = (n) => String(n).split(/[\s@._-]+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
@@ -10,9 +8,6 @@ export const avatar = (n) => `<span class="av" style="background:${avColor(n)}">
 
 export function createPeople(ctx) {
   const { store } = ctx;
-  const cache = new Map(); // lower-case email -> person (everything the directory has told us this session)
-  let relevant = null, relevantErr = '';
-  const add = (p) => { if (p && p.email) cache.set(p.email.toLowerCase(), { ...cache.get(p.email.toLowerCase()), ...p }); return p; };
 
   function local() { // people already on tasks in any sheet
     const out = new Map();
@@ -21,29 +16,14 @@ export function createPeople(ctx) {
   }
   function resolve(text) { // exact display-name or email match among known people; ambiguous names resolve to nothing
     const q = String(text).trim().toLowerCase(); if (!q) return null;
-    const hits = [...cache.values(), ...local()].filter((p) => p.email.toLowerCase() === q || p.name.toLowerCase() === q);
+    const hits = local().filter((p) => p.email.toLowerCase() === q || p.name.toLowerCase() === q);
     const uniq = new Map(hits.map((p) => [p.email.toLowerCase(), p])); return uniq.size === 1 ? [...uniq.values()][0] : null;
   }
   store.resolvePerson = resolve;
-  m365.onAuthChange(() => { cache.clear(); relevant = null; relevantErr = ''; }); // never show the previous account's contacts
-
   async function suggestions(q) {
     q = q.trim().toLowerCase();
-    const mine = local().filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q));
-    if (!m365.isSignedIn()) return { items: mine.slice(0, 8), note: m365.isConfigured() ? 'Sign in to Microsoft 365 to search your organisation' : 'Connect Microsoft 365 to search your organisation' };
-    let remote = [], note = '';
-    try {
-      if (q.length >= 2) remote = await m365.searchPeople(q);
-      else {
-        if (!relevant && !relevantErr) { try { relevant = await m365.relevantPeople(); } catch (e) { relevantErr = e.message; } }
-        remote = relevant || [];
-        if (!remote.length) note = 'Type at least 2 letters to search the directory';
-      }
-    } catch (e) { note = e.status === 403 ? 'Your organisation has not allowed directory search for this app' : e.message; }
-    remote.forEach(add);
-    const seen = new Set(), items = [];
-    for (const p of [...remote, ...mine]) { const k = p.email.toLowerCase(); if (!seen.has(k)) { seen.add(k); items.push(p); } }
-    return { items: items.slice(0, 12), note };
+    const items = local().filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q));
+    return { items: items.slice(0, 12), note: items.length ? 'People already entered in this workbook' : 'No local matches. Press Enter to keep the typed name.' };
   }
 
   // ---------- type-ahead dropdown attached to an <input> ----------
@@ -64,7 +44,7 @@ export function createPeople(ctx) {
       if (dead || my !== seq) return;
       items = r.items; idx = items.length && touched && inp.value.trim() ? 0 : -1; paint(r.note);
     }
-    const queue = () => { touched = true; idx = -1; items = []; clearTimeout(timer); timer = setTimeout(refresh, 220); }; // results of an older query must not stay pickable
+    const queue = () => { touched = true; idx = -1; items = []; box.hidden = true; inp.setAttribute('aria-expanded', 'false'); inp.removeAttribute('aria-activedescendant'); clearTimeout(timer); timer = setTimeout(refresh, 220); }; // results of an older query must not stay pickable
     const pick = (p, ev) => { cleanup(); onPick(p, ev); };
     function key(e) {
       if (e.key === 'Escape' && inp.closest('.modal')) { e.preventDefault(); e.stopImmediatePropagation(); cleanup(); return; } // close the list, not the dialog
@@ -73,10 +53,10 @@ export function createPeople(ctx) {
       else if ((e.key === 'Enter' || e.key === 'Tab') && idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); pick(items[idx], e); }
     }
     function cleanup() { dead = true; clearTimeout(timer); inp.removeEventListener('keydown', key, true); inp.removeEventListener('input', queue); inp.removeEventListener('blur', cleanup); box.remove(); inp.setAttribute('aria-expanded', 'false'); inp.removeAttribute('aria-activedescendant'); }
-    box.addEventListener('pointerdown', (e) => { e.preventDefault(); const row = e.target.closest('.pp'); if (row) pick(items[+row.dataset.i]); }); // preventDefault keeps focus in the input
+    box.addEventListener('pointerdown', (e) => { e.preventDefault(); const row = e.target.closest('.pp'), person = row && items[+row.dataset.i]; if (person) pick(person, e); }); // preventDefault keeps focus in the input
     inp.addEventListener('keydown', key, true); inp.addEventListener('input', queue); inp.addEventListener('blur', cleanup);
     refresh();
     return cleanup;
   }
-  return { attach, resolve, known: () => [...cache.values()] };
+  return { attach, resolve, known: local };
 }

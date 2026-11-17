@@ -1,8 +1,7 @@
 # Plan: project sheet + Gantt
 
 Spreadsheet-style task grid on the left, fully draggable Gantt on the right (FS/SS/FF/SF links, critical path,
-milestones, quarter/month/week/day views), multi-project sheet tabs, templates, native `.plan` project files, Excel and PDF export,
-and Microsoft 365 integration (people directory, deadline reminders, read-only sharing). Vanilla ES modules, no build step.
+milestones, quarter/month/week/day views), multi-project sheet tabs, templates, native `.plan` project files, and Excel/PDF export. Plan is a local, offline-capable app with no account or cloud setup. Vanilla ES modules, no build step.
 
 ## Run on Windows
 
@@ -54,7 +53,7 @@ Tabs carried over from an older app version need **Save As… once** to connect 
 
 Native file connections are kept separately in this browser and survive a refresh; the browser may ask you to allow file access again. Clearing site data, moving to another browser/computer, or unavailable browser storage requires Open or Save As again. Duplicating a tab creates an independent project without a file connection. Save refuses to overwrite a connected file that changed outside Plan, or to write a connected file from a stale/read-only window; use Open to review it or Save As for a copy. Browsers without native file access download a snapshot on each Save.
 
-A project file preserves tasks, hierarchy, dates, working calendars, per-task scheduling modes, durations, all four relationship types and lag, milestones, progress, owners and email addresses, collapsed groups, scheduling/critical-path preferences, and reminder configuration. Opening applies the file's scheduling/critical-path preferences to the editor. Reminders start **off** in the opened copy; enable them in **Remind** when ready. Live Microsoft 365 sharing links, permissions, scheduled-message records, sign-in credentials, undo/redo history, and app layout settings stay outside project files. Saving a shared read-only project creates a portable editable copy when opened, with auto-schedule off to preserve the published dates.
+A project file preserves tasks, hierarchy, dates, working calendars, per-task scheduling modes, durations, relationships and lag, milestones, progress, owners and email addresses, collapsed groups, and scheduling/critical-path preferences. Opening applies those preferences to the editor. Older reminder settings remain inert compatibility metadata; they do not schedule or send mail. Saving an older read-only snapshot creates a portable editable copy when opened, with auto-schedule off to preserve its dates.
 
 Files use versioned JSON with a `.plan` extension and a 64 MB size limit. Invalid, incomplete or unsupported files show an error before any project is added. Cancelling a file dialog leaves your work in place. Automatic saves and History continue to use the app's database; a `.plan` file contains the single project as it was when you last chose **Save** or **Save As…**. Changes do not automatically overwrite connected `.plan` files. See the [project file format](docs/project-files.md) for the version 1–3 structures and validation rules.
 
@@ -72,39 +71,26 @@ After updating to a version with Log, restart the launcher and refresh the app s
 
 The launcher automatically creates **Plan/plan.db inside your Documents folder**. On Windows it asks Windows for the actual Documents location, including redirected or OneDrive Documents folders. You do not need to create the folder or choose a file. This one SQLite database contains the machine's saved Plan state:
 
-- All projects, tasks, relationships, templates, scheduling preferences, reminder settings and sharing records.
+- All projects, tasks, relationships, templates, scheduling preferences, and any retained legacy metadata.
 - The active project, selected task, density, focus, hidden columns, column widths, pane width, and each project's Gantt zoom and scroll position.
-- Each project's undo/redo stacks (up to 150 undo steps, as in the editor), Microsoft 365 app configuration, reminder templates, and local reminder activity records.
+- Each project's undo/redo stacks (up to 150 undo steps, as in the editor) and app settings.
 - Retained saved versions of the entire app state. **History** opens a read-only viewer of earlier projects; viewing history does not change current work. Saved versions are not automatically pruned. They record completed saves, which can combine rapid edits; they are not a record of every pointer movement.
 
 Edits trigger automatic saves immediately; rapid edits made during an in-flight save are combined into the next save. There is no periodic-save timer to wait for. SQLite transactions commit current state and history together. Repeated values are shared and larger values are compressed to reduce history size. There is one permanent database file; SQLite can briefly create a journal during a transaction. The bottom bar shows saving, saved, or a retry message if writing fails. Another window cannot silently overwrite newer state. The browser warns before closing while a save is pending. The database can grow as history accumulates; an individual save request is limited to 64 MB.
 
 To back up or move your work, **stop Plan**, then copy **Documents/Plan/plan.db**. On another machine, put it in that machine's Documents/Plan folder before launching. To restore a backup, stop Plan, keep a copy of the current database, and replace it with your backup. Computers do not sync automatically. Unreadable databases are preserved and reported in the save indicator; they are never silently replaced with an empty project.
 
-On the first launch, an empty database adopts projects, templates and settings already saved in the same browser and URL. Later launches load the database, including in a fresh browser profile. Projects from another URL or computer can also be moved with `.plan` files or Excel export/import. Microsoft sign-in credentials stay in Microsoft's browser cache, so a new browser profile or computer requires sign-in again; the database stores app configuration and activity, without passwords or sign-in tokens.
+On the first launch, an empty database adopts projects, templates and settings already saved in the same browser and URL. Later launches load the database, including in a fresh browser profile. Projects from another URL or computer can also be moved with `.plan` files or Excel export/import. No sign-in is required. Old integration settings may remain in existing saved state for compatibility, but no connection, mail or cloud operation uses them.
 
 Serving only the `web` directory with a static server is still supported, but shows **Saved in this browser** and uses browser storage only. Use the launcher for integrated disk saves and history. `start.bat --data-dir "D:\My Plan Data"` (or `python start.py --data-dir "D:\My Plan Data"`) selects another folder for `plan.db`.
 
-## Microsoft 365 (optional)
+## Local-only scope
 
-The native Windows background reminder agent is in its first feasibility milestone. It is not enabled by normal startup: project reminders still use the existing browser/deferred-mail workflow described below. Maintainers can exercise the separate native sign-in, protected cache and scheduled-task harness using the [isolated feasibility runbook](docs/native-reminder-feasibility.md). Its application registration and real Windows/corporate-mail checks remain release blockers; automatic background project scheduling, catch-up and legacy migration are outstanding.
+Microsoft 365 integration is out of scope. Plan does not offer Microsoft sign-in, organization directory lookup, email reminders, OneDrive publishing or cloud access management. No Entra registration, tenant approval, credentials or Task Scheduler setup is required. The [former Windows reminder plan](docs/windows-reminder-agent-plan.md) records the scope decision.
 
-Project planning and local saves work offline from the first launch. To enable the Microsoft 365 features, connect to the internet and register the app once:
+Owner names and optional email addresses are local task fields. Type a name directly or choose a suggestion from people already entered in the workbook. Email addresses are contact information; Plan sends no messages. Exchange projects by sending `.plan` files or Excel/PDF exports through your own tools.
 
-1. Entra admin centre › App registrations › **New registration** (this organisation only).
-2. Authentication › **Single-page application** › redirect URI = the URL shown in *Microsoft 365 › Settings* (it ends in `redirect.html`).
-3. API permissions › Microsoft Graph › **Delegated**: `User.Read`, `User.ReadBasic.All`, `People.Read`, `Mail.ReadWrite`, `Mail.Send`, `Files.ReadWrite`, `Files.Read.All`. None of these needs admin consent by default, but your tenant policy may require it.
-4. Put the *Application (client) ID* into *Microsoft 365 › Settings*, or into `src/project_management_tool/web/m365.config.json` to pre-fill it for everyone.
-
-No client secret is used. Users sign in with their corporate account in a Microsoft popup; permissions are requested only when a feature first needs them (people search at sign-in; mail when reminders or sharing are first used; files when sharing).
-
-| Feature | How it works |
-|---|---|
-| **People** | Owner cell type-ahead searches the directory (`/users?$search`, `/me/people`) and stores name + email on the task. |
-| **Reminders** | Per project: on/off, **automatic**, granularity **per action item / per person / per project**, lead times, overdue notice, send hour and an editable **message template** (`{{person}} {{task}} {{project}} {{when}} {{deadline}} {{details}} …`, saved templates). Emails are queued in the signed-in user's own mailbox with a deferred-send time (`PidTagDeferredSendTime`), so Exchange Online sends them on schedule even when the app is closed. Sync previews and diffs: stale reminders are cancelled, new ones created. |
-| **Read-only sharing** | *Share* publishes a snapshot to the owner's OneDrive (`Plan projects/`) and grants chosen colleagues the **read** role on that file, then emails each a confirmation with a link. Viewers open the link, sign in, and get a read-only sheet they can refresh; the owner can revoke at any time. The permission is real Microsoft 365 access control; the read-only UI is a convenience on top. |
-
-Limits worth knowing: auto-reminders and auto-publish run only while the app is open and signed in (the *scheduled emails themselves* do not need the app); deferred messages sit in the sender's Outbox until due; `Files.Read.All` is needed to open files other people shared with you.
+Existing databases and files remain readable. Legacy reminder/sharing metadata is inactive. Older read-only snapshots can be inspected and turned into an editable local copy; they cannot refresh from a cloud source. Removing integration code does not recall mail previously submitted to an external service or remove tasks installed by an earlier version; see [retirement notes](docs/native-reminders.md).
 
 ## Task hierarchy and row actions
 
@@ -116,7 +102,7 @@ Tasks can contain cascades at multiple levels. Select **Sleeve**, indent it bene
 - **Alt+→ / Alt+←** indent/outdent the selected cascade. **Tab / Shift+Tab** move between cells.
 - **Convert to milestone** keeps the row's identity, owner, progress and relationships and sets its duration to zero. **Convert to task** creates a one-working-day task. Cascades with children cannot become milestones, and milestones cannot contain children. A task with relationships must have those relationships removed before it can become a parent summary.
 
-Insertion, movement, conversion and calendar changes support undo/redo and automatic local saves. Shared read-only projects cannot be changed.
+Insertion, movement, conversion and calendar changes support undo/redo and automatic local saves. Read-only local snapshots cannot be changed until copied.
 
 ## Scheduling modes and viewport layout
 
@@ -159,7 +145,7 @@ Excel task tables include both slack values and the total-slack target. The Expo
 
 Calendar changes stay in a draft until **Apply calendar**. The preview lists affected rows and the resulting project finish. Applying keeps task durations, moves starts that fall on days off to the next workday, and recalculates finishes. With **Auto-schedule** on, automatic successors recalculate and date anchors can move later as needed; explicit manual tasks keep their dates. With it off, dependency changes do not move tasks and violated dependencies are marked. Task durations, summary spans, float and relationship lag count working days. The timeline still shows calendar dates, with nonworking weekdays shaded and holidays highlighted. Moving a task to a day off snaps its start forward; resizing counts only working days. Milestones remain zero-duration events.
 
-Existing projects, new blank projects and imports without a calendar use **Every day** until configured. Calendars are separate for each project and are retained in local saves, undo/redo, templates, shared snapshots and `.plan` files. Nonempty projects save explicit task scheduling modes using format version 3. Older version 1 and 2 files still open. Excel exports include a **Plan calendars** metadata sheet when needed, which the importer uses to restore workdays and holidays. Keep that sheet for an Excel round-trip. PDF and Excel task tables display working-day durations and calculated finish dates. Reminder lead times remain calendar days.
+Existing projects, new blank projects and imports without a calendar use **Every day** until configured. Calendars are separate for each project and are retained in local saves, undo/redo, templates, local snapshots and `.plan` files. Nonempty projects save explicit task scheduling modes using format version 3. Older version 1 and 2 files still open. Excel exports include a **Plan calendars** metadata sheet when needed, which the importer uses to restore workdays and holidays. Keep that sheet for an Excel round-trip. PDF and Excel task tables display working-day durations and calculated finish dates.
 
 ## Focus, import
 

@@ -30,12 +30,13 @@ export function parseDate(s, ref) {
 }
 
 export const isEmail = (s) => typeof s === 'string' && s.length <= 254 && /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/.test(s);
+// Legacy reminder fields are retained for saved-data compatibility only. Nothing schedules or sends mail.
 export const REM_TPL = {
   subject: '{{prefix}}: {{task}} · {{when}} · {{project}}',
   body: 'Hi {{person}},\n\nA quick reminder about the following ({{when}}):\n\n{{details}}\n\nThanks,\n{{sender}}',
 };
 export const REM_DEF = { on: false, auto: false, mode: 'task', offsets: [3, 1, 0], overdue: true, hour: 9, subject: REM_TPL.subject, body: REM_TPL.body, muted: [] };
-// Sharing metadata per sheet. A sheet is either mine (share = what I published) or a read-only copy of someone else's (readOnly + source).
+// Inert legacy sharing metadata. readOnly + source identifies an older snapshot; no cloud operations use these fields.
 export function cleanShare(s) {
   if (!s || typeof s !== 'object' || typeof s.driveId !== 'string' || typeof s.itemId !== 'string') return null;
   const people = {};
@@ -52,7 +53,7 @@ export function cleanRem(r) {
   const hour = Math.round(Number(o.hour)); 
   const str = (v, d, n) => (typeof v === 'string' && v.trim() ? v.slice(0, n) : d);
   const muted = [...new Set((Array.isArray(o.muted) ? o.muted : []).map((e) => String(e).toLowerCase()).filter(isEmail))].slice(0, 500);
-  return { on: !!o.on, auto: !!o.on && !!o.auto, mode: ['task', 'person', 'project'].includes(o.mode) ? o.mode : 'task', offsets: offs, overdue: o.overdue !== false, hour: Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : REM_DEF.hour, subject: str(o.subject, REM_TPL.subject, 200), body: str(o.body, REM_TPL.body, 4000), muted };
+  return { on: !!o.on, auto: !!o.on && !!o.auto, mode: ['task', 'person', 'project'].includes(o.mode) ? o.mode : 'task', offsets: offs, overdue: o.overdue !== false, hour: Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : REM_DEF.hour, subject: str(o.subject, REM_TPL.subject, 200), body: str(o.body, REM_TPL.body, 4000), muted, ...(typeof o.timezone === 'string' && o.timezone.length <= 100 ? { timezone: o.timezone } : {}) };
 }
 
 export const LINK_TYPES = ['FS', 'SS', 'FF', 'SF'];
@@ -280,7 +281,7 @@ export class Store {
     this.wb.sheets.push({ id, name: this.uniqueName(name), data: sanitize(data), rem: cleanRem(), ...extra });
     this.enter(id); return id;
   }
-  // A read-only copy of a project somebody shared with me. Re-importing the same source refreshes it in place.
+  // Compatibility helper for older read-only snapshots. This method only updates local data.
   importShared(data, name, source) {
     const ex = this.wb.sheets.find((s) => s.source && s.source.driveId === source.driveId && s.source.itemId === source.itemId);
     if (ex) {
@@ -290,10 +291,10 @@ export class Store {
     }
     const id = this.addSheet(data, name, { readOnly: true, source: cleanSource(source) }); this.save(); this.emit('sheet'); return id;
   }
-  // Snapshot of the active sheet for publishing: tasks, links and name only. Reminder settings and sharing state stay private.
+  // Legacy snapshot format: tasks, links and name only, without integration metadata.
   snapshot(id = this.wb.active) {
     if (id === this.wb.active) this.save(); const s = this.sheet(id), data = JSON.parse(JSON.stringify(s.data));
-    for (const t of data.tasks) delete t.noRem; // my reminder choices are not part of what I share
+    for (const t of data.tasks) delete t.noRem; // omitted by the legacy snapshot format
     return { v: 1, name: s.name, data };
   }
   newBlank() { return this.addSheet(blank(), `Project ${this.wb.nextSheet}`); }

@@ -1,4 +1,4 @@
-// App-owned settings/activity. Sign-in tokens remain in MSAL's browser credential cache.
+// App-owned local settings/activity, including inert legacy metadata from older versions.
 const owned = (key) => typeof key === 'string' && key.startsWith('pm-') && !['pm-workbook-v1', 'pm-templates-v1', 'pm-proto-v2', 'pm-proto-v2:prefs'].includes(key);
 let values = Object.create(null), ready = false, changed = () => {};
 export const appState = {

@@ -297,7 +297,7 @@ export async function buildTemplate() {
     ['End (optional)', 'Optional extra column: last day of the task (inclusive). Used when Days is empty.'],
     ['% done', 'Progress, 0%–100% (format the cell as a percentage) or 0–100.'],
     ['Depends on', 'Predecessors, by the # of those rows, separated by commas. Optional link type and lag: 4  ·  6SS+2 (start-to-start, 2 days later)  ·  9FF-1 (finish-to-finish, 1 day earlier). Default type is FS (finish-to-start).'],
-    ['Owner / Email', 'Person responsible. Email is optional and is used for deadline reminders; connect Microsoft 365 afterwards to pick people from your directory.'],
+    ['Owner / Email', 'Person responsible. Email is optional contact information. Owner suggestions use people already entered in this workbook.'],
   ].forEach((r, i) => { ins.set(6 + i, 0, r[0], k); ins.set(6 + i, 1, r[1], v); ins.heights.set(6 + i, r[1].length > 190 ? 60 : r[1].length > 95 ? 45 : 30); });
   ins.set(17, 0, 'Also works with', S.get({ b: 1, color: '475569' }));
   ins.set(17, 1, 'Excel files exported from this app (Tasks sheet), CSV files with the same headers, and most Microsoft Project / Smartsheet / Excel task lists — common header names such as Name, Finish, Duration, Predecessors, Resource Names and Assigned To are recognised.', p); ins.heights.set(17, 45);

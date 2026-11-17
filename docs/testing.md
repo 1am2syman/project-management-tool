@@ -8,7 +8,7 @@ Run these commands from the repository root:
 
 ```sh
 python -B -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs
+node --test tests/*.test.mjs
 ```
 
 Use `python3` if that is your Python command. These commands use an existing development Python installation; with an already configured uv environment, `uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v` is equivalent.
@@ -37,12 +37,14 @@ node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
+node tests/browser-local-only.mjs
 ```
 
 All suites start their own server on an available local port, use a temporary SQLite database and isolated browser profiles, and block requests to external services. They do not open or edit your saved projects. Each suite closes its browser and server and removes temporary files on normal completion or a caught test failure.
 
 | Suite | Coverage |
 |---|---|
+| `browser-local-only.mjs` | No Microsoft controls or integration/external requests, workbook owner suggestions and manual entry, inert legacy settings, editable copies of older read-only snapshots, and SQLite restoration in a fresh profile. |
 | `browser-slack.mjs` | Total/free slack cells and keyboard inspection, latest dates and limiting successors, milestone scope and summaries, Off/Selected/All overlays, Fit bounds, passive slack tails during move/resize/cancel/undo, unchanged project data, SQLite preference restoration across profiles, Excel values and re-import, PDF columns/options/download, read-only inspection, narrow dialog layout, and row/tail alignment, working-calendar tail end plus screenshots at 100%, 150% and 200% device scaling in both densities. |
 | `browser-diagnostics.mjs` | Bottom-bar Log clicks, JSON downloads, browser/runtime metadata, cookie/storage checks, errors and request metadata, secret/project-content exclusion, retention through refresh, keyboard isolation, narrow footer and Log availability when the main module cannot load. |
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
@@ -96,13 +98,11 @@ These optional outputs can be deleted after review. Generated screenshots, logs,
 
 For a clean folder copy to another user, use GitHub's repository ZIP or `git archive --format=zip --output=../plan.zip HEAD` from the committed checkout. Both include the bundled Windows runtime and maintained tests while excluding ignored local caches, virtual environments, agent notes and validation output. When cleaning a working checkout, stop any processes using its virtual environment before removing `.venv`; remove generated `__pycache__`, `.ruff_cache`, `.pytest_cache` and completed local validation output as needed. Keep the entire `runtime/windows-x64` directory, its license, manifest and SPDX metadata together.
 
-## Native Windows reminder feasibility
+## Local-only scope checks
 
-Run `python3 -B -m unittest discover -s tests -p "test_reminder_*.py" -v` for the isolated native regressions. They exercise authorization/account binding, alias differences, protected-state serialization using a test-only protector, Graph outcome classification, task configuration/repair, transactional self-test claims, crash uncertainty, source fencing, control endpoint origin/allowlist checks, and bundled dependency hashes/licenses/native architecture. The full Python discovery command above includes this suite.
+Microsoft 365, native mail workers and cloud sharing are removed. There are no tenant, login, mail-delivery or scheduled-task release gates. Local compatibility tests retain old reminder/sharing metadata without executing it.
 
-The [native feasibility runbook](native-reminder-feasibility.md) documents maintainer app registration, dependency reproduction, an isolated Windows profile/task, test-mail receipt checks, relocation, restart and cleanup. Normal startup does not enable this harness or change scheduler ownership. Its worker never reads or initializes project storage; every mail test is explicitly requested and addressed only to the connected test mailbox.
-
-These automated checks have run on Linux. Actual bundled-interpreter MSAL imports and DPAPI are Windows-only tests and remain skipped here; no Task Scheduler registration, managed-device approval, corporate sign-in or live test-mail receipt has been verified. The native application ID is not provisioned. The phase-one feasibility gate and all remaining production rollout gates in [the plan](windows-reminder-agent-plan.md) remain unresolved. Keep private test state and any uncertain submissions for review; stop/remove the isolated task before deleting its checkout.
+`node tests/browser-local-only.mjs` uses a temporary database and fresh Chromium profile. It checks that sign-in/reminder/cloud-sharing controls are absent, local owner suggestions work, older read-only snapshots can be copied, legacy metadata remains inert, and no integration or external requests occur. Removed native/feasibility routes and command-line options are covered by Python regressions.
 
 ## Verification limits
 
@@ -110,4 +110,4 @@ Automated native picker results are supplied by the tests. The file-handle suite
 
 Slack tails were reviewed visually in Chromium on Linux at 100%, 150% and 200% device scaling in both densities; other browsers and Windows display scaling have not been reviewed.
 
-Microsoft 365 behavior has been checked with mocked Graph responses, not a live tenant. Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.
+Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. Windows batch launcher/updater scripts have been reviewed, but have not been executed in Windows cmd.exe; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.

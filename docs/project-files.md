@@ -74,7 +74,7 @@ This is a complete version 3 file containing one automatic task:
 | `tasks[].scheduling` | Optional `"auto"`, `"manual"` or `"anchor"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Anchors may be delayed but are not pulled earlier. An absent mode defaults to Auto, including in older files; enabling Auto-schedule can therefore remove existing gaps. Explicit Manual and Anchor modes are preserved. Summary dates still roll up from children. |
 | `tasks[].progress` | Integer percentage from 0 through 100. |
 | `tasks[].owner`, `tasks[].email` | Owner display name (at most 80 characters) and email address (at most 254 characters). Both can be empty strings; a nonempty email must pass the app's email validation. |
-| `tasks[].noRem`, `tasks[].ms` | Boolean flags for skipping reminders and marking a milestone. |
+| `tasks[].noRem`, `tasks[].ms` | `noRem` is an inert legacy flag retained for compatibility. `ms` marks a milestone. |
 | `links` | Relationships between existing, distinct tasks. Summary endpoints and dependency cycles are rejected. |
 | `links[].id` | Unique ID such as `"l1"`: `l` followed by a positive safe integer without leading zeros. |
 | `links[].from`, `links[].to` | IDs of the predecessor and successor tasks. |
@@ -103,15 +103,15 @@ Versions 2 and 3 store this object in `project.data.calendar`:
 
 The **Calendar** dialog previews date changes before applying. It preserves durations, normalizes starts on days off forward, and applies dependency bounds when auto-scheduling is enabled. Calendar changes and affected dates form one undo step. Excel exports carry the same settings in a `Plan calendars` metadata sheet; native `.plan` files carry them directly in this object.
 
-## Preferences and reminders
+## Preferences and legacy metadata
 
 `preferences.auto` and `preferences.critical` are booleans controlling auto-scheduling and critical-path display. Opening a project applies these settings to the editor. Saving a read-only shared project writes `auto: false` so its editable copy preserves the published dates.
 
 A selected milestone critical-path target is an app view preference saved separately for each project tab. It is not included in `.plan` files; an opened project starts with **Project completion** as its target. Selecting a target changes float and highlights without moving dates or changing `tasks[].scheduling`. PDF and Excel exports use the selected analysis and identify the target, but importing those exports does not restore the target choice.
 
-`project.rem` contains these reminder settings:
+`project.rem` is retained solely for compatibility with older files. Email reminders are removed; these fields never schedule or send mail:
 
-- `on` and `auto`: boolean switches. The saved values are recorded in the file, but both become **false** in the opened copy. Enable reminders in **Remind** when ready.
+- `on` and `auto`: boolean switches. The saved values are recorded in the file, but both become **false** in the opened copy. There is no reminder-enable control.
 - `mode`: `task`, `person` or `project`.
 - `offsets`: up to eight integer lead times from 0 through 60 days. The app removes duplicates and sorts lead times on load.
 - `overdue`: boolean controlling the notice after a missed deadline.
@@ -121,7 +121,7 @@ A selected milestone critical-path target is an app view preference saved separa
 
 ## Data kept outside project files
 
-Project files include task owners, email addresses and reminder configuration. They exclude browser-local file handles and file connection tokens, Microsoft sign-in credentials, live OneDrive sharing links and permissions, queued-message records, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
+Project files include task owners, contact email addresses and inert legacy reminder metadata. They exclude browser-local file handles and file connection tokens, legacy cloud sharing links and permissions, queued-message records, credentials, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.
 
 Native file connections are stored in browser-local IndexedDB and associated with a project tab. They can survive a refresh in that browser, but do not transfer through a `.plan` file or a database backup to another browser/computer. The browser may request file permission again. Duplicating a project does not duplicate its file connection. A tab from an app version that did not retain handles needs Save As once to establish a connection for subsequent Save operations.
 

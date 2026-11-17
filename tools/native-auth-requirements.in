@@ -1,2 +1,0 @@
-# Maintainer-only input. Never installed during application startup.
-msal==1.39.0
