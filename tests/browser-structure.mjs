@@ -11,7 +11,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-task-ui-'));
 const evidence = process.env.PLAN_TEST_ARTIFACTS ? resolve(process.env.PLAN_TEST_ARTIFACTS, 'structure') : join(temp, 'screenshots');
 await mkdir(evidence, { recursive: true });
-const server = spawn(process.env.PYTHON || 'python3', ['-B', join(repo, 'start.py'), '--port', '0', '--data-dir', temp, '--no-open'], { cwd: repo, env: { ...process.env, PYTHONPATH: join(repo, 'src') }, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(process.env.PYTHON || 'python3', ['-B', join(repo, 'start.py'), '--port', '0', '--data-dir', temp, '--no-open', '--file-access', 'off'], { cwd: repo, env: { ...process.env, PYTHONPATH: join(repo, 'src') }, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser, serverLog = '';
 server.stderr.on('data', (chunk) => { serverLog += chunk; });
 try {

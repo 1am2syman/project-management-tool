@@ -2,6 +2,7 @@
 
 `windows-x64/` contains the complete, unmodified **CPython 3.14.10 Windows x64 embeddable distribution** from the Python Software Foundation. `start.bat` invokes this interpreter directly, and `start.py` adds the repository's `src` directory to its isolated import path. Plan uses only the standard library, including the bundled SQLite and ctypes modules.
 
+- Local Windows file connections, the operation journal and any temporarily staged project snapshots are kept under `%LOCALAPPDATA%\Plan\file-access`, separate from the runtime and `Documents\Plan\plan.db`. They are local user data, not bundled runtime files; protect them and do not remove them as part of runtime cleanup.
 - Supported launcher target: **64-bit Windows 10/11 (Intel/AMD x64)**. This is not a native ARM64 or 32-bit runtime. Other systems can use an existing Python 3.10+ installation with `python start.py`.
 - Upstream release: <https://www.python.org/downloads/release/python-31410/>
 - Original archive: <https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip>

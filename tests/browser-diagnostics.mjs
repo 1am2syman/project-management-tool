@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-diagnostics-ui-'));
-const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', temp, '--no-open'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', temp, '--no-open', '--file-access', 'off'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser, log = '';
 server.stderr.on('data', (b) => { log += b; });
 try {

@@ -11,7 +11,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-versions-ui-'));
 const evidence = process.env.PLAN_TEST_ARTIFACTS ? resolve(process.env.PLAN_TEST_ARTIFACTS, 'versions') : join(temp, 'screenshots');
 await mkdir(evidence, { recursive: true });
-const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', join(temp, 'data'), '--no-open'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', join(temp, 'data'), '--no-open', '--file-access', 'off'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser, log = '';
 server.stderr.on('data', (chunk) => { log += chunk; });
 const LOCK = 'You are viewing a saved version. Return to Current to edit.';

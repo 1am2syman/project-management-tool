@@ -49,7 +49,7 @@ restoreSelection();
 let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
-  store, ui,
+  store, ui, storage,
   rel: null,
   // css classes for a task row/bar given the current selection (focus mode)
   relClass(id) {

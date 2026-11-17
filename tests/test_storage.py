@@ -41,7 +41,7 @@ class StorageTests(unittest.TestCase):
         self.start_server()
 
     def start_server(self):
-        self.server = create_server(0, self.directory)
+        self.server = create_server(0, self.directory, native_files=False)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -181,7 +181,7 @@ class StorageTests(unittest.TestCase):
 
     def test_separate_processes_cannot_both_overwrite_the_same_revision(self):
         persistence.ProjectStorage(self.directory).read()
-        script = """import json,sys
+        script = f"import sys; sys.path.insert(0, {str(ROOT)!r})\n" + """import json,sys
 from src.project_management_tool.persistence import ProjectStorage, ConflictError
 try:
  ProjectStorage(sys.argv[1]).write(None,json.loads(sys.argv[2]))
@@ -266,7 +266,7 @@ except ConflictError:
             shutil.copy(ROOT / "start.py", root)
             shutil.copytree(ROOT / "src", root / "src", ignore=shutil.ignore_patterns("__pycache__"))
             python = ROOT / "runtime/windows-x64/python.exe" if sys.platform == "win32" else sys.executable
-            args = [str(python), "-I", "-B", str(root / "start.py"), "--no-open", "--data-dir", str(self.directory), "--port"]
+            args = [str(python), "-I", "-B", str(root / "start.py"), "--no-open", "--file-access", "off", "--data-dir", str(self.directory), "--port"]
             proc = subprocess.Popen([*args, "0"], cwd=self.temp.name, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 lines = queue.Queue()

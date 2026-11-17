@@ -215,8 +215,14 @@
   dialog?.querySelector('[data-log-close]')?.addEventListener('click', () => dialog.close());
   dialog?.querySelector('[data-log-refresh]')?.addEventListener('click', () => { void collect(); });
   dialog?.querySelector('[data-log-clear]')?.addEventListener('click', () => { entries = []; bytes = 0; dropped = 0; record('diagnostics.cleared'); persist(); render(); });
-  dialog?.querySelector('[data-log-download]')?.addEventListener('click', () => {
+  dialog?.querySelector('[data-log-download]')?.addEventListener('click', async () => {
     record('diagnostics.download');
+    if (nativeFetch) {
+      try {
+        const response = await nativeFetch(new URL('api/diagnostics', d.baseURI), { cache: 'no-store', signal: w.AbortSignal.timeout(3000) });
+        if (response.ok) setup.server = scrub(await response.json());
+      } catch { /* retain the last known setup when offline */ }
+    }
     const blob = new Blob([`${JSON.stringify(snapshot(), null, 2)}\n`], { type: 'application/json' });
     const url = w.URL.createObjectURL(blob), a = d.createElement('a'); a.href = url; a.download = `plan-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     d.body.appendChild(a); a.click(); a.remove(); later(() => w.URL.revokeObjectURL(url), 4000); persist();

@@ -114,6 +114,10 @@ class ConflictError(Exception):
     pass
 
 
+class RevisionConflict(ConflictError):
+    """The workspace revision moved after a file operation was authorized against it. No file bytes were written."""
+
+
 class ProjectStorage:
     def __init__(self, directory):
         self.path = Path(directory).resolve() / "plan.db"
@@ -203,6 +207,48 @@ class ProjectStorage:
             snapshot = encode(hashes) if new_revision == 1 or new_revision % 50 == 0 else None
             db.execute("INSERT INTO versions VALUES (?,?,?,?,?)", (new_revision, datetime.now().astimezone().isoformat(), summary, encode(changes), snapshot))
             return {"revision": str(new_revision)}
+
+    @contextlib.contextmanager
+    def file_authorization(self, row):
+        """Hold the same SQLite writer lock used by workspace saves during file commit."""
+        with contextlib.closing(self.connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                if self.revision(db) != row['revision']:
+                    raise RevisionConflict('App state changed in another window. Reload before saving.')
+                nodes = {path: decode(value) for path, value in db.execute(
+                    'SELECT c.path,o.value FROM current c JOIN objects o ON o.hash=c.hash')}
+                state: dict = inflate(nodes)  # type: ignore[assignment]
+                validate_state(state)
+                sheet = next((item for item in state['workbook']['sheets'] if item['id'] == row['sheet']), None)
+                if not sheet:
+                    raise ConflictError('The project no longer exists.')
+                if row['kind'] == 'save':
+                    if sheet.get('readOnly') or sheet.get('fileToken') != row['token']:
+                        raise ConflictError('This project is read-only or no longer connected to that file.')
+                elif row.get('source_token') != sheet.get('fileToken'):
+                    raise ConflictError('The project file connection changed.')
+                yield sheet
+            finally:
+                db.rollback()
+
+    @contextlib.contextmanager
+    def file_attach_authorization(self, sheet_id, token, revision):
+        with contextlib.closing(self.connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                if self.revision(db) != revision:
+                    raise RevisionConflict('App state changed in another window.')
+                nodes = {path: decode(value) for path, value in db.execute(
+                    'SELECT c.path,o.value FROM current c JOIN objects o ON o.hash=c.hash')}
+                state: dict = inflate(nodes)  # type: ignore[assignment]
+                validate_state(state)
+                sheet = next((item for item in state['workbook']['sheets'] if item['id'] == sheet_id), None)
+                if not sheet or sheet.get('fileToken') != token:
+                    raise ConflictError('The project connection is not saved in this workspace.')
+                yield
+            finally:
+                db.rollback()
 
     def history(self, before=None, limit=50):
         with contextlib.closing(self.connect()) as db:

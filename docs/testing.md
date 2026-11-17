@@ -8,10 +8,18 @@ Run these commands from the repository root:
 
 ```sh
 python -B -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs tests/versions.test.mjs tests/versiondiff.test.mjs tests/waterfall.test.mjs
+node --test tests/localfiles.test.mjs tests/storage-barrier.test.mjs tests/diagnostics.test.mjs tests/persistence.test.mjs tests/relationships.test.mjs tests/projectfiles.test.mjs tests/structure.test.mjs tests/calendar.test.mjs tests/scheduling.test.mjs tests/critical-target.test.mjs tests/slack.test.mjs tests/versions.test.mjs tests/versiondiff.test.mjs tests/waterfall.test.mjs
 ```
 
 Use `python3` if that is your Python command. These commands use an existing development Python installation; with an already configured uv environment, `uv run --locked python -B -m unittest discover -s tests -p "test_*.py" -v` is equivalent.
+
+The bundled Windows interpreter uses `._pth` isolation, so test discovery must explicitly add the repository root. From the repository root, run:
+
+```powershell
+runtime\windows-x64\python.exe -B -c "import sys,unittest; from pathlib import Path; sys.path.insert(0,str(Path.cwd())); suite=unittest.defaultTestLoader.discover('tests',pattern='test_*.py'); result=unittest.TextTestRunner(verbosity=2).run(suite); sys.exit(not result.wasSuccessful())"
+```
+
+Subprocess regression tests likewise add the repository root explicitly, so they exercise the bundled interpreter without changing its runtime isolation configuration.
 
 The diagnostics unit tests cover bounded recording, reload retention, redaction, pending-operation warnings, console/JavaScript/resource failures, fetch metadata, and precise Open stages including stalled reads and AbortError. The Python suite also checks the diagnostics endpoint without reading or initializing project storage and verifies that source changes alter its fingerprint.
 
@@ -35,6 +43,7 @@ Playwright is not required to run Plan. If Playwright is installed outside this 
 Run the interaction suites:
 
 ```sh
+node tests/browser-local-files.mjs
 node tests/browser-structure.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
@@ -46,6 +55,7 @@ All suites start their own server on an available local port, use a temporary SQ
 
 | Suite | Coverage |
 |---|---|
+| `browser-local-files.mjs` | Isolated local API, injected delayed chooser, no browser picker or IndexedDB dependency, lost start/attach/commit responses, refresh while a chooser is pending, connection reuse across browser profiles and server restart. The injected chooser does not test Windows dialogs. |
 | `browser-versions.mjs` | Snapshot dialog and unchanged-plan notice, version list and keyboard closing, read-only preview (blocked typing, undo and toolbar actions; live plan unchanged on the server), Back to current, restore with “save current first”, undo/redo of a restore, rename and delete, version analysis sections, baseline/compared selection and swap, finish waterfall (unchanged/delayed/earlier comparison, single-source attribution, connected added/removed scope with labelled items imported through a real `.plan` document, table/chart selection, keyboard arrows and Home/End, multi-step details, smaller-width fit and screenshots at 100%, 150% and 200% display scaling), change-log filters and search, *Only changed rows*, keyboard isolation from the plan, PDF/Excel downloads, Compare to current, exporting the version on screen, Copy as new project, `.plan` Save/Open with versions while a version is shown, reload returning to the current plan, the empty analysis state, and banner/card fit at 1366px with screenshots at 1366 and 1920px. |
 | `browser-slack.mjs` | Total/free slack cells and keyboard inspection, latest dates and limiting successors, milestone scope and summaries, Off/Selected/All overlays, Fit bounds, passive slack tails during move/resize/cancel/undo, unchanged project data, SQLite preference restoration across profiles, Excel values and re-import, PDF columns/options/download, read-only inspection, narrow dialog layout, and row/tail alignment, working-calendar tail end plus screenshots at 100%, 150% and 200% device scaling in both densities. |
 | `browser-diagnostics.mjs` | Bottom-bar Log clicks, JSON downloads, browser/runtime metadata, cookie/storage checks, errors and request metadata, secret/project-content exclusion, retention through refresh, keyboard isolation, narrow footer and Log availability when the main module cannot load. |
@@ -103,7 +113,26 @@ These optional outputs can be deleted after review. Generated screenshots, logs,
 
 For a clean folder copy to another user, use GitHub's repository ZIP or `git archive --format=zip --output=../plan.zip HEAD` from the committed checkout. Both include the bundled Windows runtime and maintained tests while excluding ignored local caches, virtual environments, agent notes and validation output. When cleaning a working checkout, stop any processes using its virtual environment before removing `.venv`; remove generated `__pycache__`, `.ruff_cache`, `.pytest_cache` and completed local validation output as needed. Keep the entire `runtime/windows-x64` directory, its license, manifest and SPDX metadata together.
 
+## Isolated file-access tests
+
+Automated suites never open the native chooser or read the real `%LOCALAPPDATA%` registry. Python test servers either pass `native_files=False` to `create_server` and then inject a test service with `use_file_service(...)` (see `tests/file_api_browser_server.py` and `tests/test_file_api.py`), or start `start.py` with `--file-access off`, which the browser suites use. The `off` mode keeps the browser fallback, so picker-mocking suites exercise the same frontend path. The default `--file-access native` is production behavior.
+
+For a manual Windows check, use a throwaway app-data folder and data folder so your real `Documents\Plan` and `%LOCALAPPDATA%\Plan` stay untouched. In PowerShell:
+
+```powershell
+$work = Join-Path $env:TEMP "plan-win-check"
+$env:LOCALAPPDATA = Join-Path $work "localappdata"
+New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+runtime\windows-x64\python.exe -B start.py --port 5174 --no-open --data-dir (Join-Path $work "data")
+```
+
+Open `http://127.0.0.1:5174/` in Chrome, Edge and Firefox, each with a fresh profile, for example `chrome.exe --user-data-dir="$work\chrome-profile" http://127.0.0.1:5174/`. Use only sample `.plan` files stored under `$work`. Afterward, confirm that the registry is under `$work\localappdata\Plan\file-access` and that nothing changed under your real `%LOCALAPPDATA%\Plan`, then stop the server and delete `$work`.
+
 ## Verification limits
+
+The Python-managed path was exercised on Windows 10 with the bundled interpreter, installed Chrome and Edge, real Windows choosers, isolated databases, local app-data registries and browser profiles. Checks covered Unicode Open with reminders disabled, Open/Save As cancellation, connected Save, new-file Save As, overwrite decline/accept, external edits, server restart, switching browsers, repeated dialogs and their ownership/foreground state, shutdown with a chooser open, read-only and locked files, and temporary OneDrive destinations. Firefox was not installed and was not tested; network-share destinations remain unverified.
+
+Windows regression checks also cover rewritten-file metadata differences, occupied-port handling on a second launch, and bounded chooser shutdown. The isolated real-chooser shutdown probe closed both an active dialog and an idle worker; the unit suite checks dispatch outside the lock, same-thread close and bounded timeout fallback. The maintained browser suites still use injected chooser results and do not by themselves establish Windows dialog behavior.
 
 Automated native picker results are supplied by the tests. The file-handle suite uses real browser-private file handles to exercise writes and persistence across refresh; it does not operate the OS Open/Save As dialogs. Permission, external-edit conflicts, cancellation and uncertain save outcomes also have unit coverage. A separate manual check on Linux used an isolated database/profile and the real native chooser to open the reported `.plan` file, then clicked Log → Download log and verified all Open/IndexedDB stages in the actual download. This does not verify the Windows chooser.
 

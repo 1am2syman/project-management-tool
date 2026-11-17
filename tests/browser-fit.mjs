@@ -10,7 +10,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-fit-ui-'));
 const evidence = process.env.PLAN_TEST_ARTIFACTS ? resolve(process.env.PLAN_TEST_ARTIFACTS, 'fit') : join(temp, 'screenshots');
 await mkdir(evidence, { recursive: true });
-const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', temp, '--no-open'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', temp, '--no-open', '--file-access', 'off'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser, log = '';
 server.stderr.on('data', (chunk) => { log += chunk; });
 try {

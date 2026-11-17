@@ -7,6 +7,11 @@ export async function openProjectStorage() {
   const badge = document.querySelector('#save-status'), historyButton = document.querySelector('#historybtn');
   let mode = 'disk', initial = null, revision = null, store, dataFile = 'Documents/Plan/plan.db';
   let pending = null, inFlight = false, blocked = false, lastSaved = null, uncertain = null;
+  let flushError = null;
+  // Every workspace revision this window loaded or wrote. A file 409 naming one of these is our own autosave.
+  const acknowledged = new Set();
+  const waiters = new Set();
+  const notifyWaiters = () => { for (const resolve of waiters) resolve(); waiters.clear(); };
   const controls = () => { if (historyButton) historyButton.disabled = mode !== 'disk' || blocked || inFlight || pending !== null; };
   const paint = (text, kind = '', detail = '', clickable = false) => {
     badge.textContent = text; badge.dataset.state = kind; badge.title = detail || text; badge.disabled = !clickable; controls();
@@ -24,7 +29,7 @@ export async function openProjectStorage() {
       if (!response.ok) throw new Error(result.error || 'Cannot load saved app state');
       if (!('revision' in result) || !('state' in result)) throw new Error('Unknown app storage format');
       initial = result.state; revision = result.revision; dataFile = result.dataFile || dataFile;
-      lastSaved = initial ? JSON.stringify(initial) : null; saved();
+      lastSaved = initial ? JSON.stringify(initial) : null; if (revision !== null) acknowledged.add(revision); saved();
     }
   } catch (e) {
     loadOperation.fail(e);
@@ -43,9 +48,9 @@ export async function openProjectStorage() {
 
   async function flush() {
     if (mode !== 'disk' || inFlight || blocked || pending === null) return;
-    if (store.stale) { markStale(); return; }
-    if (pending === lastSaved) { pending = null; saved(); return; }
-    const sent = pending; pending = null; inFlight = true;
+    if (store.stale) { markStale(); notifyWaiters(); return; }
+    if (pending === lastSaved && uncertain === null) { pending = null; flushError = null; saved(); notifyWaiters(); return; }
+    const sent = pending; pending = null; inFlight = true; flushError = null;
     paint('Saving…', 'saving');
     const operation = diagnostics.begin('storage.save', { characters: sent.length, reconciling: uncertain !== null });
     let failed = false, attempted = false;
@@ -56,7 +61,7 @@ export async function openProjectStorage() {
         const current = await check.json();
         if (!check.ok) throw new Error(current.error || 'Cannot check the previous save');
         if (current.revision !== revision && JSON.stringify(current.state) !== uncertain) { markStale(); return; }
-        revision = current.revision; uncertain = null;
+        revision = current.revision; acknowledged.add(revision); uncertain = null;
       }
       const body = `{"revision":${JSON.stringify(revision)},"state":${sent}}`;
       attempted = true;
@@ -68,12 +73,12 @@ export async function openProjectStorage() {
       if (response.status === 409) { markStale(); return; }
       if (!response.ok) throw new Error(result.error || 'Could not save app state');
       if (typeof result.revision !== 'string') throw new Error('Save acknowledgement is incomplete');
-      revision = result.revision; lastSaved = sent; uncertain = null;
+      revision = result.revision; acknowledged.add(revision); lastSaved = sent; uncertain = null;
       if (!blocked) saved();
       operation.end();
     } catch (e) {
       operation.fail(e);
-      failed = true;
+      failed = true; flushError = e;
       if (attempted) uncertain = sent;
       if (!blocked) {
         pending ??= sent;
@@ -83,6 +88,7 @@ export async function openProjectStorage() {
       operation.end({ blocked });
       inFlight = false; controls();
       if (!failed && !blocked && pending !== null) void flush();
+      notifyWaiters();
     }
   }
 
@@ -94,6 +100,32 @@ export async function openProjectStorage() {
 
   return {
     initial, markStale,
+    // Whether a server revision is one this window loaded or wrote. An in-flight save can be committed on the
+    // server before its response reaches this window, so wait for it before answering.
+    async ownsRevision(serverRevision) {
+      while (inFlight) await new Promise(resolve => waiters.add(resolve));
+      return acknowledged.has(serverRevision);
+    },
+    async currentRevision() {
+      if (mode !== 'disk') throw new Error('Disk storage is unavailable.');
+      const response = await fetch(endpoint, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+      const result = await response.json();
+      if (!response.ok || typeof result.revision !== 'string') throw new Error('Cannot check the current workspace revision.');
+      return result.revision;
+    },
+    async barrier() {
+      if (mode !== 'disk' || !store) throw new Error('Disk storage is unavailable.');
+      // A barrier observes all pending changes, including saves queued while another
+      // request is in flight. It fails closed on stale state or an unacknowledged save.
+      while (true) {
+        if (blocked || store.stale) throw new Error('App state changed in another window. Reload before saving.');
+        if (flushError && !inFlight) throw new Error('App state could not be saved to disk. Retry before saving the project file.');
+        if (!inFlight && pending === null) return revision;
+        const changed = new Promise(resolve => waiters.add(resolve));
+        if (!inFlight) void flush();
+        await changed;
+      }
+    },
     attach(value) {
       store = value;
       diagnostics.record('storage.attached', { mode });

@@ -1,6 +1,7 @@
 import { diagnostics } from './diagnosticlog.js';
 import { cleanRem, cleanVersions, isEmail, LINK_TYPES, MAX_VERSIONS } from './model.js';
 import { createFileBindings } from './filebindings.js';
+import { openLocalFiles } from './localfiles.js';
 import { calendarError, WorkingCalendar } from './calendar.js';
 
 export const PROJECT_FILE_EXTENSION = '.plan';
@@ -149,7 +150,7 @@ export function parseProjectFile(contents) {
   };
 }
 
-export function openProjectFile(store, contents) {
+export function openProjectFile(store, contents, options = {}) {
   const validation = diagnostics.begin('file.open.validate');
   let project;
   try { project = parseProjectFile(contents); validation.end({ taskCount: project.data.tasks.length, linkCount: project.data.links.length }); }
@@ -159,7 +160,7 @@ export function openProjectFile(store, contents) {
   try {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
-    const extra = { rem: project.rem, ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
+    const extra = { rem: project.rem, ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
     const id = store.addSheet(project.data, project.name, extra);
     apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
   } catch (error) { apply.fail(error); throw error; }
@@ -175,6 +176,14 @@ export function createProjectFiles(ctx, browser = window) {
   const { store } = ctx, doc = browser.document;
   const openButton = doc.querySelector('#openprojectbtn'), saveButton = doc.querySelector('#saveprojectbtn');
   const normalSave = doc.querySelector('#savefilebtn'), bindings = createFileBindings(browser);
+  // Capability errors remain errors: falling back after an uncertain native request
+  // could cause a second picker or write.
+  let backendPromise;
+  const localBackend = () => {
+    if (!ctx.storage) return Promise.resolve(null);
+    if (!backendPromise) backendPromise = openLocalFiles(browser).catch(error => { backendPromise = null; throw error; });
+    return backendPromise;
+  };
   let busy = false;
   const tokenFor = (sheet) => sheet.fileToken ||= (browser.crypto?.randomUUID?.() || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   async function connect(sheet, handle, contents) {
@@ -185,6 +194,15 @@ export function createProjectFiles(ctx, browser = window) {
     diagnostics.record(`file.${action}.failure`, { error: e, cancelledOrAborted: e?.name === 'AbortError' }, e?.name === 'AbortError' ? 'warn' : 'error');
     if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}`);
   };
+  const localError = result => ({
+    busy: 'Another file chooser is already open.',
+    not_found: 'The selected file no longer exists.', invalid_utf8: 'The selected file is not valid UTF-8.',
+    too_large: 'Plan project files must be 64 MB or smaller.', external_change: 'The file changed outside Plan.',
+    chooser_interrupted: 'The file chooser was interrupted when the server stopped.',
+    not_committed: 'The previous write did not complete.',
+    file_in_use: 'The file is open in another program. Close it and try again.',
+    permission_denied: 'Cannot access this file. It may be read-only or open in another program. Close it there, check permissions, or use Save As.',
+  }[result.error] || 'The local file operation could not be completed.');
   const canOpen = () => {
     if (!store.stale) return true;
     diagnostics.record('file.open.blocked', { reason: 'stale-window' }, 'warn');
@@ -211,11 +229,184 @@ export function createProjectFiles(ctx, browser = window) {
     });
   }
 
+  // A terminal rejection wrote no bytes: release the selection so a new Open or Save can start.
+  async function settleRejected(native, id, result, message) {
+    if (['conflict', 'failed', 'cancelled', 'released'].includes(result.stage)) {
+      try { await native.release(id); } catch { /* terminal stages need no release */ }
+      native.clear();
+      throw new Error(localError(result));
+    }
+    throw new Error(message);
+  }
+
+  // A terminal attach rejection keeps the imported or saved contents but drops the unconfirmed binding,
+  // so the project does not claim a connection it does not have.
+  function dropUnconfirmed(sheet) { delete sheet.fileToken; store.save(); }
+
+  // A refused commit or attach can be this window's own autosave, which moves the workspace revision between
+  // the barrier and the server check. Such a refusal retries on the newest revision. The retry count is bounded,
+  // so a continuous typist cannot loop forever.
+  const OWN_REVISION_RETRIES = 2;
+
+  // Who moved the revision a refusal names? 'own' when this window wrote it, 'outside' when another window did,
+  // 'unknown' when the server cannot be asked.
+  async function revisionOrigin() {
+    const current = await ctx.storage.currentRevision().catch(() => null);
+    if (current === null) return 'unknown';
+    return (await ctx.storage.ownsRevision(current)) ? 'own' : 'outside';
+  }
+
+  // A definitive refusal wrote no bytes: release the selection so a new Open or Save can start.
+  // If release fails, the pending selection stays so the next Open or Save can release it.
+  async function releaseRefused(native, id) {
+    try { await native.release(id); native.clear(); }
+    catch { /* keep the pending selection for recovery */ }
+  }
+
+  // Commits the staged snapshot. Only a 409 is a definitive refusal; any other failure keeps the selection for
+  // recovery because the write may have happened. A revision-only refusal caused by this window's own autosave
+  // retries the same selection on the newest barrier revision. Any other refusal releases the selection.
+  async function commitFile(native, id, revision, { retryOwn = true } = {}) {
+    let current = revision;
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await native.write(id, current); }
+      catch (error) {
+        if (error.status !== 409) throw error;
+        const origin = error.reason === 'revision' && retryOwn ? await revisionOrigin() : 'unchecked';
+        if (origin === 'own' && attempt < OWN_REVISION_RETRIES) {
+          try { current = await ctx.storage.barrier(); continue; }
+          catch (barrierError) { await releaseRefused(native, id); throw barrierError; }
+        }
+        if (origin === 'outside') ctx.storage.markStale();
+        await releaseRefused(native, id);
+        throw new Error(origin === 'own' ? 'The project kept changing while it was being saved. Try saving again.'
+          : origin === 'outside' ? 'The project changed in another window. Reload before saving, or use Save As.'
+          : 'The project or file changed before saving. Reload before saving, or use Save As.');
+      }
+    }
+  }
+
+  // Attaches a sheet to a written or opened file. A revision-only refusal from this window's own autosave retries
+  // on the newest revision. A final refusal is rethrown: the caller decides what it means for the connection.
+  async function attachFile(native, id, sheetId, revision) {
+    let current = revision;
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await native.attach(id, sheetId, current); }
+      catch (error) {
+        const origin = error.status === 409 && error.reason === 'revision' ? await revisionOrigin() : 'unchecked';
+        if (origin === 'own' && attempt < OWN_REVISION_RETRIES) { current = await ctx.storage.barrier(); continue; }
+        if (origin === 'outside') ctx.storage.markStale();
+        throw error;
+      }
+    }
+  }
+
+  async function recoverPending(native) {
+    const pending = native.pending();
+    if (!pending) return;
+    let result;
+    try { result = await native.wait(pending.id); }
+    catch (error) {
+      if (error.status !== 404) throw error;
+      if (pending.phase !== 'starting' || !pending.start) {
+        native.clear(); ctx.toast('The previous file operation is no longer available. Please try again.'); return;
+      }
+      await native.resumeStart(pending.start);
+      result = await native.wait(pending.id);
+    }
+    if (result.stage === 'choosing' || result.stage === 'writing') throw new Error('A previous file operation is still in progress.');
+    if (result.kind === 'open' && result.stage === 'succeeded') {
+      native.clear(); ctx.toast('Confirmed the previous project connection'); return;
+    }
+    if (result.kind === 'open' && result.stage === 'ready') {
+      let sheet = (pending.sheet && store.sheet(pending.sheet)) || store.wb.sheets.find(item => item.fileToken === result.token);
+      if (!sheet) {
+        const contents = await native.content(pending.id);
+        let sheetId;
+        try { sheetId = openProjectFile(store, contents, { fileToken: result.token }); }
+        catch (error) {
+          try { await native.release(pending.id); native.clear(); } catch { /* retain recovery evidence */ }
+          throw error;
+        }
+        native.remember({ sheet: sheetId, phase: 'attaching' });
+        sheet = store.sheet(sheetId);
+      }
+      sheet.fileToken = result.token; store.save();
+      const revision = await ctx.storage.barrier();
+      try { await attachFile(native, pending.id, sheet.id, revision); }
+      catch (error) {
+        if (error.status !== 409 && error.status !== 404) throw error;
+        dropUnconfirmed(sheet); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.'); return;
+      }
+      native.clear(); ctx.toast(`Opened “${sheet.name}” · reminders are off`);
+      return;
+    }
+    if (result.kind === 'save_as' && result.stage === 'succeeded' && pending.copyOnly) {
+      native.clear(); ctx.toast('Confirmed the previous project copy was saved'); return;
+    }
+    if (result.kind === 'save_as' && result.stage === 'succeeded') {
+      const sheet = pending.sheet && store.sheet(pending.sheet);
+      if (!sheet) { native.clear(); ctx.toast('The file was saved, but its project no longer exists.'); return; }
+      sheet.fileToken = result.token; store.save();
+      const revision = await ctx.storage.barrier();
+      try { await attachFile(native, pending.id, sheet.id, revision); }
+      catch (error) {
+        if (error.status !== 409 && error.status !== 404) throw error;
+        dropUnconfirmed(sheet); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.'); return;
+      }
+      native.clear(); ctx.toast('Saved project file and restored its connection'); return;
+    }
+    if (result.stage === 'ready' && result.hasSnapshot) {
+      const revision = pending.copyOnly ? await ctx.storage.currentRevision() : await ctx.storage.barrier();
+      const committed = await commitFile(native, pending.id, revision, { retryOwn: !pending.copyOnly });
+      if (committed.stage !== 'succeeded') await settleRejected(native, pending.id, committed, 'The previous project save could not be confirmed.');
+      await recoverPending(native); return;
+    }
+    if (result.stage === 'ready') await native.release(pending.id);
+    native.clear();
+    if (result.stage === 'succeeded') ctx.toast('Confirmed the previous project save');
+    else if (result.stage !== 'cancelled') ctx.toast('The previous file operation did not complete.');
+  }
+
   async function open() {
     if (busy || !canOpen()) { diagnostics.record('file.open.ignored', { busy }); return; }
     const operation = diagnostics.begin('file.open');
     lock(true);
     try {
+      const native = await localBackend();
+      if (native) {
+        if (native.pending()) { await recoverPending(native); operation.end(); return; }
+        const id = native.newId();
+        let selected;
+        try {
+          await native.start({ id, kind: 'open' });
+          selected = await native.wait(id);
+          if (selected.stage === 'cancelled') { native.clear(); operation.end({ cancelled: true }); return; }
+          if (selected.stage !== 'ready') throw new Error(localError(selected));
+          const contents = await native.content(id);
+          const sheetId = openProjectFile(store, contents, { fileToken: selected.token });
+          native.remember({ sheet: sheetId, phase: 'attaching' });
+          const sheet = store.sheet(sheetId);
+          sheet.fileToken = selected.token; store.save();
+          const revision = await ctx.storage.barrier();
+          try { await attachFile(native, id, sheetId, revision); }
+          catch (error) {
+            if (error.status === 409 || error.status === 404) {
+              dropUnconfirmed(sheet); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.');
+              operation.end(); return;
+            }
+            ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.'); throw error;
+          }
+          native.clear();
+          ctx.toast(`Opened “${sheet.name}” · reminders are off`);
+          operation.end({ cancelled: false }); return;
+        } catch (error) {
+          if (selected?.stage === 'ready' && !native.pending()?.sheet) {
+            try { await native.release(id); native.clear(); } catch { /* retain recovery evidence */ }
+          }
+          throw error;
+        }
+      }
       let file, handle;
       if (typeof browser.showOpenFilePicker === 'function') {
         [handle] = await diagnostics.trace('file.open.picker', () => browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false }), { kind: 'native' });
@@ -238,6 +429,44 @@ export function createProjectFiles(ctx, browser = window) {
       const sheet = store.sheet(), name = projectFileName(sheet.name);
       try { contents = encodeProjectFile(store); encode.end({ characters: contents.length }); }
       catch (error) { encode.fail(error); throw error; }
+      const native = await localBackend();
+      if (native) {
+        if (native.pending()) { await recoverPending(native); operation.end(); return; }
+        if (store.stale && !asNew) throw new Error('Use Save As to save a copy from this outdated window.');
+        const exportingStale = store.stale && asNew;
+        const revision = exportingStale ? await ctx.storage.currentRevision() : await ctx.storage.barrier();
+        const sourceToken = sheet.fileToken || null;
+        const connected = typeof sourceToken === 'string' && sourceToken.startsWith('local-') && await native.connected(sheet.id, sourceToken);
+        if (sourceToken && !connected && !browser.sessionStorage.getItem('plan-file-reconnect-notice')) {
+          browser.sessionStorage.setItem('plan-file-reconnect-notice', '1');
+          ctx.toast('This project needs Open or Save As to reconnect its file.');
+        }
+        if (!asNew && connected && (store.stale || sheet.readOnly)) throw new Error('Use Save As to save a copy from this read-only or outdated window.');
+        const id = native.newId();
+        const kind = !asNew && connected ? 'save' : 'save_as';
+        await native.start({ id, kind, sheet: sheet.id, token: sourceToken, revision, suggestedName: name, copyOnly: exportingStale });
+        await native.stage(id, contents);
+        const selected = await native.wait(id);
+        if (selected.stage === 'cancelled') { native.clear(); operation.end({ cancelled: true }); return; }
+        if (selected.stage !== 'ready') throw new Error(localError(selected));
+        const currentRevision = exportingStale ? await ctx.storage.currentRevision() : await ctx.storage.barrier();
+        if ((!exportingStale && store.stale) || (!asNew && connected && sheet.readOnly)) {
+          await native.release(id); native.clear(); throw new Error('The project changed while selecting a file. Try again.');
+        }
+        const result = await commitFile(native, id, currentRevision, { retryOwn: !exportingStale });
+        if (result.stage !== 'succeeded') await settleRejected(native, id, result, 'The project could not be saved. Check the selected file before trying again.');
+        if (kind === 'save_as' && !exportingStale) {
+          sheet.fileToken = result.token; store.save();
+          const attachedRevision = await ctx.storage.barrier();
+          try { await attachFile(native, id, sheet.id, attachedRevision); }
+          catch (error) {
+            if (error.status !== 409 && error.status !== 404) throw error;
+            dropUnconfirmed(sheet); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.');
+            operation.end(); return;
+          }
+        }
+        native.clear(); ctx.toast('Saved project file'); operation.end(); return;
+      }
       let record = !asNew && sheet.fileToken ? await bindings.read(sheet.fileToken) : null;
       // Stale/read-only windows may export a copy, but must not replace a connected file.
       if (record && (store.stale || sheet.readOnly)) throw new Error('Use Save As to save a copy from this read-only or outdated window.');
@@ -275,10 +504,18 @@ export function createProjectFiles(ctx, browser = window) {
     } finally { lock(false); diagnostics.record('file.save.controlsUnlocked'); }
   }
 
-  function paintSave() {
+  let paintSequence = 0;
+  async function paintSave() {
     if (!normalSave) return;
-    normalSave.querySelector('.tool-label').textContent = store.sheet().fileToken ? 'Save' : 'Save…';
-    normalSave.title = store.sheet().fileToken ? 'Save changes to the connected .plan file (Ctrl/⌘+S)' : 'Choose a .plan file for this project (Ctrl/⌘+S)';
+    const sheet = store.sheet(), sequence = ++paintSequence;
+    let connected = !!sheet.fileToken;
+    try {
+      const native = await localBackend();
+      if (native) connected = typeof sheet.fileToken === 'string' && sheet.fileToken.startsWith('local-') && await native.connected(sheet.id, sheet.fileToken);
+    } catch { connected = false; }
+    if (sequence !== paintSequence || store.sheet() !== sheet) return;
+    normalSave.querySelector('.tool-label').textContent = connected ? 'Save' : 'Save…';
+    normalSave.title = connected ? 'Save changes to the connected .plan file (Ctrl/⌘+S)' : 'Choose a .plan file for this project (Ctrl/⌘+S)';
   }
   store.on(paintSave); paintSave();
   const save = () => writeProject(false), saveAs = () => writeProject(true);

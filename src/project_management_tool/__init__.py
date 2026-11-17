@@ -5,22 +5,29 @@ import functools
 import hashlib
 import http.server
 import json
+import os
 import platform
+import secrets
 import sqlite3
 import struct
 import sys
+import threading
 import webbrowser
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
+from .native_dialogs import WindowsDialogs
 from .persistence import (
     MAX_BYTES,
     ConflictError,
     ProjectStorage,
+    RevisionConflict,
     default_data_dir,
     reject_constant,
 )
+from .project_files import FileConflict, FileService, FileTooLarge, OperationError
 
 WEB = Path(__file__).parent / "web"
 
@@ -45,6 +52,48 @@ def runtime_diagnostics():
     }
 
 
+def native_windows_available():
+    return os.name == 'nt'
+
+
+class PlanServer(http.server.ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second process bind a port that is already listening, so a second launch
+    # would start a duplicate server instead of reusing the running one. Failing the bind lets create_server's
+    # OSError path health-check the existing instance. POSIX keeps reuse for quick restarts.
+    allow_reuse_address = os.name != 'nt'
+    file_session: str
+    file_service: FileService | None
+    file_failed: bool
+    file_lock: threading.Lock
+    file_storage: ProjectStorage
+
+    def use_file_service(self, service):
+        # An injected service is authoritative, so the capability status must agree with it.
+        with self.file_lock:
+            self.file_service = service
+            self.file_failed = False
+
+    def ensure_file_service(self):
+        if not native_windows_available() or self.file_service is not None:
+            return
+        with self.file_lock:
+            if self.file_service is not None:
+                return
+            chooser = None
+            try:
+                local = os.environ.get('LOCALAPPDATA')
+                if not local:
+                    raise OSError('Local application data is unavailable')
+                chooser = WindowsDialogs()
+                self.file_service = FileService(Path(local) / 'Plan' / 'file-access', self.file_storage.path, chooser)
+                self.file_failed = False
+            except Exception:
+                self.file_failed = True
+                if chooser is not None:
+                    with contextlib.suppress(Exception):
+                        chooser.close()
+
+
 class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       ".js": "text/javascript", ".css": "text/css", ".json": "application/json"}
@@ -66,11 +115,142 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def file_auth(self, *, bootstrap=False):
+        expected_host = f'127.0.0.1:{cast(PlanServer, self.server).server_port}'
+        if self.headers.get('Host') != expected_host:
+            return False
+        origin = self.headers.get('Origin')
+        if origin is not None and origin != f'http://{expected_host}':
+            return False
+        if self.command != 'GET' and origin != f'http://{expected_host}':
+            return False
+        if bootstrap:
+            return self.headers.get('X-Plan-Bootstrap') == '1'
+        return secrets.compare_digest(self.headers.get('X-Plan-Session', ''), cast(PlanServer, self.server).file_session)
+
+    def file_api(self):
+        path = urlsplit(self.path).path
+        if not (path in ('/api/file-access', '/api/file-operations', '/api/file-connections/check') or path.startswith('/api/file-operations/')):
+            return False
+        bootstrap = path == '/api/file-access' and self.command == 'GET'
+        if not self.file_auth(bootstrap=bootstrap):
+            self.close_connection = True
+            self.send_json(403, {'error': 'File access authorization failed'})
+            return True
+        try:
+            if bootstrap:
+                server = cast(PlanServer, self.server)
+                if server.file_failed:
+                    server.ensure_file_service()
+                self.send_json(200, {'version': 1, 'available': server.file_service is not None,
+                                     'status': 'failed' if server.file_failed else ('available' if server.file_service else 'unsupported'),
+                                     'session': server.file_session if server.file_service else None})
+                return True
+            service = cast(PlanServer, self.server).file_service
+            if service is None:
+                self.send_json(404, {'error': 'Native file access is unavailable'})
+                return True
+            client = self.headers.get('X-Plan-Client', '')
+            if not client or len(client) > 100:
+                raise ValueError('Invalid client identity')
+            parts = path.strip('/').split('/')
+            if self.command == 'POST' and path == '/api/file-connections/check':
+                body = self.file_json()
+                sheet, token = body.get('sheet'), body.get('token')
+                if not isinstance(sheet, str) or not isinstance(token, str) or len(sheet) > 100 or len(token) > 100:
+                    raise ValueError('Invalid connection identity')
+                self.send_json(200, {'connected': service.connection(sheet, token) is not None})
+            elif self.command == 'POST' and path == '/api/file-operations':
+                body = self.file_json()
+                result = service.start(client, body.get('id'), body.get('kind'), sheet=body.get('sheet'),
+                                       token=body.get('token'), revision=body.get('revision'),
+                                       suggested_name=body.get('suggestedName', ''), copy_only=body.get('copyOnly', False))
+                self.send_json(200, result)
+            elif len(parts) in (3, 4) and parts[:2] == ['api', 'file-operations']:
+                operation = parts[2]
+                action = parts[3] if len(parts) == 4 else ''
+                if self.command == 'GET' and not action:
+                    self.send_json(200, service.status(client, operation))
+                elif self.command == 'GET' and action == 'content':
+                    raw = service.content(client, operation)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                    self.send_header('Content-Length', str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                elif self.command == 'PUT' and action == 'snapshot':
+                    service.stage_snapshot(client, operation, self.file_body(MAX_BYTES))
+                    self.send_json(200, service.status(client, operation))
+                elif self.command == 'POST' and action == 'commit':
+                    self.file_json()
+                    self.send_json(200, service.write_staged(client, operation, authorize=self.storage.file_authorization,
+                                                             revision=self.headers.get('X-Plan-Revision')))
+                elif self.command == 'PUT' and action == 'content':
+                    raw = self.file_body(MAX_BYTES)
+                    self.send_json(200, service.write(client, operation, raw, authorize=self.storage.file_authorization,
+                                                      revision=self.headers.get('X-Plan-Revision')))
+                elif self.command == 'POST' and action == 'attach':
+                    body = self.file_json()
+                    status = service.status(client, operation)
+                    with self.storage.file_attach_authorization(body.get('sheet'), status.get('token'), body.get('revision')):
+                        token = service.attach(client, operation, body.get('sheet'))
+                    self.send_json(200, {'token': token})
+                elif self.command == 'POST' and action == 'release':
+                    service.release(client, operation)
+                    self.send_json(200, {'released': True})
+                else:
+                    self.send_json(404, {'error': 'Unknown file operation endpoint'})
+            else:
+                self.send_json(404, {'error': 'Unknown file operation endpoint'})
+        except LookupError:
+            self.send_json(404, {'error': 'Unknown file operation or connection'})
+        except RevisionConflict:
+            # Refused before any bytes were written; the client may retry the same selection on a newer revision.
+            self.send_json(409, {'error': 'App state changed in another window. Reload before saving.', 'reason': 'revision'})
+        except (FileConflict, ConflictError, OperationError):
+            self.send_json(409, {'error': 'File operation conflicts with the current project or file', 'reason': 'conflict'})
+        except (ValueError, UnicodeError, FileTooLarge):
+            self.send_json(400, {'error': 'Invalid file operation request'})
+        except OSError as error:
+            if getattr(error, 'winerror', None) in (32, 33):
+                self.send_json(503, {'error': 'The file is open in another program. Close it and try again.', 'code': 'file_in_use'})
+            elif isinstance(error, PermissionError):
+                self.send_json(503, {'error': 'Cannot access this file. It may be read-only or open in another program. Close it there, check permissions, or use Save As.', 'code': 'permission_denied'})
+            else:
+                self.send_json(503, {'error': 'File operation could not be completed'})
+        except sqlite3.Error:
+            self.send_json(503, {'error': 'File operation could not be completed'})
+        return True
+
+    def file_body(self, limit):
+        length = int(self.headers.get('Content-Length', '-1'))
+        if length < 0 or length > limit:
+            raise ValueError('Invalid request size')
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise ValueError('Incomplete request')
+        return data
+
+    def file_json(self):
+        if self.headers.get_content_type() != 'application/json':
+            raise ValueError('Expected JSON')
+        value = json.loads(self.file_body(16384), parse_constant=reject_constant)
+        if not isinstance(value, dict):
+            raise ValueError('Expected object')
+        return value
+
     def do_GET(self):
+        if self.file_api():
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/api/diagnostics":
             try:
-                self.send_json(200, runtime_diagnostics())
+                info = runtime_diagnostics()
+                service = cast(PlanServer, self.server).file_service
+                info['fileAccess'] = {'backend': 'python' if service else 'browser',
+                                      'status': 'failed' if cast(PlanServer, self.server).file_failed else ('available' if service else 'unsupported'),
+                                      'events': service.diagnostics() if service else []}
+                self.send_json(200, info)
             except OSError:
                 self.send_json(503, {"error": "Cannot inspect the installed app source"})
         elif parsed.path == "/api/health":
@@ -101,7 +281,13 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+    def do_PUT(self):
+        if not self.file_api():
+            self.send_json(404, {'error': 'Unknown endpoint'})
+
     def do_POST(self):
+        if self.file_api():
+            return
         if urlsplit(self.path).path != "/api/projects":
             self.send_json(404, {"error": "Unknown endpoint"})
             return
@@ -133,9 +319,20 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": f"Could not save app state. Check free space and folder permissions. ({e})"})
 
 
-def create_server(port, data_dir):
+def create_server(port, data_dir, *, native_files=True):
     storage = ProjectStorage(data_dir)
-    return http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(ProjectHandler, storage=storage))
+    server = PlanServer(("127.0.0.1", port), functools.partial(ProjectHandler, storage=storage))
+    server.file_session = secrets.token_urlsafe(32)
+    server.file_service = None
+    server.file_failed = False
+    server.file_lock = threading.Lock()
+    server.file_storage = storage
+    # Automated tests pass native_files=False: no chooser, no %LOCALAPPDATA%, and the browser
+    # fallback is reported as unsupported. Production remains native-first.
+    server.file_failed = native_files and native_windows_available()
+    # The file service starts on capability discovery; a broken COM setup must
+    # not prevent the HTTP server or early diagnostic capture from starting.
+    return server
 
 
 def main():
@@ -143,6 +340,8 @@ def main():
     ap.add_argument("-p", "--port", type=int, default=5173)
     ap.add_argument("--data-dir", type=Path, help="Folder for plan.db (default: Documents/Plan)")
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser window")
+    ap.add_argument("--file-access", choices=("native", "off"), default="native",
+                    help="Windows file dialogs. 'off' keeps the browser fallback and never touches %%LOCALAPPDATA%%; automated tests use it")
     a = ap.parse_args()
     if not 0 <= a.port <= 65535:
         ap.error("port must be between 0 and 65535")
@@ -151,7 +350,7 @@ def main():
     except OSError as e:
         ap.exit(1, f"Cannot locate Documents: {e}\n")
     try:
-        srv = create_server(a.port, directory)
+        srv = create_server(a.port, directory, native_files=a.file_access == "native")
     except OSError as e:
         # Double-clicking again reuses the running server for this database.
         try:
@@ -171,5 +370,10 @@ def main():
         print(f"Plan is running: {url}\nApp state: {(directory / 'plan.db').resolve()}\nKeep this window open. Press Ctrl+C to stop.", flush=True)
         if not a.no_open:
             webbrowser.open(url)
-        with contextlib.suppress(KeyboardInterrupt):
-            srv.serve_forever()
+        try:
+            with contextlib.suppress(KeyboardInterrupt):
+                srv.serve_forever()
+        finally:
+            with srv.file_lock:
+                if srv.file_service:
+                    srv.file_service.close()
