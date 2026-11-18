@@ -7,25 +7,104 @@ git --version >nul 2>&1
 if errorlevel 1 goto git_error
 if not exist ".git" goto repo_error
 
+rem Plan must be closed: Windows locks the running runtime, and a running
+rem server would keep using the old code after the update.
+set "PLAN_DIR=%CD%"
+powershell -NoProfile -NonInteractive -Command "$p = ($env:PLAN_DIR.TrimEnd('\') + '\runtime\').ToLower(); if (Get-Process python, pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.ToLower().StartsWith($p) }) { exit 2 }; exit 0" >nul 2>&1
+if "%errorlevel%"=="2" goto running_error
+
+rem A Git command that was interrupted can leave this lock behind.
+if not exist ".git\index.lock" goto no_lock
+tasklist /fi "imagename eq git.exe" 2>nul | find /i "git.exe" >nul
+if not errorlevel 1 goto git_busy
+del /f /q ".git\index.lock" >nul 2>&1
+:no_lock
+
+git rev-parse --verify --quiet "@{u}" >nul 2>&1
+if errorlevel 1 goto upstream_error
+
+echo Checking for updates...
+git fetch --prune
+if errorlevel 1 goto fetch_error
+
+set "PLAN_LOCAL="
+for /f "delims=" %%i in ('git status --porcelain') do set "PLAN_LOCAL=1"
+
 rem Parse the complete update block before Git can replace this batch file.
+rem Labels and goto must not be used below this point.
 (
     echo Updating Plan...
-    git pull --ff-only
+    if defined PLAN_LOCAL (
+        git -c "user.name=Plan updater" -c "user.email=plan-updater@localhost" stash push --include-untracked --quiet -m "Set aside by update.bat"
+        if errorlevel 1 (
+            echo.
+            echo Update stopped. Nothing was changed. Close programs using files in the Plan folder, then run update.bat again.
+            popd
+            pause
+            endlocal
+            exit /b 1
+        )
+        echo Files that differed from the published version were set aside in Git stash.
+    )
+    git reset --hard --quiet "@{u}"
     if errorlevel 1 (
         echo.
-        echo Update failed. Resolve the Git error above, then run update.bat again.
+        echo Update did not finish. Close programs using files in the Plan folder, then run update.bat again.
+        popd
+        pause
+        endlocal
+        exit /b 1
+    )
+    git clean -fdxq -- src
+    if errorlevel 1 (
+        echo.
+        echo Update did not finish. Close programs using files in the Plan folder, then run update.bat again.
+        popd
+        pause
+        endlocal
+        exit /b 1
+    )
+    set "PLAN_DIRTY="
+    for /f "delims=" %%i in ('git status --porcelain') do set "PLAN_DIRTY=1"
+    if defined PLAN_DIRTY (
+        echo.
+        echo The Plan folder still differs from the published version:
+        git status --short
+        echo Close programs using these files, then run update.bat again.
         popd
         pause
         endlocal
         exit /b 1
     )
     echo.
-    echo Plan is up to date. Run start.bat to reopen the app.
+    git --no-pager log -1 "--format=Plan is up to date: %%h %%s"
+    echo Run start.bat to open Plan.
     popd
     pause
     endlocal
     exit /b 0
 )
+
+:running_error
+echo Plan is still running from this folder. Close the Plan launcher window,
+echo then run update.bat again. Nothing was changed.
+goto checkout_error
+
+:git_busy
+echo Another Git command is using this folder. Wait for it to finish, then
+echo run update.bat again. Nothing was changed.
+goto checkout_error
+
+:upstream_error
+echo This copy is not following a published branch. Clone the repository
+echo again, then run update.bat. Nothing was changed.
+goto checkout_error
+
+:fetch_error
+echo.
+echo Could not download updates. Check the internet connection, then run
+echo update.bat again. Nothing was changed.
+goto checkout_error
 
 :git_error
 echo Git was not found. Install Git for Windows, then run update.bat again.

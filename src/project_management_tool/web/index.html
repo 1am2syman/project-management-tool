@@ -36,7 +36,7 @@
       <button data-act="reset" class="ghost" title="Restore the demo workbook (removes all sheets)" aria-label="Reset all"><svg viewBox="0 0 16 16"><path d="M3 6a5 5 0 1 1 0 5M3 2v4h4"/></svg><span class="tool-label">Reset all</span></button>
     </div>
   </header>
-  <div id="banners"><div id="robanner" class="robanner" hidden></div><div id="verbanner" class="robanner verbanner" hidden role="status"></div></div>
+  <div id="banners"><div id="startup-error" class="robanner startup-error" role="alert" hidden><span class="lock">Plan could not start.</span><span>Reload the page. If this continues, download the diagnostic log.</span><button type="button" data-startup-reload>Reload</button><button type="button" data-startup-log>Open Log</button></div><div id="robanner" class="robanner" hidden></div><div id="verbanner" class="robanner verbanner" hidden role="status"></div></div>
 
   <main id="main">
     <section class="pane left" id="left">
@@ -124,6 +124,6 @@
   </div>
 </dialog>
 <script src="js/diagnostics.js"></script>
-<script type="module" src="js/main.js"></script>
+<script src="js/startup.js"></script>
 </body>
 </html>

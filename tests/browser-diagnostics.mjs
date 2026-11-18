@@ -17,7 +17,7 @@ try {
     server.once('exit', (code) => { clearTimeout(timer); no(new Error(`Server ${code}: ${log}`)); });
     server.stdout.on('data', (b) => { log += b; const m = log.match(/Plan is running: (http:\/\/127\.0\.0\.1:\d+\/)/); if (m) { clearTimeout(timer); yes(m[1]); } });
   });
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM });
+  browser = await chromium.launch({ headless: process.env.PLAN_TEST_HEADED !== '1', executablePath: process.env.PLAYWRIGHT_CHROMIUM });
   async function fresh() {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1000 }, acceptDownloads: true });
     await context.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
@@ -73,16 +73,49 @@ try {
   assert((await page.evaluate(() => window.PlanDiagnostics.snapshot())).entries.length < 5);
   await context.close();
 
-  // Main-module load failure: the early recorder and its Log button still work.
-  const failed = await fresh();
-  await failed.context.route('**/js/main.js', (route) => route.abort());
-  await failed.page.goto(url); await failed.page.getByRole('button', { name: 'Log', exact: true }).click();
-  const failedDialog = failed.page.getByRole('dialog', { name: 'Diagnostic log' }); await failedDialog.waitFor();
-  const failedDownload = failed.page.waitForEvent('download'); await failedDialog.getByRole('button', { name: 'Download log' }).click();
-  const failure = JSON.parse(await readFile(await (await failedDownload).path(), 'utf8'));
-  assert(failure.entries.some((e) => e.event === 'resource.error' && e.detail.url.endsWith('/js/main.js')));
-  assert(!failure.entries.some((e) => e.event === 'app.ready'));
-  await failed.context.close();
+  // Import failures used to leave the static 'Loading saved projects…' message forever.
+  // Exercise the root request, transitive dependencies, MIME rejection, parse and link failures.
+  for (const fault of ['blocked', 'missing', 'mime', 'syntax', 'export']) {
+    const failed = await fresh();
+    const pattern = fault === 'blocked' ? '**/js/main.js' : '**/js/people.js';
+    await failed.context.route(pattern, (route) => {
+      if (fault === 'blocked') return route.abort();
+      if (fault === 'missing') return route.fulfill({ status: 404, contentType: 'text/html', body: 'Not found' });
+      if (fault === 'mime') return route.fulfill({ contentType: 'text/plain', body: 'export function createPeople() {}' });
+      return route.fulfill({ contentType: 'text/javascript', body: fault === 'syntax' ? 'export function {' : 'export const unrelated = true;' });
+    });
+    await failed.page.goto(url);
+    await failed.page.locator('#startup-error').waitFor();
+    assert.equal(await failed.page.locator('#save-status').textContent(), 'Startup failed · Open Log', fault);
+    assert.equal(await failed.page.locator('#save-status').isEnabled(), true);
+    await failed.page.locator('#save-status').click();
+    const failedDialog = failed.page.getByRole('dialog', { name: 'Diagnostic log' }); await failedDialog.waitFor();
+    const failedDownload = failed.page.waitForEvent('download'); await failedDialog.getByRole('button', { name: 'Download log' }).click();
+    const failure = JSON.parse(await readFile(await (await failedDownload).path(), 'utf8'));
+    const loadError = failure.entries.find((e) => e.event === 'app.load.error');
+    assert(loadError?.detail.error.message, `${fault}: retain the import rejection`);
+    if (fault === 'export') assert.match(loadError.detail.error.message, /createPeople/);
+    if (fault === 'syntax') assert.match(loadError.detail.error.name, /SyntaxError/);
+    if (fault === 'missing') assert(failure.setup.resources.some((r) => r.url.endsWith('/js/people.js') && r.status === 404));
+    assert(!failure.entries.some((e) => e.event === 'app.start'), `${fault}: no project initialization`);
+    assert(!failure.pendingOperations.some((op) => op.event === 'app.load'));
+    assert.deepEqual((await (await failed.page.request.get(url + 'api/projects')).json()).state.workbook, dataBefore.workbook);
+    await failed.page.keyboard.press('Escape');
+    await failed.page.locator('#startup-error [data-startup-log]').click(); await failedDialog.waitFor();
+    await failed.page.keyboard.press('Escape');
+    await failed.page.setViewportSize({ width: 700, height: 700 });
+    const banner = await failed.page.locator('#startup-error').boundingBox();
+    assert(banner.x >= 0 && banner.x + banner.width <= 701);
+    if (fault === 'missing' && process.env.PLAN_TEST_ARTIFACTS) {
+      await mkdir(process.env.PLAN_TEST_ARTIFACTS, { recursive: true });
+      await failed.page.screenshot({ path: join(process.env.PLAN_TEST_ARTIFACTS, 'startup-failure.png') });
+    }
+    await failed.context.unroute(pattern);
+    await failed.page.locator('[data-startup-reload]').click();
+    await failed.page.waitForFunction(() => window.PlanDiagnostics?.snapshot().entries.some((e) => e.event === 'app.ready'));
+    assert.equal(await failed.page.locator('#startup-error').isVisible(), false);
+    await failed.context.close();
+  }
   assert.deepEqual(errors.sort(), ['diagnostic rejection control', 'diagnostic uncaught control'].sort());
   if (process.env.PLAN_TEST_ARTIFACTS) {
     await mkdir(process.env.PLAN_TEST_ARTIFACTS, { recursive: true });

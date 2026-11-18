@@ -67,7 +67,15 @@
     };
     return { end: (detail) => finish('info', detail), fail: (error) => finish('error', { error }) };
   }
+  function resources() {
+    return (w.performance?.getEntriesByType('resource') || []).slice(-40).map((entry) => ({
+      url: urlLabel(entry.name), initiator: entry.initiatorType, durationMs: Math.round(entry.duration),
+      transferBytes: entry.transferSize, status: entry.responseStatus,
+    }));
+  }
   function snapshot() {
+    // Module dependencies finish after the initial setup check. Export their final load status too.
+    setup.resources = resources();
     let app = {};
     try { app = storeSummary?.() || {}; } catch (error) { app = { summaryError: scrub(error) }; }
     return { format: 'plan-diagnostics', version: 1, exportedAt: new Date().toISOString(), captureStartedAt: new Date(started).toISOString(),
@@ -153,7 +161,7 @@
     setup.browser = { userAgent: n.userAgent, platform: n.platform, vendor: n.vendor, language: n.language, languages: n.languages, online: n.onLine, cookieEnabled: n.cookieEnabled, hardwareConcurrency: n.hardwareConcurrency, deviceMemory: n.deviceMemory, webdriver: n.webdriver };
     setup.page = { url: urlLabel(w.location.href), secureContext: w.isSecureContext, topLevel: w.top === w.self, visibility: d.visibilityState, readyState: d.readyState, viewport: { width: w.innerWidth, height: w.innerHeight, devicePixelRatio: w.devicePixelRatio }, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
     setup.fileSupport = { fileText: typeof w.File?.prototype?.text === 'function', userActivation: n.userActivation ? { active: n.userActivation.isActive, hasBeenActive: n.userActivation.hasBeenActive } : null };
-    setup.resources = (w.performance?.getEntriesByType('resource') || []).slice(-40).map((entry) => ({ url: urlLabel(entry.name), initiator: entry.initiatorType, durationMs: Math.round(entry.duration), transferBytes: entry.transferSize }));
+    setup.resources = resources();
     setup.features = Object.fromEntries(['showOpenFilePicker', 'showSaveFilePicker', 'indexedDB', 'FileReader', 'File', 'TextEncoder', 'AbortSignal'].map((k) => [k, typeof w[k] !== 'undefined']));
     setup.storage = {};
     for (const type of ['localStorage', 'sessionStorage']) { try { setup.storage[type] = probeStorage(w[type]); } catch (error) { setup.storage[type] = { available: false, error: scrub(error) }; } }

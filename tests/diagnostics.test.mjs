@@ -78,6 +78,18 @@ test('log is bounded and recent evidence survives a reload without reading crede
   assert(!JSON.stringify(next.api.snapshot()).includes('CREDENTIAL_SECRET'));
 });
 
+test('export refreshes resource statuses after module dependencies finish loading', async () => {
+  const h = await harness();
+  const entries = [];
+  h.window.performance = { getEntriesByType: (type) => type === 'resource' ? entries : [] };
+  assert.equal(h.api.snapshot().setup.resources.length, 0);
+  entries.push({ name: 'http://localhost:5173/js/people.js?token=RESOURCE_SECRET', initiatorType: 'script', duration: 12.5, transferSize: 100, responseStatus: 404 });
+  const report = h.api.snapshot();
+  assert.equal(report.setup.resources[0].status, 404);
+  assert.equal(report.setup.resources[0].url, 'http://localhost:5173/js/people.js');
+  assert(!JSON.stringify(report).includes('RESOURCE_SECRET'));
+});
+
 test('fetch records metadata and failures while preserving responses and excluding headers/bodies', async () => {
   const response = { ok: false, status: 503, json: async () => ({}) };
   const h = await harness({ fetch: async () => response });

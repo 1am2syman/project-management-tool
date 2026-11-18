@@ -17,7 +17,7 @@ On **64-bit Windows 10/11**, the repository includes Python; no Python or uv ins
 
 The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` to run `start.py` directly. The app opens in your default browser at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
 
-If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat** (or `git pull --ff-only`), then launch **start.bat** again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
+If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat**, then launch **start.bat** again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
 
 Keep the launcher window open while using Plan. Wait for **Saved to this computer** before closing the app, then stop the server with Ctrl+C or close its window. Run `start.bat` again to reopen your saved app state automatically. Double-clicking it while Plan is running opens that instance for the same database. If another program uses port 5173, run `start.bat --port 5174`.
 
@@ -34,12 +34,18 @@ If you already use uv for development, `uv run --locked project-management-tool`
 On Windows:
 
 1. Wait for **Saved to this computer**, then stop Plan by closing its launcher window or pressing Ctrl+C there.
-2. Double-click **update.bat** inside the cloned repository. It pulls the latest updates and keeps the window open so you can read the result.
+2. Double-click **update.bat** inside the cloned repository. It downloads the latest published version, makes the folder match it exactly and keeps the window open so you can read the result.
 3. Run **start.bat** again. It uses the updated source and bundled runtime directly.
 
 The page does not hot reload. For front-end-only JS/CSS/HTML updates, the running server reads the changed files directly with caching disabled: refresh the browser to load them. Python server or dependency updates require a server restart. The stop/update/start procedure above works for both kinds of update.
 
-The updater requires Git and internet access. It uses `git pull --ff-only` for the current branch's configured upstream, so it stops if the branches have diverged. If Git reports a conflict with local edits or another error, resolve that error before running the updater again. It does not reset your checkout or discard local changes.
+The updater requires Git and internet access. Every update repairs the app folder, including a copy left with missing or mixed files by an earlier interrupted update:
+
+- It stops without changing anything if Plan is still running from this folder, Git cannot download the update, or the copy does not follow a published branch. It removes a lock left by an interrupted Git command when no Git command is running.
+- It resets every tracked file to the current branch's published version and removes untracked and generated files under `src`. Anything in the folder that differed from that version is first set aside in Git stash: `git stash list` shows it, and `git stash show -p --include-untracked` shows its contents. Local commits that were not published remain recoverable through `git reflog`.
+- It confirms that `git status` is clean before reporting **Plan is up to date** with the installed commit.
+
+If another program keeps a file open, the update reports that it did not finish (Git may first ask whether to retry). Close that program and run **update.bat** again; a rerun completes the update. The bundled runtime is restored like any other tracked file, and saved projects in Documents/Plan are never touched.
 
 On macOS/Linux, or from a terminal on Windows, stop Plan and run `git pull --ff-only` in the cloned folder, then start the app again. Saved work stays in Documents/Plan, separate from the repository.
 
@@ -94,6 +100,10 @@ The report includes Chrome/Edge version information exposed by the browser, oper
 Logs stay locally in the current tab, with recent entries retained through refresh using session storage when available. Recording is bounded to the latest 1,500 events and approximately 384 KB of event data; older entries are dropped. Nothing is uploaded automatically. Project contents, typed input, cookie values, request/response bodies, authentication headers and credential-storage values are excluded. Error text is redacted on a best-effort basis; review a downloaded log before sharing it. Browsers may withhold some version/setup information, and this report cannot inspect Windows event logs or installed browser extensions.
 
 After updating to a version with Log, restart the launcher and refresh the app so the browser and Python server both use the updated code.
+
+If the grid stays empty at **Loading saved projects…**, a JavaScript module may have failed before saved-state loading began. Newer builds show **Plan could not start** with **Reload** and **Open Log** controls, and retain the module-import error and final resource HTTP statuses. JavaScript support comes with the browser; all current app modules load from the local app server, with no CDN dependency.
+
+Keep the installed app source from one complete version. An old `main.js` alongside a newer source tree can still import removed files and prevent the entire app from starting. For a copied/ZIP installation, use a fresh complete app folder. For a Git checkout on Windows, stop Plan and run **update.bat**, which repairs the folder. If the copy still has an older updater that stops with a Git error, first run `git fetch` and `git checkout origin/master -- update.bat` in the folder, then run **update.bat**. Then run `start.bat` and refresh the browser. This restores app code; saved projects in Documents/Plan and the bundled runtime are separate.
 
 ## Automatic local saves
 
