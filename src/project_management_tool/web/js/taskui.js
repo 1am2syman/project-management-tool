@@ -24,7 +24,7 @@ export function createTaskUI(ctx, grid) {
       html += item('Append task', 'task-after', reason, 'Ctrl/⌘+Enter') + item('Append milestone', 'ms-after', reason, 'Ctrl/⌘+Shift+Enter');
     } else {
       const summary = store.info.get(id).summary;
-      html += item('Inspect task slack', 'slack', null) + '<div role="separator"></div>';
+      html += item('Inspect task slack', 'slack', null) + item('Task calendar…', 'calendar', summary ? 'Summary dates come from their children' : null) + '<div role="separator"></div>';
       html += item('Insert task above', 'task-before', reason) + item(summary ? 'Insert task below cascade' : 'Insert task below', 'task-after', reason, 'Ctrl/⌘+Enter');
       html += item('Insert milestone above', 'ms-before', reason) + item(summary ? 'Insert milestone below cascade' : 'Insert milestone below', 'ms-after', reason, 'Ctrl/⌘+Shift+Enter');
       const childError = reason || store.canAddChild(id);
@@ -58,7 +58,8 @@ export function createTaskUI(ctx, grid) {
   menu.addEventListener('click', (e) => {
     const button = e.target.closest('button[data-task-action]'); if (!button || button.disabled) return;
     const action = button.dataset.taskAction; closeMenu(true);
-    if (action === 'slack') { ctx.slack.open(menuId);
+    if (action === 'calendar') { ctx.calendar.open(menuId);
+    } else if (action === 'slack') { ctx.slack.open(menuId);
     } else if (action.startsWith('critical-')) {
       const error = store.setCriticalTarget(action === 'critical-project' ? null : menuId); if (error) ctx.toast(error);
     } else if (action.startsWith('schedule-')) {

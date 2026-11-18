@@ -101,11 +101,11 @@ try {
   await dialog.locator('[data-holiday-date]').fill('2026-11-10'); await dialog.getByRole('button', { name: 'Add holiday', exact: true }).click();
   await dialog.getByRole('button', { name: 'Remove holiday 2026-11-10', exact: true }).click();
   for (const input of await dialog.locator('.calendar-week input').all()) await input.uncheck();
-  assert(await dialog.getByRole('button', { name: 'Apply calendar', exact: true }).isDisabled());
+  assert(await dialog.getByRole('button', { name: 'Save global calendar', exact: true }).isDisabled());
   await dialog.getByRole('button', { name: 'Mon–Fri', exact: true }).click();
   assert.match(await dialog.locator('[data-calendar-preview]').textContent(), /will change dates/);
   assert.equal((await data()).calendar.workdays.length, 7, 'draft calendar is not saved');
-  await dialog.getByRole('button', { name: 'Apply calendar', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save global calendar', exact: true }).click();
   d = await data(); assert.deepEqual(d.calendar, { workdays: [1, 2, 3, 4, 5], holidays: [{ date: '2026-11-09', name: 'Office closure' }] });
   assert.equal((await row(8).locator('[data-col=end]').textContent()).trim(), 'Nov 11');
   assert.equal((await row(8).locator('[data-col=dur]').textContent()).trim(), '3');
@@ -168,10 +168,10 @@ try {
   await restored.reload(); await restored.locator('#gbody .r[data-id="8"]').waitFor();
   assert.equal(await restored.locator('.row-handle').count(), 0);
   await restored.locator('.r[data-id="8"] [data-col=name]').click({ button: 'right' });
-  assert.equal(await restored.locator('.task-menu button:not(:disabled)').count(), 1); assert(await restored.getByRole('menuitem', { name: 'Inspect task slack', exact: true }).isEnabled()); await restored.keyboard.press('Escape');
+  assert.equal(await restored.locator('.task-menu button:not(:disabled)').count(), 2); assert(await restored.getByRole('menuitem', { name: 'Inspect task slack', exact: true }).isEnabled()); assert(await restored.getByRole('menuitem', { name: 'Task calendar…', exact: true }).isEnabled()); await restored.keyboard.press('Escape');
   await restored.locator('.r[data-id="8"] [data-col=name]').click(); await restored.keyboard.press('Control+Enter');
   assert.equal(JSON.stringify((await data(restored)).tasks), locked);
-  await restored.locator('#calendarbtn').click(); assert(await restored.getByRole('button', { name: 'Apply calendar', exact: true }).isDisabled());
+  await restored.locator('#calendarbtn').click(); assert(await restored.getByRole('button', { name: 'Save global calendar', exact: true }).isDisabled());
   await restored.keyboard.press('Escape');
   console.log('PASS read-only insertion, conversion, drag handles and calendar restrictions');
   assert.deepEqual(errors, []);

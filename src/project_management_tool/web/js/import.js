@@ -53,18 +53,27 @@ const toDur = (v) => {
 
 /** Turn one sheet's cells into a project. Returns { ok, name, data, stats, issues, cols, missing }. */
 export function spreadsheetCalendars(sheets) {
-  const calendars = new Map();
+  const calendars = new Map(), taskCalendars = new Map();
   for (const sheet of sheets) {
-    if (sheet.rows[0]?.[0] !== 'Plan calendars' || sheet.rows[0]?.[1] !== 1) continue;
+    if (sheet.rows[0]?.[0] !== 'Plan calendars' || ![1, 2].includes(sheet.rows[0]?.[1])) continue;
     for (const row of sheet.rows.slice(2)) {
       if (!row?.[0]) continue;
-      const key = String(row[0]), workdays = String(row[1] ?? '').split(',').map(Number);
-      if (!calendars.has(key)) calendars.set(key, { workdays, holidays: [] });
-      const calendar = calendars.get(key);
+      const key = String(row[0]), taskKey = sheet.rows[0][1] === 2 && row[4] !== '' && row[4] != null ? String(row[4]) : null;
+      if (taskKey != null && !/^[1-9]\d*$/.test(taskKey)) throw new Error(`Invalid task calendar number for ${key}`);
+      if (taskKey != null && !taskCalendars.has(key)) taskCalendars.set(key, new Map());
+      const target = taskKey == null ? calendars : taskCalendars.get(key), entry = taskKey ?? key;
+      const workdays = String(row[1] ?? '').split(',').map((d) => d.trim() === '' ? NaN : Number(d));
+      if (!target.has(entry)) target.set(entry, { workdays, holidays: [] });
+      const calendar = target.get(entry);
       if (calendar.workdays.join(',') !== workdays.join(',')) throw new Error(`Conflicting calendar workdays for ${key}`);
       if (row[2]) calendar.holidays.push({ date: String(row[2]), name: String(row[3] || '') });
       const error = calendarError(calendar); if (error) throw new Error(`Invalid calendar for ${key}: ${error}`);
     }
+  }
+  for (const [key, tasks] of taskCalendars) {
+    if (!calendars.has(key)) throw new Error(`Task calendars for ${key} require a global calendar`);
+    // Metadata is carried alongside the calendar, outside its persisted shape.
+    Object.defineProperty(calendars.get(key), 'tasks', { value: tasks });
   }
   return calendars;
 }
@@ -129,6 +138,9 @@ export function mapSheet(sh, calendar) {
     }
     x.t = t;
     if (x.summary) return;
+    const taskCalendar = calendar?.tasks?.get(x.key);
+    if (taskCalendar) t.calendar = cleanCalendar(taskCalendar);
+    const taskWork = taskCalendar ? new WorkingCalendar(taskCalendar) : work;
     const typ = norm(x.g('type')), s = toDay(x.g('start'), sh.d1904), e = toDay(x.g('end'), sh.d1904), d = toDur(x.g('duration') ?? x.g('dur'));
     if (s === null) warn(x.r, `Start “${str(x.g('start'))}” is not a recognised date — ignored`);
     if (e === null) warn(x.r, `End “${str(x.g('end'))}” is not a recognised date — ignored`);
@@ -137,8 +149,8 @@ export function mapSheet(sh, calendar) {
     let start = s ?? undefined, dur = d ?? undefined;
     if (isMs) { t.ms = true; t.dur = 0; start = start ?? e ?? undefined; }
     else {
-      if (dur === undefined && start != null && e != null) { dur = work.count(start, e + 1); if (dur < 1) { warn(x.r, 'End is before Start — set to 1 day'); dur = 1; } }
-      if (start == null && e != null && dur != null) start = work.start(e + 1, Math.max(1, dur));
+      if (dur === undefined && start != null && e != null) { dur = taskWork.count(start, e + 1); if (dur < 1) { warn(x.r, 'End is before Start — set to 1 day'); dur = 1; } }
+      if (start == null && e != null && dur != null) start = taskWork.start(e + 1, Math.max(1, dur));
       if (start == null && e != null && dur == null) { start = e; dur = 1; }
       if (dur === undefined) { dur = 1; if (m.dur != null || m.end != null) warn(x.r, 'No duration — set to 1 day'); }
       t.dur = Math.max(1, dur);
@@ -173,6 +185,10 @@ export function mapSheet(sh, calendar) {
       const link = { id: `l${nl++}`, from: p.t.id, to: x.t.id, type, lag };
       links.push(link); pairs.set(key, link); (out.get(p.t.id) || out.set(p.t.id, []).get(p.t.id)).push(x.t.id);
     }
+  }
+  for (const key of calendar?.tasks?.keys() || []) {
+    const matches = recs.filter((x) => x.key.toLowerCase() === key.toLowerCase());
+    if (matches.length !== 1 || matches[0].summary) err(`Task calendar #${key} does not identify a unique task or milestone`);
   }
   const tasks = recs.map((x) => x.t);
   const stats = { tasks: tasks.filter((t, i) => !t.ms && !recs[i].summary).length, ms: tasks.filter((t, i) => t.ms && !recs[i].summary).length, summaries: recs.filter((x) => x.summary).length, links: links.length, unscheduled: noStart.length, first: anchor };
@@ -254,7 +270,7 @@ export function createImport(ctx) {
           ${ws.length ? `<details class="im-warns"><summary>${ws.length} thing${ws.length === 1 ? '' : 's'} to check</summary><ul>${ws.slice(0, 60).map((x) => `<li><i>row ${x.row}</i> ${esc(x.msg)}</li>`).join('')}${ws.length > 60 ? `<li class="mut">…and ${ws.length - 60} more</li>` : ''}</ul></details>` : ''}
         </div>`;
       }).join('');
-      h += `<div class="im-foot"><span class="mut">Each ticked sheet becomes a new project tab; nothing existing is changed. Durations use the workbook’s project calendar when included, otherwise every day. Configure workdays and holidays with Calendar after import.</span><button class="primary" data-im="go"${pick.length ? '' : ' disabled'}>Import ${pick.length > 1 ? `${pick.length} projects` : 'project'}${nT ? ` · ${nT} rows` : ''}</button></div>`;
+      h += `<div class="im-foot"><span class="mut">Each ticked sheet becomes a new project tab; nothing existing is changed. Durations use task calendars when included, otherwise the project calendar or every day. Configure workdays and holidays with Calendar after import.</span><button class="primary" data-im="go"${pick.length ? '' : ' disabled'}>Import ${pick.length > 1 ? `${pick.length} projects` : 'project'}${nT ? ` · ${nT} rows` : ''}</button></div>`;
     }
     const keep = root.querySelector('details')?.open, scroll = dlg.body.scrollTop;
     setHTML(root, h);

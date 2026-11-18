@@ -29,6 +29,8 @@ Slack unit tests enumerate working-day starts with an independent daily oracle f
 
 The Python suite covers SQLite persistence, saved history, conflict handling and launcher behavior. Runtime tests validate the bundled Windows files against the recorded checksums and upstream SPDX metadata, check x64 executable headers, and verify the standard-library ZIP and isolation configuration. A Windows-only test executes the bundled interpreter and app help; the source launcher integration test uses the bundled interpreter on Windows and isolated system Python on other systems, covering paths with spaces, argument forwarding, SQLite saves and running-instance reuse. JavaScript tests cover task hierarchy and subtree movement, relationship validation, working calendars, all four dependency types, critical-path calculations, scheduling modes, project-file validation, native Save behavior and undo/redo. Targeted critical-path tests compare float against an independent exhaustive schedule oracle for mixed endpoint types, signed lags, milestones and holidays. They also verify independent/shared branches, unchanged dates/history, per-project persistence, export views and invalid/deleted/converted target fallback.
 
+`task-calendars.test.mjs` exercises independent overrides, reset and undo, the agreed Friday-to-Tuesday lag example, all four relationship types with signed lag and mixed calendars against a day-by-day scheduling/slack oracle, task/milestone combinations, date edits and group drags, storage/templates/copies/versions, format 5 including overrides found only in saved versions, Excel metadata inference, and version-difference/finish-replay attribution.
+
 ## Optional browser tests
 
 Install Playwright for development, then install its Chromium browser:
@@ -45,6 +47,7 @@ Run the interaction suites:
 ```sh
 node tests/browser-local-files.mjs
 node tests/browser-structure.mjs
+node tests/browser-task-calendars.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
@@ -61,6 +64,7 @@ All suites start their own server on an available local port, use a temporary SQ
 | `browser-local-only.mjs` | No Microsoft controls or integration/external requests, workbook owner suggestions and manual entry, inert legacy settings, editable copies of older read-only snapshots, and SQLite restoration in a fresh profile. |
 | `browser-slack.mjs` | Total/free slack cells and keyboard inspection, latest dates and limiting successors, milestone scope and summaries, Off/Selected/All overlays, Fit bounds, passive slack tails during move/resize/cancel/undo, unchanged project data, SQLite preference restoration across profiles, Excel values and re-import, PDF columns/options/download, read-only inspection, narrow dialog layout, and row/tail alignment, working-calendar tail end plus screenshots at 100%, 150% and 200% device scaling in both densities. |
 | `browser-diagnostics.mjs` | Bottom-bar Log clicks, JSON downloads, browser/runtime metadata, cookie/storage checks, errors and request metadata, secret/project-content exclusion, retention through refresh, keyboard isolation, narrow footer, and startup failure/recovery for a blocked main module, missing dependency, invalid MIME type, syntax error and missing export. Failure checks verify the error banner, both Log entry points, import rejection details, resource status, unchanged saved workbook and successful Reload after repair. |
+| `browser-task-calendars.mjs` | Task and Gantt context menus, summary exclusion, shared overlay draft/validation/preview/apply/cancel, receiver-calendar scheduling, purple markers, Global/Task calendars tabs with override-only rows, holiday details, Edit and reset preview, undo/redo, global independence, real XLSX bytes and `.plan` round-trips, keyboard tabs, reload and fresh-profile SQLite restoration, read-only calendar inspection, and laptop layouts at 1366×768 and 1440×900. Layout checks measure unobstructed actions and visible preview feedback for global, new/existing task, long-preview, reset and returned-draft states, with long names and nine holidays. Holiday lists and previews have separate scroll limits; every changed row is listed and the final row is reachable. Returning from reset preserves unsaved weekdays/holidays and leaves saved data unchanged. |
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
 | `browser-fit.mjs` | Measured Fit label bounds, start-to-start elbows and connection handles beside earliest milestones in both densities, 6px sheet/Gantt scrollbars, single-row responsive toolbar and accessible icon actions, Compact/Adaptive density selection and Auto-schedule staying on the first row in a 789px timeline pane, full switch labels at 125–200% zoom and narrow pane splits, sheet/Gantt alignment, adaptive density on resize/collapse, scheduling actions and sheet-only badges, undo/redo, saving an active edit, connected file reuse after refresh and Save As; milestone critical-path selection/clearing in the chooser and context menus, scoped bars/float with unchanged dates, selected-target toolbar layout, SQLite restoration across refresh and a fresh browser profile, target labels and calculated critical/float values in PDF/Excel exports, and Excel re-import without extra task rows. |
 
@@ -74,6 +78,7 @@ For example, in PowerShell:
 $env:PYTHON = "python"
 $env:PLAYWRIGHT_CHROMIUM = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 node tests/browser-structure.mjs
+node tests/browser-task-calendars.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
@@ -88,13 +93,14 @@ Display scaling changes the browser's device pixel ratio; this is separate from 
 
 ### Optional screenshots
 
-By default, screenshots are written inside the suite's temporary directory and removed during cleanup. To keep screenshots for review, set `PLAN_TEST_ARTIFACTS` to a directory outside the checkout. The structure, fit, slack and versions suites create separate `structure/`, `fit/`, `slack/` and `versions/` subdirectories there, including a failure screenshot when possible. The diagnostics suite writes `diagnostics-report.json` and a narrow `startup-failure.png` directly into the chosen directory.
+By default, screenshots are written inside the suite's temporary directory and removed during cleanup. To keep screenshots for review, set `PLAN_TEST_ARTIFACTS` to a directory outside the checkout. The task-calendars, structure, fit, slack and versions suites create separate `task-calendars/`, `structure/`, `fit/`, `slack/` and `versions/` subdirectories there, including a failure screenshot when possible. The diagnostics suite writes `diagnostics-report.json` and a narrow `startup-failure.png` directly into the chosen directory.
 
 For example, in PowerShell:
 
 ```powershell
 $env:PLAN_TEST_ARTIFACTS = Join-Path $env:TEMP "plan-browser-results"
 node tests/browser-structure.mjs
+node tests/browser-task-calendars.mjs
 node tests/browser-fit.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
@@ -105,6 +111,7 @@ In a POSIX shell:
 
 ```sh
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-structure.mjs
+node tests/browser-task-calendars.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-fit.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-diagnostics.mjs
 PLAN_TEST_ARTIFACTS=/tmp/plan-browser-results node tests/browser-slack.mjs

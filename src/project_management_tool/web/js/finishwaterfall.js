@@ -139,7 +139,20 @@ export function finishWaterfall(A, B) {
     const resumed = !A.auto && B.auto;
     addStep({ type: resumed ? 'scheduling' : 'residual', title: resumed ? 'Auto-schedule resumed' : 'Baseline dates require scheduling alignment', items: aligned.tasks.filter((t) => t.start !== v.byId.get(t.id).start).map((t) => ({ id: t.id, name: t.name, before: fmtDay(v.byId.get(t.id).start), after: fmtDay(t.start) })), reason: resumed ? 'Enabling Auto recalculates linked Auto tasks before the other revisions are applied.' : 'The saved baseline dates do not reproduce under its scheduling rules. This alignment is kept separate from task revisions rather than assigned to an unrelated edit.', apply() {} });
   }
-  if (JSON.stringify(A.calendar) !== JSON.stringify(B.calendar)) addStep({ type: 'calendar', title: 'Project working calendar', items: [{ name: 'Working weekdays and holidays', before: calendarLabel(A.calendar), after: calendarLabel(B.calendar) }, ...calendarItems(A.calendar, B.calendar)], reason: 'The compared calendar is applied to the baseline schedule, including its working weekdays and holidays.', apply(view) { view.calendar = clone(B.calendar); for (const t of view.tasks) t.start = new WorkingCalendar(view.calendar).next(t.start); } });
+  if (JSON.stringify(A.calendar) !== JSON.stringify(B.calendar)) addStep({ type: 'calendar', title: 'Project working calendar', items: [{ name: 'Working weekdays and holidays', before: calendarLabel(A.calendar), after: calendarLabel(B.calendar) }, ...calendarItems(A.calendar, B.calendar)], reason: 'The compared calendar is applied to the baseline schedule, including its working weekdays and holidays.', apply(view) { view.calendar = clone(B.calendar); for (const t of view.tasks) if (!t.calendar) t.start = new WorkingCalendar(view.calendar).next(t.start); } });
+  const revisedCalendars = [...topo.b].filter(([id, t]) => topo.a.has(id) && JSON.stringify(topo.a.get(id).calendar) !== JSON.stringify(t.calendar));
+  if (revisedCalendars.length) addStep({
+    type: 'calendar', title: 'Task working calendars', ids: revisedCalendars.map(([id]) => id),
+    items: revisedCalendars.map(([id, t]) => ({ id, name: t.name, before: topo.a.get(id).calendar ? calendarLabel(topo.a.get(id).calendar) : 'Global calendar', after: t.calendar ? calendarLabel(t.calendar) : 'Global calendar', details: calendarItems(topo.a.get(id).calendar || A.calendar, t.calendar || B.calendar) })).flatMap(({ details, ...item }) => [item, ...details.map((d) => ({ ...d, name: `${item.name} · ${d.name}` }))]),
+    reason: 'Task calendars replace the global weekdays and holidays. Starts on days off move forward; durations stay fixed and Auto successors recalculate using their own calendars.',
+    apply(view) {
+      for (const [id, t] of revisedCalendars) {
+        const task = view.byId.get(id);
+        if (t.calendar) task.calendar = clone(t.calendar); else delete task.calendar;
+        task.start = new WorkingCalendar(task.calendar || view.calendar).next(task.start);
+      }
+    },
+  });
   // Validate intermediate topology before replay. If components would create a temporary cycle,
   // merge the transition rather than use a partial/invalid schedule to claim an effect.
   let groups = topo.groups;

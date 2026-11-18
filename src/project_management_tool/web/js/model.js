@@ -1,5 +1,5 @@
 // Data model, scheduling engine (all 4 link types), critical path (CPM), undo/redo.
-// Durations count project working days; computed finish dates are exclusive.
+// Durations count each task’s effective working days; computed finish dates are exclusive.
 // Milestones have dur 0.
 import { appState } from './appstate.js';
 import { WorkingCalendar, cleanCalendar, calendarError } from './calendar.js';
@@ -135,7 +135,7 @@ function sanitize(d) {
     const rawDuration = Math.round(Number(r.dur));
     const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto' });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}) });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -501,41 +501,56 @@ export class Store {
     this._in = new Map(); this._out = new Map();
     for (const l of this.links) { (this._in.get(l.to) || this._in.set(l.to, []).get(l.to)).push(l); (this._out.get(l.from) || this._out.set(l.from, []).get(l.from)).push(l); }
   }
+  workFor(task) {
+    const t = typeof task === 'object' ? task : this.byId.get(task);
+    if (!t?.calendar || this.info?.get(t.id)?.summary) return this.work;
+    this._taskCalendars ??= new WeakMap();
+    if (!this._taskCalendars.has(t.calendar)) this._taskCalendars.set(t.calendar, new WorkingCalendar(t.calendar));
+    return this._taskCalendars.get(t.calendar);
+  }
   startLB(id, exclude) {
+    const work = this.workFor(id);
     let m = -Infinity;
     for (const l of this.incoming(id)) {
       if (exclude && exclude.has(l.from)) continue;
       const p = this.byId.get(l.from);
-      if (l.type === 'FS') m = Math.max(m, this.work.shift(this.work.next(this.finish(p)), l.lag));
-      else if (l.type === 'SS') m = Math.max(m, this.work.shift(p.start, l.lag));
+      if (l.type === 'FS') m = Math.max(m, work.shift(work.next(this.finish(p)), l.lag));
+      else if (l.type === 'SS') m = Math.max(m, work.shift(p.start, l.lag));
     }
     return m;
   }
   endLB(id, exclude) {
+    const work = this.workFor(id);
     let m = -Infinity;
     for (const l of this.incoming(id)) {
       if (exclude && exclude.has(l.from)) continue;
       const p = this.byId.get(l.from);
-      if (l.type === 'FF') m = Math.max(m, this.work.shiftEnd(this.finish(p), l.lag));
-      else if (l.type === 'SF') m = Math.max(m, this.work.shiftEnd(p.start, l.lag));
+      if (l.type === 'FF') m = Math.max(m, work.shiftEnd(this.finish(p), l.lag));
+      else if (l.type === 'SF') m = Math.max(m, work.shiftEnd(p.start, l.lag));
     }
     return m;
   }
-  finish(task) { return this.work.finish(task.start, task.dur); }
+  finish(task) { return this.workFor(task).finish(task.start, task.dur); }
   duration(id) { const f = this.info.get(id), t = this.byId.get(id); return f.summary ? this.work.count(f.start, f.end) : t.dur; }
-  lowerBound(id, exclude) { const t = this.byId.get(id); return Math.max(this.startLB(id, exclude), this.work.start(this.endLB(id, exclude), t.dur)); }
-  previewCalendar(value) {
-    const error = this.structureError() || calendarError(value); if (error) return { error };
+  lowerBound(id, exclude) { const t = this.byId.get(id), work = this.workFor(t); return Math.max(this.startLB(id, exclude), work.start(this.endLB(id, exclude), t.dur)); }
+  previewCalendar(value, taskId = null) {
+    const task = taskId == null ? null : this.byId.get(taskId);
+    const error = this.structureError() || (taskId != null && (!task ? 'Task no longer exists' : this.info.get(taskId).summary ? 'Summary dates come from their children' : null)) || (value == null && taskId != null ? null : calendarError(value)); if (error) return { error };
     const view = Object.create(Store.prototype);
-    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(value), work: new WorkingCalendar(value), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed) });
-    for (const task of view.tasks) if (!this.info.get(task.id).summary) task.start = view.work.next(task.start);
+    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(taskId == null ? value : this.calendar), work: new WorkingCalendar(taskId == null ? value : this.calendar), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed) });
+    if (taskId != null) {
+      const target = view.tasks.find((t) => t.id === taskId);
+      if (value == null) delete target.calendar; else target.calendar = cleanCalendar(value);
+    }
+    view.recalc();
+    for (const task of view.tasks) if (!view.info.get(task.id).summary && (taskId == null ? !task.calendar : task.id === taskId)) task.start = view.workFor(task).next(task.start);
     view.settle();
     if ([...view.info.values()].some((f) => !Number.isSafeInteger(f.end) || Math.abs(f.start) > 99999999 || Math.abs(f.end) > 99999999)) return { error: 'This calendar moves task dates outside the supported date range; shorten the affected tasks first' };
     const changes = this.tasks.filter((t) => { const before = this.info.get(t.id), after = view.info.get(t.id); return before.start !== after.start || before.end !== after.end; }).map((t) => ({ id: t.id, name: t.name, before: this.info.get(t.id), after: view.info.get(t.id) }));
     return { view, changes };
   }
-  setCalendar(value) {
-    const preview = this.previewCalendar(value); if (preview.error) return preview.error;
+  setCalendar(value, taskId = null) {
+    const preview = this.previewCalendar(value, taskId); if (preview.error) return preview.error;
     this.tx(() => { this.calendar = preview.view.calendar; this.work = preview.view.work; this.tasks = preview.view.tasks; });
     return null;
   }
@@ -555,7 +570,7 @@ export class Store {
   scheduling(id) {
     const t = this.byId.get(id);
     if (this.info.get(id)?.summary) return { mode: 'summary', mark: 'Σ', label: 'Summary', detail: 'Dates roll up from child tasks' };
-    if (t?.scheduling !== 'manual' && t?.scheduling !== 'anchor') return { mode: 'auto', mark: 'A', label: this.auto ? 'Auto' : 'Auto paused', detail: 'Earliest date from connections and the project calendar; without predecessors, keeps its starting date' + (this.auto ? '' : '; enable Auto-schedule for live updates') };
+    if (t?.scheduling !== 'manual' && t?.scheduling !== 'anchor') return { mode: 'auto', mark: 'A', label: this.auto ? 'Auto' : 'Auto paused', detail: 'Earliest date from connections and the effective task calendar; without predecessors, keeps its starting date' + (this.auto ? '' : '; enable Auto-schedule for live updates') };
     if (t?.scheduling === 'manual') return { mode: 'manual', mark: 'M', label: 'Manual', detail: 'Dates set by you; connections do not move this task' };
     return { mode: 'anchor', mark: 'D', label: 'Date anchor', detail: 'Keeps its chosen date; Auto-schedule can delay it to satisfy connections. Choose Auto-calculate to remove this date anchor.' };
   }
@@ -565,20 +580,20 @@ export class Store {
     if (!t || !f) return 'Task no longer exists';
     if (f.summary) return 'Summary dates come from their children';
     if (!['auto', 'manual', 'anchor'].includes(mode)) return 'Unknown scheduling mode';
-    const lb = this.lowerBound(id), linked = this.incoming(id).length > 0;
-    if (mode === 'auto' && linked && (!Number.isSafeInteger(lb) || Math.abs(this.work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
+    const work = this.workFor(t), lb = this.lowerBound(id), linked = this.incoming(id).length > 0;
+    if (mode === 'auto' && linked && (!Number.isSafeInteger(lb) || Math.abs(work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
     this.tx(() => {
       t.scheduling = mode;
-      if (mode === 'auto' && linked) t.start = this.work.next(lb);
+      if (mode === 'auto' && linked) t.start = work.next(lb);
     });
     return null;
   }
   propagate() {
     for (const id of this.topo()) {
-      const lb = this.lowerBound(id);
+      const work = this.workFor(id), lb = this.lowerBound(id);
       const t = this.byId.get(id);
       if (t.scheduling === 'manual') continue;
-      t.start = this.work.next(t.scheduling !== 'anchor' && Number.isFinite(lb) ? lb : Math.max(t.start, lb));
+      t.start = work.next(t.scheduling !== 'anchor' && Number.isFinite(lb) ? lb : Math.max(t.start, lb));
     }
   }
   // Everything connected to a task: WBS ancestors / descendants and the transitive dependency chain in both directions.
@@ -602,6 +617,8 @@ export class Store {
     const info = new Map();
     for (let i = 0; i < n; i++) { let e = i; while (e + 1 < n && T[e + 1].level > T[i].level) e++; info.set(T[i].id, { i, sub: e, summary: e > i }); }
     this.info = info;
+    // A summary has no independent schedule or calendar; undo restores its former leaf state.
+    for (const t of T) if (info.get(t.id).summary) delete t.calendar;
     this.links = this.links.filter((l) => info.has(l.from) && info.has(l.to) && !info.get(l.from).summary && !info.get(l.to).summary);
     this.index();
     // summaries
@@ -631,12 +648,12 @@ export class Store {
     for (let k = order.length - 1; k >= 0; k--) {
       const t = this.byId.get(order[k]), f = info.get(t.id);
       if (scope && !scope.has(t.id)) { f.float = null; f.latestStart = f.latestEnd = null; f.totalLimiters = []; f.critical = false; continue; }
-      const boundary = target ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
+      const work = this.workFor(t), boundary = target ? target.start : t.dur ? work.start(pend, t.dur) : work.next(pend, -1);
       const outgoing = this.outgoing(t.id).filter((link) => !scope || scope.has(link.to));
-      const latest = latestAllowedStart(this.work, t, outgoing, this.byId, latestStarts, boundary, !!target && t.id !== target.id);
+      const latest = latestAllowedStart(work, t, outgoing, this.byId, latestStarts, boundary, !!target && t.id !== target.id, (task) => this.workFor(task));
       latestStarts.set(t.id, latest.start);
       f.latestStart = latest.start; f.latestEnd = latest.end; f.totalLimiters = latest.limiters;
-      f.float = this.work.count(t.start, latest.start); f.critical = f.float <= 0 && t.progress < 100;
+      f.float = work.count(t.start, latest.start); f.critical = f.float <= 0 && t.progress < 100;
     }
     // Free slack holds every immediate successor at its current dates, independently
     // of the chosen total-slack scope. Terminal tasks use the project's finish;
@@ -645,16 +662,16 @@ export class Store {
       const f = info.get(t.id);
       if (f.summary) { f.float = f.freeFloat = f.latestStart = f.latestEnd = f.freeStart = f.freeEnd = null; f.totalLimiters = f.freeLimiters = []; f.critical = false; continue; }
       const outgoing = this.outgoing(t.id), fixedTarget = target?.id === t.id;
-      const boundary = fixedTarget ? target.start : t.dur ? this.work.start(pend, t.dur) : this.work.next(pend, -1);
-      const free = latestAllowedStart(this.work, t, fixedTarget ? [] : outgoing, this.byId, null, boundary, !fixedTarget && outgoing.length > 0);
+      const work = this.workFor(t), boundary = fixedTarget ? target.start : t.dur ? work.start(pend, t.dur) : work.next(pend, -1);
+      const free = latestAllowedStart(work, t, fixedTarget ? [] : outgoing, this.byId, null, boundary, !fixedTarget && outgoing.length > 0, (task) => this.workFor(task));
       f.freeStart = free.start; f.freeEnd = free.end; f.freeLimiters = free.limiters;
-      f.freeFloat = this.work.count(t.start, free.start);
+      f.freeFloat = work.count(t.start, free.start);
     }
     // a summary is "critical" if any of its children is
     for (const t of T) { const f = info.get(t.id); if (f.summary) for (let j = f.i + 1; j <= f.sub; j++) if (info.get(T[j].id).critical) { f.critical = true; break; } }
     for (const l of this.links) {
-      const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = this.finish(p), se = this.finish(s);
-      l.slack = l.type === 'FS' ? s.start - this.work.shift(this.work.next(pe), l.lag) : l.type === 'SS' ? s.start - this.work.shift(p.start, l.lag) : l.type === 'FF' ? se - this.work.shiftEnd(pe, l.lag) : se - this.work.shiftEnd(p.start, l.lag);
+      const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = this.finish(p), se = this.finish(s), work = this.workFor(s);
+      l.slack = l.type === 'FS' ? s.start - work.shift(work.next(pe), l.lag) : l.type === 'SS' ? s.start - work.shift(p.start, l.lag) : l.type === 'FF' ? se - work.shiftEnd(pe, l.lag) : se - work.shiftEnd(p.start, l.lag);
       l.violated = l.slack < 0;
       l.critical = l.slack <= 0 && info.get(l.from).critical && info.get(l.to).critical;
     }
@@ -673,27 +690,27 @@ export class Store {
 
   // ---- drag primitives (call inside dragApply) ----
   dragMove(id, delta) {
-    const f = this.info.get(id);
+    const f = this.info.get(id), work = this.workFor(id);
     if (f.summary) {
       const ids = this.descLeaves(id), set = new Set(ids); let d = delta;
       if (this.auto) for (const lid of ids) if (this.byId.get(lid).scheduling === 'anchor') d = Math.max(d, this.lowerBound(lid, set) - this.byId.get(lid).start);
-      for (const lid of ids) { const t = this.byId.get(lid); if (t.scheduling === 'auto') t.scheduling = 'manual'; t.start = this.work.next(t.start + d); }
+      for (const lid of ids) { const t = this.byId.get(lid); if (t.scheduling === 'auto') t.scheduling = 'manual'; t.start = this.workFor(t).next(t.start + d); }
     } else {
       const t = this.byId.get(id); let s = t.start + delta;
       if (t.scheduling === 'auto') t.scheduling = 'manual';
       if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.lowerBound(id));
-      t.start = this.work.next(s);
+      t.start = work.next(s);
     }
   }
   dragResize(id, side, delta) {
-    const t = this.byId.get(id), end = this.finish(t);
+    const t = this.byId.get(id), work = this.workFor(t), end = this.finish(t);
     if (t.scheduling === 'auto') t.scheduling = 'manual';
     if (side === 'l') {
       let s = t.start + delta; if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.startLB(id));
-      s = Math.min(this.work.next(s), this.work.next(end - 1, -1)); t.start = s; t.dur = Math.max(1, this.work.count(s, end));
+      s = Math.min(work.next(s), work.next(end - 1, -1)); t.start = s; t.dur = Math.max(1, work.count(s, end));
     } else {
       let e = end + delta; if (this.auto && t.scheduling === 'anchor') e = Math.max(e, this.endLB(id));
-      t.dur = Math.max(1, this.work.count(t.start, e));
+      t.dur = Math.max(1, work.count(t.start, e));
     }
   }
   dragProgress(id, pct) { this.byId.get(id).progress = Math.max(0, Math.min(100, Math.round(pct))); }
@@ -844,7 +861,7 @@ export class Store {
   get rem() { return this.sheet().rem || (this.sheet().rem = cleanRem()); }
   setRem(patch) { if (this.readOnly) return; this.sheet().rem = cleanRem({ ...this.rem, ...patch }); this.save(); this.emit('meta'); }
   setCell(id, col, raw) {
-    const t = this.byId.get(id), f = this.info.get(id), v = String(raw).trim();
+    const t = this.byId.get(id), work = this.workFor(t), f = this.info.get(id), v = String(raw).trim();
     if (col === 'name') { if (!v) return 'Name cannot be empty'; this.tx(() => { t.name = v; }); return null; }
     if (col === 'owner') {
       const m = v.match(/^(.*?)\s*<([^<>]+)>$/); let name = v, email = '';
@@ -864,12 +881,12 @@ export class Store {
     if (col === 'end') {
       if (f.summary) return 'Summary dates come from their children';
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date';
-      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = this.work.next(d); } else { t.dur = Math.max(1, this.work.count(t.start, d + 1)); if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, this.work.count(t.start, this.endLB(id))); } });
+      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = work.next(d); } else { t.dur = Math.max(1, work.count(t.start, d + 1)); if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, work.count(t.start, this.endLB(id))); } });
       return null;
     }
     if (col === 'dur') {
       if (f.summary || t.ms) return 'Duration is fixed for summaries and milestones';
-      const n = parseFloat(v); if (!Number.isFinite(n) || !(n >= 1) || n > 99999999 || Math.abs(this.work.finish(t.start, Math.round(n))) > 99999999) return 'Duration must be at least 1 working day and fit within the supported date range';
+      const n = parseFloat(v); if (!Number.isFinite(n) || !(n >= 1) || n > 99999999 || Math.abs(work.finish(t.start, Math.round(n))) > 99999999) return 'Duration must be at least 1 working day and fit within the supported date range';
       this.tx(() => { t.dur = Math.round(n); }); return null;
     }
     if (col === 'progress') {

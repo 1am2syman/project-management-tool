@@ -143,7 +143,7 @@ ctx.insertTask = (ms = false, position = 'after', referenceId = ui.selId) => {
   grid.startEdit(result.id, 'name');
 };
 createTaskUI(ctx, grid);
-createCalendarUI(ctx, grid);
+ctx.calendar = createCalendarUI(ctx, grid);
 const act = {
   add: () => ctx.insertTask(),
   addms: () => ctx.insertTask(true),

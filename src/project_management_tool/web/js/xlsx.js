@@ -194,22 +194,26 @@ const PAL = ['5B7CFA', '10B981', 'F59E0B', 'EC4899', '8B5CF6', '06B6D4', 'EF4444
 
 /** projects: [{ name, store }] where store is a computed Store view. */
 export async function buildXlsx(projects) {
-  const withCalendars = projects.some((p) => p.store.calendar.workdays.length !== 7 || p.store.calendar.holidays.length);
+  const taskCalendars = projects.some((p) => p.store.tasks.some((t) => t.calendar));
+  const withCalendars = taskCalendars || projects.some((p) => p.store.calendar.workdays.length !== 7 || p.store.calendar.holidays.length);
   const S = new Styles(), sheets = [], used = new Set(withCalendars ? ['plan calendars'] : []);
   const calendars = new Sheet('Plan calendars', '64748B');
-  calendars.widths = [32, 22, 14, 40];
-  calendars.set(0, 0, 'Plan calendars', 0); calendars.set(0, 1, 1, 0);
-  ['Task sheet', 'Workdays (0=Sun)', 'Holiday date', 'Holiday name'].forEach((value, i) => calendars.set(1, i, value, 0));
+  calendars.widths = [32, 22, 14, 40, 16];
+  calendars.set(0, 0, 'Plan calendars', 0); calendars.set(0, 1, taskCalendars ? 2 : 1, 0);
+  ['Task sheet', 'Workdays (0=Sun)', 'Holiday date', 'Holiday name', 'Task # (blank=global)'].forEach((value, i) => calendars.set(1, i, value, 0));
   let calendarRow = 2;
   projects.forEach((p, i) => {
     const tab = PAL[i % PAL.length], name = safeName(p.name, used);
     sheets.push(tasksSheet(S, p.store, name, tab));
-    const calendar = p.store.calendar;
+    const addCalendar = (calendar, taskNumber = '') => {
     const holidays = calendar.holidays.length ? calendar.holidays : [{ date: '', name: '' }];
     for (const holiday of holidays) {
-      [name, calendar.workdays.join(','), holiday.date, holiday.name].forEach((value, col) => calendars.set(calendarRow, col, value, 0));
+      [name, calendar.workdays.join(','), holiday.date, holiday.name, taskNumber].forEach((value, col) => calendars.set(calendarRow, col, value, 0));
       calendarRow++;
     }
+    };
+    addCalendar(p.store.calendar);
+    p.store.tasks.forEach((t, index) => { if (t.calendar && !p.store.info.get(t.id).summary) addCalendar(t.calendar, index + 2); });
     sheets.push(ganttSheet(S, p.store, safeName(`${p.name.slice(0, 24)} Gantt`, used), tab));
   });
   if (withCalendars) sheets.push(calendars);

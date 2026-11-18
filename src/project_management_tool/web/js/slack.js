@@ -1,16 +1,16 @@
 // Invert scheduling constraints on actual working-day starts. Finish dates are exclusive.
 // This is shared by total slack (successors at their latest dates) and free slack
 // (successors fixed at their scheduled dates); endpoint differences alone are not workdays.
-export function meetsLink(work, task, start, link, successor, successorStart) {
+export function meetsLink(work, task, start, link, successor, successorStart, successorWork = work) {
   const source = link.type[0] === 'F' ? work.finish(start, task.dur) : start;
-  const required = link.type[1] === 'S' ? work.shift(source, link.lag) : work.shiftEnd(source, link.lag);
-  return required <= (link.type[1] === 'S' ? successorStart : work.finish(successorStart, successor.dur));
+  const required = link.type[1] === 'S' ? successorWork.shift(source, link.lag) : successorWork.shiftEnd(source, link.lag);
+  return required <= (link.type[1] === 'S' ? successorStart : successorWork.finish(successorStart, successor.dur));
 }
 
-export function latestAllowedStart(work, task, outgoing, byId, starts, boundary, expand) {
+export function latestAllowedStart(work, task, outgoing, byId, starts, boundary, expand, workFor = () => work) {
   const fits = (day) => outgoing.every((link) => {
     const successor = byId.get(link.to);
-    return meetsLink(work, task, work.next(day, -1), link, successor, starts?.get(link.to) ?? successor.start);
+    return meetsLink(work, task, work.next(day, -1), link, successor, starts?.get(link.to) ?? successor.start, workFor(successor));
   });
   let latest = boundary;
   // A successor constraint always provides a finite upper bound, even for SS/SF
@@ -29,7 +29,7 @@ export function latestAllowedStart(work, task, outgoing, byId, starts, boundary,
   const next = work.next(latest + 1);
   const limiters = outgoing.filter((link) => {
     const successor = byId.get(link.to);
-    return !meetsLink(work, task, next, link, successor, starts?.get(link.to) ?? successor.start);
+    return !meetsLink(work, task, next, link, successor, starts?.get(link.to) ?? successor.start, workFor(successor));
   }).map((link) => link.id);
   return { start: latest, end: work.finish(latest, task.dur), limiters };
 }

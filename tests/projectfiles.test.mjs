@@ -106,7 +106,7 @@ test('an empty project is a valid native file', () => {
 test('reject malformed, unrelated, future-version and invalid project files without modifying any app state', () => {
   const store = fixture(), good = JSON.parse(encodeProjectFile(store));
   const corruptions = [
-    (d) => { d.version = 5; }, (d) => { d.format = 'other'; },
+    (d) => { d.version = 6; }, (d) => { d.format = 'other'; },
     (d) => { delete d.project; }, (d) => { d.project.name = ''; },
     (d) => { delete d.preferences; }, (d) => { d.preferences.auto = 'true'; },
     (d) => { d.project.data.tasks = {}; }, (d) => { d.project.data.tasks[1].id = d.project.data.tasks[0].id; },

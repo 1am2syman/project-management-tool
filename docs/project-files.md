@@ -4,9 +4,9 @@ Plan's **Save** and **Save As…** commands write one project to a UTF-8 JSON fi
 
 See [the README](../README.md#project-files-save-save-as-and-open) for browser support and keyboard shortcuts.
 
-## Versions 1, 2, 3 and 4
+## Versions 1–5
 
-The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), `version: 3` (explicit task scheduling modes) and `version: 4` (saved project versions). It writes version 4 when the project has saved versions and otherwise version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2, 3 and 4 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or saved versions, or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
+The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), `version: 3` (explicit task scheduling modes), `version: 4` (saved project versions) and `version: 5` (task calendar overrides). It writes version 5 when the current plan or any saved version has task calendars, version 4 when the project has saved versions and otherwise version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2–5 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or saved versions, or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
 
 This is a complete version 3 file containing one automatic task:
 
@@ -70,7 +70,8 @@ This is a complete version 3 file containing one automatic task:
 | `tasks[].name` | Nonblank task name, at most 200 characters. |
 | `tasks[].level` | Nonnegative integer hierarchy depth. The first task has level 0; a row can be at most one level deeper than the preceding row. A task followed by deeper rows is a summary. |
 | `tasks[].start` | Integer calendar day counted from 1970-01-01. For example, 20759 means 2026-11-02. |
-| `tasks[].dur` | Integer duration in project working days (calendar days for version 1). A regular task lasts at least one working day. A milestone (`ms: true`) has duration 0. The computed finish is exclusive: one day after the last occupied workday. |
+| `tasks[].dur` | Integer duration in the task’s effective working days (calendar days for version 1). A regular task lasts at least one working day. A milestone (`ms: true`) has duration 0. The computed finish is exclusive: one day after the last occupied workday. |
+| `tasks[].calendar` | Optional complete calendar override (version 5), with the same validation as the global calendar. Absence or null means inherit global. Summary rows cannot have overrides. |
 | `tasks[].scheduling` | Optional `"auto"`, `"manual"` or `"anchor"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Anchors may be delayed but are not pulled earlier. An absent mode defaults to Auto, including in older files; enabling Auto-schedule can therefore remove existing gaps. Explicit Manual and Anchor modes are preserved. Summary dates still roll up from children. |
 | `tasks[].progress` | Integer percentage from 0 through 100. |
 | `tasks[].owner`, `tasks[].email` | Owner display name (at most 80 characters) and email address (at most 254 characters). Both can be empty strings; a nonempty email must pass the app's email validation. |
@@ -78,7 +79,7 @@ This is a complete version 3 file containing one automatic task:
 | `links` | Relationships between existing, distinct tasks. Summary endpoints and dependency cycles are rejected. |
 | `links[].id` | Unique ID such as `"l1"`: `l` followed by a positive safe integer without leading zeros. |
 | `links[].from`, `links[].to` | IDs of the predecessor and successor tasks. |
-| `links[].type`, `links[].lag` | Type: `FS`, `SS`, `FF` or `SF`. Lag is an integer number of working days in the project's calendar; negative lag is allowed. |
+| `links[].type`, `links[].lag` | Type: `FS`, `SS`, `FF` or `SF`. Lag is an integer number of working days in the receiving task’s effective calendar; negative lag is allowed. |
 | `collapsed` | Array of unique existing task IDs whose groups are collapsed. |
 | `nextId`, `nextLink` | Positive safe integer counters greater than the existing task IDs and numeric relationship IDs, respectively. |
 
@@ -88,7 +89,7 @@ The editor allows one relationship per directed task pair. Files containing lega
 
 ## Working calendars
 
-Versions 2, 3 and 4 store this object in `project.data.calendar`:
+Versions 2–5 store this object in `project.data.calendar`:
 
 ```json
 {
@@ -102,6 +103,12 @@ Versions 2, 3 and 4 store this object in `project.data.calendar`:
 `workdays` is a nonempty array of distinct weekday numbers, where 0 is Sunday and 6 is Saturday. `holidays` contains at most 10,000 distinct dates in `YYYY-MM-DD` format; each must be a real date. Holiday names are strings up to 100 characters and may be empty. Holidays exclude dates from work even if their weekday is normally working. A version 1 file may omit `calendar`, or supply all seven weekdays with no holidays. A nontrivial calendar in a version 1 file is rejected. Calendar data is validated before the model can normalize it. Calendar-aware exclusive finishes must fit inside the supported date range.
 
 The **Calendar** dialog previews date changes before applying. It preserves durations, normalizes starts on days off forward, and applies dependency bounds when auto-scheduling is enabled. Calendar changes and affected dates form one undo step. Excel exports carry the same settings in a `Plan calendars` metadata sheet; native `.plan` files carry them directly in this object.
+
+Version 5 also permits this object in `tasks[].calendar`, for regular tasks and milestones in both the live plan and saved versions. An override fully replaces global weekdays and holidays; it is not merged. Removing it restores global inheritance. Dependencies count lag using the receiving task’s calendar, while task duration, slack and date arithmetic use that task’s effective calendar. Summary spans and project-level metrics remain in global workdays. Global calendar edits leave override configurations intact, although linked tasks can still move through dependency propagation.
+
+The master dialog has **Global** and **Task calendars** tabs; the latter lists overrides only. The task context menu opens the same editor scoped to that task. **Use global** previews a reset. Converting a leaf into a summary removes its override without passing it to children; undo restores the leaf’s calendar.
+
+Excel metadata version 1 stores global calendars only. Version 2 adds a fifth column, **Task # (blank=global)**: blank identifies a project calendar; a number matches the task sheet’s **#** value, including milestones. Each holiday occupies a row with the same task number and weekdays; a calendar without holidays still has a row. Invalid calendars and unmatched or ambiguous task entries are rejected during import. Keep the metadata sheet and task identities when editing an export.
 
 ## Saved project versions
 
@@ -139,7 +146,7 @@ Both fields sit inside `project` and must appear together; version 1–3 files m
 | `versions[].at` | When the version was taken: a date-time string that JavaScript can parse. Plan writes ISO 8601 in UTC. |
 | `versions[].by` | Name of the person who took the version, at most 120 characters. Plan writes it empty; the app ignores any recorded name. |
 | `versions[].auto`, `versions[].target` | The Auto-schedule setting and critical-path milestone ID (or `null` for project completion) when the version was taken. A version is shown with the dates it was saved with. |
-| `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in version 4; collapsed groups are not saved with versions. |
+| `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in the enclosing file’s version (4 or 5); collapsed groups are not saved with versions. |
 | `nextVersion` | Positive safe integer greater than every `versions[].n`. Numbers of deleted versions are not reused. |
 
 Every saved plan is validated with the same task, relationship and calendar rules before the project opens; one invalid version rejects the whole file. Opening a file adds the project with its versions; the current plan is shown first.

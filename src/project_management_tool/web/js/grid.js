@@ -113,8 +113,9 @@ export function createGrid(ctx) {
     const dur = store.duration(t.id);
     switch (c.id) {
       case 'name':
-        cls += ' nm'; style = `padding-left:${9 + t.level * 16}px`;
+        cls += ' nm' + (t.calendar && !f.summary ? ' has-task-calendar' : ''); style = `padding-left:${9 + t.level * 16}px`;
         html = (f.summary ? `<span class="tog${store.collapsed.has(t.id) ? '' : ' open'}">▸</span>` : '<span class="tog sp"></span>') + (t.ms ? '<i class="dm"></i>' : '') + `<span class="t">${esc(t.name)}</span>` + (!f.summary ? `<span class="schedule-badge ${store.scheduling(t.id).mode}" title="${esc(store.scheduling(t.id).detail)}" aria-label="${esc(store.scheduling(t.id).label)}">${store.scheduling(t.id).mark}</span>` : '');
+        if (t.calendar && !f.summary) html += '<span class="task-calendar-marker" role="img" aria-label="Custom task calendar active" title="Custom task calendar active. Right-click → Task calendar to inspect or change it."></span>';
         break;
       case 'start': html = fmtDate(f.start); break;
       case 'end': html = fmtDate(t.ms && !f.summary ? t.start : f.end - 1); break;

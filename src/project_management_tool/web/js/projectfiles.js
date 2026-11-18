@@ -6,7 +6,7 @@ import { calendarError, WorkingCalendar } from './calendar.js';
 
 export const PROJECT_FILE_EXTENSION = '.plan';
 export const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
-const FORMAT = 'plan-project', VERSION = 4;
+const FORMAT = 'plan-project', VERSION = 5;
 const TYPES = [{ description: 'Plan project', accept: { 'application/json': [PROJECT_FILE_EXTENSION] } }];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const integer = (v, min, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -59,19 +59,24 @@ function validateReminders(r) {
 function validatePlan(d, fileVersion, where = '') {
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links)) invalid(`${where}tasks or relationships are missing.`);
   const { ids, maxId, summaries } = validateTasks(d.tasks);
+  for (const t of d.tasks) if (t.calendar != null) {
+    if (fileVersion < 5) invalid(`${where}task calendars require file version 5.`);
+    const reason = calendarError(t.calendar);
+    if (reason || summaries.has(t.id)) invalid(`${where}task ${t.id} calendar: ${reason || 'summary rows cannot have calendars'}.`);
+  }
   if (fileVersion < 3 && d.tasks.some((t) => t.scheduling != null)) invalid('explicit scheduling modes require file version 3.');
   if (fileVersion >= 2 || d.calendar != null) {
     const reason = calendarError(d.calendar); if (reason) invalid(`${where}calendar: ${reason}.`);
     if (fileVersion === 1 && (d.calendar.workdays.length !== 7 || d.calendar.holidays.length)) invalid('a working calendar requires file version 2.');
     const work = new WorkingCalendar(d.calendar);
-    if (d.tasks.some((t) => Math.abs(work.finish(t.start, t.dur)) > 99999999)) invalid(`${where}a task finish is outside the supported date range.`);
+    if (d.tasks.some((t) => Math.abs((t.calendar ? new WorkingCalendar(t.calendar) : work).finish(t.start, t.dur)) > 99999999)) invalid(`${where}a task finish is outside the supported date range.`);
   }
   const maxLink = validateLinks(d.links, ids, summaries);
   if (!integer(d.nextId, maxId + 1) || !integer(d.nextLink, maxLink + 1)) invalid(`${where}the next task or relationship ID is invalid.`);
   return ids;
 }
 
-function validateVersions(list, nextVersion) {
+function validateVersions(list, nextVersion, fileVersion) {
   if (!Array.isArray(list) || list.length > MAX_VERSIONS) invalid(`saved versions must be a list of at most ${MAX_VERSIONS}.`);
   const numbers = new Set();
   for (const v of list) {
@@ -79,7 +84,7 @@ function validateVersions(list, nextVersion) {
     const where = `version ${v.n}: `;
     if (!text(v.name, 80) || !v.name.trim() || !text(v.note, 1000) || !text(v.by, 120)) invalid(`${where}name, note or author is invalid.`);
     if (typeof v.at !== 'string' || !Number.isFinite(Date.parse(v.at)) || typeof v.auto !== 'boolean' || !(v.target === null || integer(v.target, 1))) invalid(`${where}date, scheduling or critical-path target is invalid.`);
-    validatePlan(v.plan, VERSION, where);
+    validatePlan(v.plan, fileVersion, where);
     numbers.add(v.n);
   }
   if (!integer(nextVersion, Math.max(0, ...numbers) + 1)) invalid('the next version number is invalid.');
@@ -88,7 +93,7 @@ function validateVersions(list, nextVersion) {
 // Validate before the model's forgiving storage sanitizer can discard or repair file contents.
 function validateDocument(doc) {
   if (!object(doc) || doc.format !== FORMAT) invalid('choose a .plan file saved by Plan.');
-  if (![1, 2, 3, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
+  if (![1, 2, 3, 4, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
   const p = doc.project, prefs = doc.preferences;
   if (!object(p) || !text(p.name, 60) || !p.name.trim()) invalid('the project name is missing or too long.');
   if (!object(prefs) || typeof prefs.auto !== 'boolean' || typeof prefs.critical !== 'boolean') invalid('scheduling preferences are missing.');
@@ -99,7 +104,7 @@ function validateDocument(doc) {
   validateReminders(p.rem);
   if (p.versions !== undefined || p.nextVersion !== undefined) {
     if (doc.version < 4) invalid('saved versions require file version 4.');
-    validateVersions(p.versions, p.nextVersion);
+    validateVersions(p.versions, p.nextVersion, doc.version);
   }
   return doc;
 }
@@ -120,7 +125,8 @@ export function encodeProjectFile(store) {
   const versions = store.versions(), calendar = data.calendar || { workdays: [0, 1, 2, 3, 4, 5, 6], holidays: [] };
   let version = calendar.workdays.length === 7 && !calendar.holidays.length ? 1 : 2;
   if (data.tasks.some((t) => t.scheduling)) version = 3;
-  if (versions.length) version = VERSION;
+  if (versions.length) version = 4;
+  if (data.tasks.some((t) => t.calendar) || versions.some((v) => JSON.parse(v.data).tasks.some((t) => t.calendar))) version = VERSION;
   const project = { name: sheet.name, data, rem: cleanRem(sheet.rem) };
   if (versions.length) {
     project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, plan: portablePlan(JSON.parse(v.data)) }));

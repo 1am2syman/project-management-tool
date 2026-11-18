@@ -2,6 +2,8 @@
 // or the live plan). Pure data, no DOM, so every figure can be tested independently of the UI.
 // Tasks and relationships are matched by their stable IDs; a task pair has at most one relationship.
 
+const calendarText = (calendar) => calendar ? `${calendar.workdays.map((d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]).join(', ')}; ${calendar.holidays.length ? calendar.holidays.map((h) => `${h.date}${h.name ? ' · ' + h.name : ''}`).join('; ') : 'no holidays'}` : 'Global calendar';
+
 const SCHEDULE = { auto: 'Auto', manual: 'Manual', anchor: 'Date anchor', summary: 'Summary' };
 
 // Signed working days between two finish days, counted in the compared view's calendar.
@@ -20,7 +22,7 @@ export function facts(view) {
     out.set(t.id, {
       id: t.id, name: t.name, level: t.level, order, parent: stack.at(-1)?.id ?? null, summary: f.summary, ms,
       start: f.start, finish: ms ? f.start : f.end - 1, end: f.end, dur: view.duration(t.id), progress: Math.round(f.progress),
-      owner: t.owner || '', email: t.email || '', scheduling: f.summary ? 'summary' : t.scheduling || 'auto',
+      calendar: f.summary ? null : t.calendar || null, owner: t.owner || '', email: t.email || '', scheduling: f.summary ? 'summary' : t.scheduling || 'auto',
       critical: !f.summary && !!f.critical, float: f.summary ? null : f.float,
     });
     stack.push(t);
@@ -54,6 +56,7 @@ function taskChanges(a, b) {
   if (a.summary !== b.summary) add('kind', 'Structure', a.summary ? 'Summary' : 'Task', b.summary ? 'Summary' : 'Task');
   // A summary's dates and progress roll up from its tasks; those changes are listed on the tasks themselves.
   if (a.summary && b.summary) return finishTaskChanges(a, b, add, out);
+  if (JSON.stringify(a.calendar) !== JSON.stringify(b.calendar)) add('calendar', 'Task calendar', calendarText(a.calendar), calendarText(b.calendar));
   if (a.start !== b.start) add('start', 'Start moved', a.start, b.start, 'date', { delta: b.start - a.start });
   if (a.finish !== b.finish && !b.ms) add('finish', 'Finish moved', a.finish, b.finish, 'date', { delta: b.finish - a.finish });
   if (a.dur !== b.dur && !a.ms && !b.ms) add('dur', 'Duration changed', a.dur, b.dur, 'days', { delta: b.dur - a.dur });
@@ -92,13 +95,14 @@ function slipCauses(row, B, fa, fb, linksA, calendarChanged) {
       const driving = l.slack <= 0, endpoint = l.type[0] === 'F' ? 'finish' : 'start';
       const moved = pa && pb ? pb[endpoint] - pa[endpoint] : 0;
       if (driving && moved > 0) {
-        const days = workDelta(B.work, pa[endpoint], pb[endpoint]);
+        const days = workDelta(B.workFor(b.id), pa[endpoint], pb[endpoint]);
         const delay = days ? `${days}d` : `${moved} calendar day${moved === 1 ? '' : 's'}`;
         causes.push(`Predecessor “${name(l.from)}” slipped ${delay}`);
       }
     }
   }
-  if (!causes.length && calendarChanged) causes.push('Calendar change');
+  if (JSON.stringify(a.calendar) !== JSON.stringify(b.calendar)) causes.push('Task calendar change');
+  if (!causes.length && calendarChanged && !b.calendar) causes.push('Calendar change');
   if (!causes.length && b.start !== a.start) causes.push(`Start moved ${b.start - a.start} day${Math.abs(b.start - a.start) === 1 ? '' : 's'}`);
   return causes.slice(0, 3);
 }
@@ -128,7 +132,7 @@ export function compareViews(A, B) {
       row.changes = taskChanges(a, b);
       row.status = row.changes.length ? 'changed' : 'same';
       row.startDelta = b.start - a.start; row.finishDelta = b.finish - a.finish;
-      row.finishDeltaWork = workDelta(B.work, a.finish, b.finish); row.durDelta = b.dur - a.dur;
+      row.finishDeltaWork = workDelta(B.workFor(id), a.finish, b.finish); row.durDelta = b.dur - a.dur;
     }
     rowsById.set(id, row); tasks.push(row);
   }
@@ -146,7 +150,7 @@ export function compareViews(A, B) {
   for (const row of tasks) {
     const a = row.a?.ms ? row.a : null, b = row.b?.ms ? row.b : null;
     if (!a && !b) continue;
-    const delta = a && b ? workDelta(B.work, a.start, b.start) : null;
+    const delta = a && b ? workDelta(B.workFor(row.id), a.start, b.start) : null;
     const status = !a ? 'new' : !b ? 'removed' : delta > 0 ? 'slipped' : delta < 0 ? 'early' : 'on time';
     milestones.push({ id: row.id, name: row.name, a: a?.start ?? null, b: b?.start ?? null, delta, days: a && b ? b.start - a.start : null, status, done: (b || a).progress >= 100, order: (b || a).order });
   }
@@ -187,7 +191,7 @@ export function compareViews(A, B) {
     start: { days: mb.start - ma.start },
     links, calendar, milestones, slips, earlier, critical,
     owners: [...owners.values()].sort((x, y) => y.slipped - x.slipped || y.maxSlip - x.maxSlip || x.owner.localeCompare(y.owner)),
-    counts: { added: changed.filter((r) => r.status === 'added').length, removed: changed.filter((r) => r.status === 'removed').length, changed: changed.filter((r) => r.status === 'changed').length, links: links.added.length + links.removed.length + links.changed.length, calendar: calendar.length },
+    counts: { added: changed.filter((r) => r.status === 'added').length, removed: changed.filter((r) => r.status === 'removed').length, changed: changed.filter((r) => r.status === 'changed').length, links: links.added.length + links.removed.length + links.changed.length, calendar: calendar.length + tasks.reduce((n, r) => n + r.changes.filter((c) => c.field === 'calendar').length, 0) },
   };
 }
 
@@ -238,7 +242,7 @@ export function changeCategory(row) {
   if (row.area === 'Relationship') return 'links';
   if (row.area === 'Calendar') return 'calendar';
   if (row.kind === 'added' || row.kind === 'removed') return row.kind;
-  return { start: 'dates', finish: 'dates', dur: 'duration', progress: 'progress', owner: 'owner', scheduling: 'scheduling' }[row.field] || 'structure';
+  return { start: 'dates', finish: 'dates', dur: 'duration', progress: 'progress', owner: 'owner', scheduling: 'scheduling', calendar: 'calendar' }[row.field] || 'structure';
 }
 
 export const MILESTONE_STATUS = { slipped: 'Slipped', early: 'Early', 'on time': 'On time', new: 'New', removed: 'Removed' };
