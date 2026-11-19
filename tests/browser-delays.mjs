@@ -573,6 +573,32 @@ try {
   assert.match(await pop.locator('.set-err').innerText(), /changed in another tab/i, 'Skip reason too');
   await other.close();
 
+  // F12: converting between task and milestone is a recorded move too.
+  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  for (const id of [1, 2]) if (/Not recorded/.test(await text(id, 'cause'))) { await cell(id, 'cause').dblclick(); await open(); await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' }); await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle(); }
+  const unexplainedNow = async () => { await page.locator('#analysisbtn').click(); await an.locator('#an-dmil').waitFor(); await settle(); const t = await an.locator('#an-dmil tbody tr').evaluateAll((rows) => rows.map((r) => r.textContent)); await an.locator('[data-an=close]').click(); await settle(); return t.filter((x) => /Other \/ unexplained/.test(x)); };
+  assert.deepEqual(await unexplainedNow(), [], 'nothing unexplained before the conversion');
+  await row(2).click({ button: 'right' }); await page.locator('button[data-task-action=convert]').click(); await settle();
+  assert.deepEqual(await unexplainedNow(), [], 'converting a task to a milestone is a recorded recovery, not unexplained');
+  await page.keyboard.press('Control+z'); await settle();
+  assert.deepEqual(await unexplainedNow(), [], 'and one Undo restores it');
+  const setAuto = (v) => page.evaluate((on) => { const e = document.querySelector('#optAuto'); e.checked = on; e.dispatchEvent(new Event('change', { bubbles: true })); }, v);
+  // F12: with Auto-schedule off a recorded delay stays on its task; turning Auto on again explains the catch-up downstream.
+  await setAuto(false); await settle();
+  await edit(1, 'dur', String(+(await text(1, 'dur')) + 2)); await open();
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
+  await setAuto(true); await settle();
+  assert.deepEqual(await unexplainedNow(), [], 'the catch-up after turning Auto-schedule on is explained');
+  await setAuto(false); await setAuto(true); await settle();
+  assert.deepEqual(await unexplainedNow(), [], 'and still is after turning it off and on again');
+  // F10: the short Delay log columns never break inside a word, however long the text beside them is.
+  await page.locator('#analysisbtn').click(); await an.locator('#an-dlog').waitFor(); await settle();
+  const white = await an.locator('#an-dlog tbody tr').first().locator('td').evaluateAll((tds) => tds.map((td) => getComputedStyle(td).whiteSpace));
+  assert.deepEqual([white[0], white[2], white[3], white[4]], ['nowrap', 'nowrap', 'nowrap', 'nowrap'], `Date, Type, Kind and Days stay on one line: ${white}`);
+  const heights = await an.locator('#an-dlog tbody tr td:nth-child(3)').evaluateAll((tds) => tds.map((td) => td.getBoundingClientRect().height));
+  assert(heights.every((h) => h < 60), `the Type cells stay one line high: ${heights}`);
+  await an.locator('[data-an=close]').click(); await settle();
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');
 } catch (error) {

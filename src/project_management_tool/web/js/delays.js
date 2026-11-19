@@ -522,12 +522,52 @@ export function record(store, id, pre, entry, { anchor = false, link = false } =
   });
   return null;
 }
+// A task became a milestone, so it is a new place where delay is measured. Delays recorded before only know the milestones that existed
+// then: give each the effect it has here (its own days at the task itself, its days downstream of it) so nothing is "unexplained".
+export function addTarget(store, id) {
+  const t = store.byId.get(id); if (!t?.ms) return;
+  const reaches = (from) => { const seen = new Set([from]), q = [from]; for (let i = 0; i < q.length; i++) { if (q[i] === id) return true; for (const l of store.outgoing(q[i])) if (!seen.has(l.to)) { seen.add(l.to); q.push(l.to); } } return false; };
+  store.amend(() => {
+    for (const e of store.log) {
+      if (e.type !== 'delay' || e.days <= 0 || !e.eff || e.eff[id] != null || !reaches(e.taskId)) continue;
+      e.eff[id] = e.days;
+    }
+  });
+}
+// Auto-schedule turned back on: tasks that waited catch up with the delays recorded while it was off. Each milestone's extra days are
+// attributed to the recorded delays upstream of it (newest first, no entry beyond its own days), so they are explained, not "unexplained".
+export function catchUp(store, pre) {
+  const gain = {};
+  for (const tg of targets(store)) { const d = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0; if (d > 0) gain[tg.id] = d; }
+  if (!Object.keys(gain).length) return null;
+  const reaches = (from, to) => {
+    if (to === 'end') return true;
+    const seen = new Set([from]), q = [from];
+    for (let i = 0; i < q.length; i++) { if (q[i] === to) return true; for (const l of store.outgoing(q[i])) if (!seen.has(l.to)) { seen.add(l.to); q.push(l.to); } }
+    return false;
+  };
+  store.amend(() => {
+    for (const [k, d] of Object.entries(gain)) {
+      let left = d; const key = k === 'end' ? k : +k;
+      for (const e of [...store.log].reverse()) {
+        if (left <= 0) break;
+        if (e.type !== 'delay' || e.days <= 0 || !e.eff || !reaches(e.taskId, key)) continue;
+        const room = e.days - (e.eff[k] || 0), take = Math.min(room, left);
+        if (take > 0) { e.eff[k] = (e.eff[k] || 0) + take; left -= take; }
+      }
+    }
+  });
+  return gain;
+}
 // The own variance of a task that no delay entry accounts for (an edit made in a tab that could not record it, a moved calendar...).
 export const unrecordedDays = (s, id) => { const r = row(s, id); if (!r || r.summary || r.own <= 0) return 0; return Math.max(0, r.own - entriesOf(s, id).reduce((n, e) => n + e.days, 0)); };
 // Record that variance now. It is replayed (the task's days taken off) to find its effect on the milestones, as entries without a stored effect are.
 export function recordUnrecorded(store, id, entry) {
   const t = store.byId.get(id), days = unrecordedDays(store, id); if (!t || !days) return 'No unrecorded delay at this task';
   store.tx(() => push(store, { type: 'delay', taskId: id, taskName: t.name, days, op: 'finish', kind: KINDS.includes(entry.kind) ? entry.kind : 'Overrun', cause: entry.cause || null, party: String(entry.party || '').trim(), note: entry.note || '' }));
+  // Fix its effect on every milestone now (by replaying it once), so later structure changes cannot lose it.
+  const e = store.log.at(-1), hit = changeEffects(store).list.find((x) => x.entry === e);
+  if (hit) store.amend(() => { e.eff = Object.fromEntries(Object.entries(hit.effects).filter(([, v]) => v)); });
   return null;
 }
 // An edit moved an agreed task without opening the record popover: it finished earlier (a recovery, negative days), or later but still

@@ -339,7 +339,12 @@ export class Store {
     this.persist?.(this.savedState());
   }
   resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
-  setPref(k, v) { this[k] = v; if (k === 'auto' && v) this.tx(() => {}); this.save(); this.emit(); }
+  setPref(k, v) {
+    const catchUp = k === 'auto' && v && !this.auto, pre = catchUp ? this.hook?.before() ?? null : null;
+    this[k] = v; if (k === 'auto' && v) this.tx(() => {});
+    if (catchUp) this.hook?.after({ id: null, kind: 'auto', pre }); // tasks that waited while Auto-schedule was off catch up now
+    this.save(); this.emit();
+  }
 
   criticalTarget() {
     const id = this.preview ? this.preview.target : this.wb ? this.criticalTargets?.[this.wb.active] : this.criticalTargetId;
@@ -877,7 +882,9 @@ export class Store {
     if (info.summary) return 'A cascade with child tasks cannot be converted to a milestone';
     if (typeof milestone !== 'boolean') return 'Unknown task type';
     if (task.ms === milestone) return null;
+    const pre = this.hook?.before() ?? null; // a conversion moves the finish like a duration edit: later asks why, earlier is a recovery
     this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; });
+    this.hook?.after({ id, kind: 'kind', pre });
     return null;
   }
   removeRows(id) { const f = this.info.get(id); const gone = new Set(this.tasks.slice(f.i, f.sub + 1).map((t) => t.id)); this.tasks.splice(f.i, f.sub - f.i + 1); this.links = this.links.filter((l) => !gone.has(l.from) && !gone.has(l.to)); }

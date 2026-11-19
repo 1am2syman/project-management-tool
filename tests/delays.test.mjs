@@ -679,6 +679,7 @@ function chainPlan() {
 const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 2 ** 32; };
 // What the record popover does after an edit: later than agreed -> record (delay or revision); earlier -> recovery.
 function afterEdit(s, id, kind, pre, roll) {
+  if (kind === 'kind') { dl.addTarget(s, id); kind = 'dur'; }
   let target = id;
   if (kind === 'link') { target = null; for (const t of dl.leaves(s)) if (t.agr && pre.fins.has(t.id) && dl.fin(s, t.id) > pre.fins.get(t.id) && dl.fin(s, t.id) > t.agr.f) { target = t.id; break; } if (target == null) { dl.recover(s, id, pre); return 'none'; } }
   const t = s.byId.get(target), a = t?.agr; if (!a) return 'none';
@@ -795,4 +796,44 @@ test('a shortened task that goes back to its agreed length leaves no log row and
   assert.deepEqual(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').map((e) => e.days), [-1]);
   assert.deepEqual(unexplained(s), []);
   s.undo(); assert.deepEqual(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').map((e) => e.days), [-2]);
+});
+
+// ---- F12: task <-> milestone conversion and Auto-schedule back on ----
+test('converting an agreed task to a milestone is a recovery, and a milestone to a task asks why (F12)', () => {
+  const s = chainPlan(), calls = []; dl.agreeBaseline(s);
+  s.hook = { before: () => dl.snapshotBefore(s), after: (e) => calls.push(e) };
+  assert.equal(s.setTaskKind(3, true), null);            // A3 (3 days) becomes a milestone: finishes earlier
+  assert.deepEqual(calls.map((c) => [c.kind, c.id]), [['kind', 3]]);
+  assert.equal(afterEdit(s, 3, 'kind', calls[0].pre, () => 0.5), 'recovery');
+  assert.deepEqual(unexplained(s), [], 'the shorter finish is a recovery, not unexplained');
+  assert.ok(dl.explainSteps(s, loadCauses(), 4).steps.some((x) => /Recovered/.test(x.title)));
+  calls.length = 0;
+  assert.equal(s.setTaskKind(7, false), null);            // the Gate milestone becomes a one-day task: finishes later
+  assert.deepEqual(calls.map((c) => [c.kind, c.id]), [['kind', 7]], 'the conversion tells the hook');
+  afterEdit(s, 7, 'kind', calls[0].pre, () => 0.5);
+  assert.deepEqual(unexplained(s), [], 'whichever way the finish moved, it is explained');
+});
+
+test('turning Auto-schedule back on attributes the catch-up to the delays recorded while it was off (F12)', () => {
+  const s = chainPlan(); dl.agreeBaseline(s);
+  s.hook = { before: () => dl.snapshotBefore(s), after: (e) => { if (e.kind === 'auto') dl.catchUp(s, e.pre); } };
+  s.auto = false; s.setPref('auto', false);
+  const pre = dl.snapshotBefore(s);
+  assert.equal(s.setCell(1, 'dur', String(s.byId.get(1).dur + 2)), null);
+  assert.equal(dl.record(s, 1, pre, { type: 'delay', cause: C('Unknown'), op: 'finish' }), null);
+  s.setPref('auto', true);
+  assert.equal(dl.milestoneTable(s, loadCauses()).find((m) => m.id === 4).delay, 2);
+  assert.deepEqual(unexplained(s), [], 'the catch-up at the milestones is explained');
+  s.setPref('auto', false); s.setPref('auto', true);
+  assert.deepEqual(unexplained(s), [], 'and survives turning Auto off and on again');
+});
+
+test('a task with a recorded delay that becomes a milestone keeps its delay explained there (F12)', () => {
+  const s = chainPlan(), calls = []; dl.agreeBaseline(s);
+  assert.equal(s.setCell(2, 'dur', String(s.byId.get(2).dur + 2)), null);
+  assert.equal(dl.recordUnrecorded(s, 2, { cause: C('Unknown') }), null);
+  s.hook = { before: () => dl.snapshotBefore(s), after: (e) => calls.push(e) };
+  assert.equal(s.setTaskKind(2, true), null);
+  assert.equal(afterEdit(s, 2, 'kind', calls[0].pre, () => 0.5), 'recovery');
+  assert.deepEqual(unexplained(s), []);
 });

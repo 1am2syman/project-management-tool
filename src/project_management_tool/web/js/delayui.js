@@ -122,6 +122,8 @@ export function createDelayUI(ctx) {
   const ownUndo = () => { const n = store.undoStack.length, top = store.undoStack.at(-1); return () => { if (store.undoStack.length === n && store.undoStack.at(-1) === top) store.undo(); }; };
   function afterEdit({ id, kind, pre }) {
     if (!pre || !editable()) return;
+    if (kind === 'auto') { DL.catchUp(store, pre); return; }
+    if (kind === 'kind') { DL.addTarget(store, id); kind = 'dur'; } // a conversion is measured like a duration edit
     let target = id;
     // A link, calendar or scheduling-mode change pushes tasks without the user typing a date: offer the first agreed task it pushed past its
     // agreed date (the task whose mode was changed first), and count the move as that task's own.
