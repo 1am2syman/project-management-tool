@@ -466,6 +466,34 @@ try {
   await page.keyboard.press('Escape'); await sv.waitFor({ state: 'detached' });
   await page.setViewportSize({ width: 1920, height: 1000 }); await settle();
 
+  // ---------- edge cases: a delay on an already manual task (F1) and a delay recorded from a lag edit (F2) ----------
+  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  await cell(5, 'name').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click(); await settle();
+  await edit(5, 'pred', '4'); await settle();                                  // Test (row 4) now precedes the manual Side work, which ignores it
+  assert.equal(await pop.count(), 0, 'a link into a manual task moves nothing');
+  const sideStart = iso(B + 10);                                               // before Test finishes: a wrongly anchored task would jump behind it
+  await edit(5, 'start', sideStart); await open();
+  assert(!(await text(5, 'origin')).includes('Inherited'), `a manual task's own move is not inherited from a predecessor it ignores: ${await text(5, 'origin')}`);
+  await pop.locator('[data-skip]').click(); await pop.waitFor({ state: 'detached' }); await settle();
+  assert.equal((await data()).tasks.find((t) => t.id === 5).scheduling, 'manual', 'Record keeps a manual task manual');
+  assert((await text(5, 'start')).length && (await cell(5, 'start').textContent()).trim() !== '', 'the start is shown');
+  assert.equal(await page.evaluate(async (id) => { const s = (await (await fetch('/api/projects')).json()).state, d = s.workbook.sheets.find((x) => x.id === s.workbook.active).data; return d.tasks.find((t) => t.id === id).start; }, 5), B + 10, 'the dates are the ones that were typed');
+  assert((await text(5, 'origin')).includes('Own'), 'the move shows as Own');
+  await cell(3, 'pred').scrollIntoViewIfNeeded();
+  await edit(3, 'pred', '3+3'); await open();                                 // F2: a lag typed on Test (after Build)
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
+  assert((await text(3, 'origin')).includes('Own'), `the task where the lag was typed owns the delay: ${await text(3, 'origin')}`);
+  assert(!(await text(3, 'origin')).includes('Inherited +3') , 'and does not inherit it from Build');
+  assert((await text(3, 'cause')).includes('Client / approver') && !(await text(3, 'cause')).includes('Build'), `its Cause cell shows the cause: ${await text(3, 'cause')}`);
+  await page.locator('#analysisbtn').click(); await an.locator('.an-kpis').waitFor(); await settle();
+    const milestoneCauses = await an.locator('#an-dmil tbody tr').evaluateAll((rows) => rows.map((r) => r.textContent));
+  assert(milestoneCauses.some((t) => /Launch/.test(t) && /Client \/ approver \+/.test(t)), `the cause reaches the milestone table: ${milestoneCauses}`);
+  assert(!milestoneCauses.some((t) => /Launch|Project completion/.test(t) && /Other \/ unexplained/.test(t)), 'nothing is left unexplained for the lag delay');
+  assert(/Test · own \+3/.test(await an.locator('#an-dimp').innerText()), 'the impact grid has a row for the lag delay');
+  await an.locator('[data-an=close]').click(); await settle();
+
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');
 } catch (error) {

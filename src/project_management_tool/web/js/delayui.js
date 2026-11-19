@@ -125,11 +125,11 @@ export function createDelayUI(ctx) {
     const t = store.byId.get(target), a = t?.agr;
     if (!t || !a || store.info.get(target).summary) return;
     const old = pre.fins.get(target), now = DL.fin(store, target);
-    if (old == null || !(now > a.f) || !(now > old)) return;
+    if (old == null || !(now > a.f) || !(now > old)) { DL.recover(store, target, pre); return; }
     let pushed = 0;
     for (const k of DL.leaves(store)) if (k.id !== target && k.agr && pre.fins.has(k.id) && DL.fin(store, k.id) > pre.fins.get(k.id)) pushed++;
     const op = kind === 'start' || kind === 'move' || kind === 'link' || t.ms ? 'start' : 'finish';
-    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && kind !== 'link', undo: ownUndo() });
+    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && kind !== 'link', link: kind === 'link', undo: ownUndo() });
   }
   api.openOverdue = (id) => {
     if (!editable()) return;
@@ -175,7 +175,7 @@ export function createDelayUI(ctx) {
         const e = store.applyCell(o.id, 'end', fmtISO(d)); if (e) return err(e);
         o.now = DL.fin(store, o.id);
       }
-      const e = DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor });
+      const e = DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor, link: !!o.link });
       if (e) return err(e);
       closePop();
       ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d ${DL.causeName(causes, entry.cause)}` : `Delay recorded without a cause · classify it from the task menu`);

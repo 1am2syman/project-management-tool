@@ -36,9 +36,11 @@ function validateLog(d, fileVersion, where, causeIds) {
   for (const e of log) {
     if (!object(e) || !integer(e.id, 1) || ids.has(e.id) || !LOG_TYPES.includes(e.type) || !integer(e.taskId, 0) || !text(e.taskName, 200) || !Number.isFinite(e.at) || !integer(e.days, -99999999, 99999999)) invalid(`${where}a change log entry is invalid.`);
     if (e.op != null && !['start', 'finish'].includes(e.op)) invalid(`${where}a change log entry has an invalid operation.`);
+    if (e.via != null && e.via !== 'link') invalid(`${where}a change log entry has an invalid origin.`);
     if (e.kind != null && !LOG_KINDS.includes(e.kind)) invalid(`${where}a change log entry has an invalid kind.`);
     for (const k of ['party', 'reason', 'approvedBy', 'note', 'source']) if (e[k] != null && !text(e[k], 500)) invalid(`${where}a change log entry has invalid text.`);
     if (e.eff != null && (!object(e.eff) || !Object.entries(e.eff).every(([k, v]) => (k === 'end' || /^[1-9]\d{0,15}$/.test(k)) && integer(v, -99999999, 99999999)))) invalid(`${where}a change log entry has invalid agreed-date effects.`);
+    if (e.slip != null && (!object(e.slip) || !Object.entries(e.slip).every(([k, v]) => (k === 'end' || /^[1-9]\d{0,15}$/.test(k)) && integer(v, -99999999, 99999999)))) invalid(`${where}a change log entry has invalid revision spill-over.`);
     if (e.cause != null && (typeof e.cause !== 'string' || !causeIds.has(e.cause))) invalid(`${where}a change log entry names a cause the file does not define.`);
     ids.add(e.id);
   }

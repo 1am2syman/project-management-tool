@@ -150,11 +150,13 @@ export function cleanLog(list) {
     if (e.type === 'delay') {
       x.kind = LOG_KINDS.includes(e.kind) ? e.kind : x.op === 'start' ? 'Late start' : 'Overrun';
       x.cause = e.cause ? text(e.cause, 20) || null : null; x.party = text(e.party, 80);
+      if (e.via === 'link') x.via = 'link'; // recorded after a connection edit: its effect on the milestones is stored in eff
     }
     if (e.type !== 'delay') { x.reason = text(e.reason, 500); x.approvedBy = text(e.approvedBy, 120); }
     if (e.note) x.note = text(e.note, 500);
     if (e.source) x.source = text(e.source, 20);
-    { const eff = cleanEff(e.eff); if (eff) x.eff = eff; }
+    { const slip = e.type === 'revision' ? cleanEff(e.slip) : null; if (slip) x.slip = slip; }
+    { const eff = cleanEff(e.eff); if (eff) x.eff = eff; else if (e.type === 'delay' && e.eff && typeof e.eff === 'object') x.eff = {}; } // a delay that moved no milestone still says so
     for (const k of ['from', 'to']) if (dayInt(e[k]) != null) x[k] = e[k];
     out.push(x);
   }

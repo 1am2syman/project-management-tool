@@ -599,3 +599,145 @@ test('recoveries are not unclassified delays, and a baseline saves while delays 
   assert.ok(r.version && !r.error, 'unclassified delays never block an Agreed baseline');
   assert.equal(dl.unclassifiedDelays(s).length, 1);
 });
+
+// A delay recorded after a lag edit: Joinery & finishes (13) -> Handover (14) gets +3 lag.
+function lagStory(cause) {
+  const s = demo(); dl.agreeBaseline(s);
+  const pre = dl.snapshotBefore(s), before = dl.fin(s, 14);
+  assert.equal(s.setCell(14, 'pred', '14+3'), null);
+  assert.equal(dl.fin(s, 14) - before, 3, 'the lag moves Handover');
+  assert.equal(dl.record(s, 14, pre, { type: 'delay', op: 'start', cause }, { link: true }), null);
+  return s;
+}
+
+test('a delay recorded from a lag edit is Own at that task, keeps its cause and reaches the milestone table, grid and Explain (F2)', () => {
+  const s = lagStory(C('Client / approver')), r = dl.row(s, 14);
+  assert.equal(r.v, 3); assert.equal(r.own, 3, 'the task where the lag was typed owns the delay'); assert.equal(r.inherited, 0);
+  const causes = loadCauses(), m = dl.milestoneTable(s, causes), h = m.find((x) => x.id === 14), end = m.find((x) => x.id === 'end');
+  for (const t of [h, end]) {
+    assert.deepEqual(t.causes, [{ name: 'Client / approver', days: 3 }], `${t.name}: the cause explains all of it, nothing unexplained`);
+    assert.equal(t.status, 'Late');
+  }
+  const grid = dl.impactGrid(s, causes), g = grid.rows.find((x) => x.entry.type === 'delay');
+  assert.equal(g.effects[14], 3); assert.equal(g.effects.end, 3);
+  assert.ok(grid.rows.every((x) => !/unexplained/i.test(x.label) || Object.values(x.effects).every((n) => !n)), 'no unexplained row left');
+  const x = dl.explainSteps(s, causes, 'end'), steps = JSON.stringify(x);
+  assert.ok(/Client \/ approver/.test(steps) && !/Other \/ unexplained/.test(steps), 'Explain names the cause');
+  assert.equal(dl.originOf(s, 14), 14);
+});
+
+test('a lag-edit delay survives undo, redo, reclassify and a file round trip', () => {
+  const s = lagStory(null), n = s.log.length;
+  assert.equal(s.log.at(-1).via, 'link'); assert.ok(s.log.at(-1).eff[14] === 3);
+  assert.equal(dl.reclassify(s, s.log.at(-1).id, { cause: C('Supplier / subcontractor') }), null);
+  assert.equal(dl.milestoneTable(s, loadCauses()).find((x) => x.id === 'end').causes[0].name, 'Supplier / subcontractor');
+  const back = new Store(JSON.parse(JSON.stringify({ workbook: { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'x', data: JSON.parse(s.serialize()) }] }, templates: [], preferences: {}, history: {} })));
+  assert.equal(back.log.at(-1).via, 'link'); assert.deepEqual(back.log.at(-1).eff, s.log.at(-1).eff);
+  assert.equal(dl.row(back, 14).own, 3);
+  const file = parseProjectFile(encodeProjectFile(s)); assert.ok(file);
+  assert.equal(s.log.length, n, 'reclassifying adds no entry');
+});
+
+// F1: recording a start delay on a task that was already manual keeps it manual.
+function manualStory() {
+  const s = demo();
+  s.tx(() => { const t = s.byId.get(13); t.scheduling = 'manual'; t.start = D('2026-12-14'); });
+  dl.agreeBaseline(s);
+  return s;
+}
+test('recording a delay on an already manual task keeps it manual and does not reschedule it (F1)', () => {
+  const s = manualStory(), id = 13, start = s.info.get(id).start, fin0 = dl.fin(s, id);
+  const pre = dl.snapshotBefore(s);
+  assert.equal(s.setCell(id, 'start', fd(start + 7)), null);
+  assert.equal(s.byId.get(id).scheduling, 'manual');
+  const moved = dl.fin(s, id);
+  assert.ok(dl.row(s, id).inherited === 0, 'a manual task ignores its connections, so its own move is never inherited');
+  assert.equal(dl.record(s, id, pre, { type: 'delay', op: 'start', cause: null }, { anchor: true }), null);
+  assert.equal(s.byId.get(id).scheduling, 'manual', 'still manual after Record');
+  assert.equal(dl.fin(s, id), moved, 'the dates are exactly what was typed');
+  assert.equal(s.info.get(id).start, start + 7); assert.equal(dl.fin(s, id) - fin0, 7);
+  assert.equal(dl.row(s, id).own, 7);
+});
+test('a typed start on an automatic task still becomes a date anchor', () => {
+  const s = demo(); dl.agreeBaseline(s);
+  const id = 12, pre = dl.snapshotBefore(s), start = s.info.get(id).start;
+  assert.equal(s.setCell(id, 'start', fd(start + 4)), null);
+  assert.equal(s.byId.get(id).scheduling, 'manual', 'the edit makes it manual first');
+  assert.equal(dl.record(s, id, pre, { type: 'delay', op: 'start', cause: null }, { anchor: true }), null);
+  assert.equal(s.byId.get(id).scheduling, 'anchor');
+});
+
+// ---- property-style: whatever recorded edits are made, nothing is "unexplained" ----
+function chainPlan() {
+  const T = (id, name, o = {}) => ({ id, name, level: 0, start: D('2026-11-02'), dur: 4, progress: 0, owner: '', email: '', noRem: false, ms: false, scheduling: 'auto', ...o });
+  const tasks = [T(1, 'A1'), T(2, 'A2'), T(3, 'A3', { dur: 3 }), T(4, 'Done', { ms: true, dur: 0 }), T(5, 'B1', { dur: 6 }), T(6, 'B2', { dur: 2 }), T(7, 'Gate', { ms: true, dur: 0 })];
+  const L = (id, from, to, lag = 0) => ({ id, from, to, type: 'FS', lag });
+  const links = [L('l1', 1, 2), L('l2', 2, 3), L('l3', 3, 4), L('l4', 5, 6), L('l5', 6, 7), L('l6', 2, 7)];
+  const data = { calendar: { workdays: [1, 2, 3, 4, 5], holidays: [] }, tasks, links, collapsed: [], nextId: 8, nextLink: 7 };
+  return new Store({ workbook: { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'chain', data }] }, templates: [], preferences: {}, history: {} });
+}
+const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 2 ** 32; };
+// What the record popover does after an edit: later than agreed -> record (delay or revision); earlier -> recovery.
+function afterEdit(s, id, kind, pre, roll) {
+  let target = id;
+  if (kind === 'link') { target = null; for (const t of dl.leaves(s)) if (t.agr && pre.fins.has(t.id) && dl.fin(s, t.id) > pre.fins.get(t.id) && dl.fin(s, t.id) > t.agr.f) { target = t.id; break; } if (target == null) { dl.recover(s, id, pre); return 'none'; } }
+  const t = s.byId.get(target), a = t?.agr; if (!a) return 'none';
+  const old = pre.fins.get(target), now = dl.fin(s, target);
+  if (!(now > a.f) || !(now > old)) { return dl.recover(s, target, pre) ? 'recovery' : 'none'; }
+  const op = kind === 'start' || kind === 'link' || t.ms ? 'start' : 'finish';
+  const entry = roll() < 0.25 ? { type: 'revision', reason: 'r', approvedBy: 'p', op } : { type: 'delay', cause: roll() < 0.8 ? C('Unknown') : null, op };
+  assert.equal(dl.record(s, target, pre, entry, { anchor: op === 'start' && kind !== 'link', link: kind === 'link' }), null);
+  return entry.type;
+}
+const unexplained = (s) => dl.milestoneTable(s, loadCauses()).filter((m) => m.causes.some((c) => c.name === 'Other / unexplained')).map((m) => `${m.name}: ${JSON.stringify(m.causes)}`);
+
+// One random edit; returns a description, or null when the edit was refused or did not apply.
+function randomEdit(s, roll, step) {
+  const pre = dl.snapshotBefore(s), r = roll(), ids = [1, 2, 3, 5, 6], id = ids[Math.floor(roll() * ids.length)];
+  const num = (n) => Math.floor(roll() * n);
+  if (r < 0.40) { const d = num(7) - 2; if (s.setCell(id, 'dur', String(Math.max(1, s.byId.get(id).dur + d)))) return null; return { what: `dur ${id} ${d}`, id, kind: 'dur', pre }; }
+  if (r < 0.55) { const d = num(6) - 2; if (s.setCell(id, 'start', fd(s.info.get(id).start + d))) return null; return { what: `start ${id} ${d}`, id, kind: 'start', pre }; }
+  if (r < 0.70) {
+    const to = [2, 3, 6][num(3)], from = { 2: 1, 3: 2, 6: 5 }[to], lag = num(5) - 1;
+    if (s.setCell(to, 'pred', `${from + 1}${lag ? `+${lag}` : ''}`)) return null;
+    return { what: `lag ${from}->${to} ${lag}`, id: to, kind: 'link', pre };
+  }
+  if (r < 0.80) { const d = num(5) - 1; if (s.setCell(4, 'start', fd(s.info.get(4).start + d))) return null; return { what: `gate ${d}`, id: 4, kind: 'start', pre }; }
+  if (r < 0.92) { const sc = s.snapshotAgreed(() => dl.agreeBaseline(s, { replace: true, reason: 'x', approvedBy: 'y' }), { name: `b${step}`, type: 'baseline' }); assert.ok(!sc.error, sc.error); return { what: 'baseline' }; }
+  return null; // an agreed deadline later than the plan only makes the task early against it, which is not a delay: not part of this property
+}
+test('no recorded edit sequence leaves anything unexplained at any milestone (random sequences, seeded)', () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const roll = rng(seed), s = chainPlan(), trace = []; dl.agreeBaseline(s);
+    for (let step = 0; step < 12; step++) {
+      const e = randomEdit(s, roll, step); if (!e) continue;
+      trace.push(e.pre ? `${e.what} → ${afterEdit(s, e.id, e.kind, e.pre, roll)}` : e.what);
+      assert.deepEqual(unexplained(s), [], `seed ${seed}, after ${trace.join(' | ')}\n${dl.changeEffects(s).list.map((x) => `${x.entry.id} ${x.entry.type} t${x.entry.taskId} d${x.entry.days} ${x.entry.source || ''} ${JSON.stringify(x.entry.eff || '')} fx=${JSON.stringify(x.effects)}`).join('\n')}\nmt=${JSON.stringify(dl.milestoneTable(s, loadCauses()).map((m) => [m.id, m.orig, m.cur, m.exp, m.delay, m.rev]))}`);
+    }
+  }
+});
+
+test('a shortened task, an early finish and an earlier predecessor are attributed as recoveries, not unexplained (F5)', () => {
+  const s = chainPlan(); dl.agreeBaseline(s);
+  const edit = (id, col, v, kind = 'dur') => { const pre = dl.snapshotBefore(s); assert.equal(s.setCell(id, col, v), null); return afterEdit(s, id, kind, pre, () => 0.5); };
+  assert.equal(edit(2, 'dur', String(s.byId.get(2).dur + 1)), 'delay');
+  assert.equal(edit(2, 'dur', String(s.byId.get(2).dur + 3)), 'delay');
+  const before = dl.milestoneTable(s, loadCauses()).find((m) => m.id === 4);
+  assert.equal(before.delay, 4); assert.deepEqual(unexplained(s), []);
+  assert.equal(edit(2, 'dur', String(s.byId.get(2).dur - 2)), 'recovery');
+  const m = dl.milestoneTable(s, loadCauses()).find((x) => x.id === 4);
+  assert.equal(m.delay, 2); assert.deepEqual(unexplained(s), []);
+  assert.deepEqual(m.causes.map((c) => c.name).sort(), ['Recovered', 'Unknown'].sort(), `Main causes include the recovery: ${JSON.stringify(m.causes)}`);
+  const rec = dl.explainSteps(s, loadCauses(), 4).steps.find((x) => /Recovered/.test(x.title));
+  assert.ok(rec && rec.days === -2 && rec.type === 'delay', 'Explain has a Recovered step of −2');
+  assert.ok(dl.impactGrid(s, loadCauses()).rows.some((r) => /Recovery · A2/.test(r.label) && r.effects[4] === -2), 'the Impact grid has a Recovery row');
+  assert.equal(dl.row(s, 2).own, 2); assert.deepEqual(dl.unclassifiedDelays(s), [], 'a recovery is never an unclassified delay');
+  assert.equal(dl.lastDelay(s, 2).days, 3, 'the Cause cell still shows the last real delay');
+  assert.equal(dl.delayLog(s, loadCauses()).at(-1).typeLabel, 'Recovery');
+  // finishing earlier than agreed, and an earlier predecessor
+  assert.equal(edit(2, 'dur', String(s.byId.get(2).dur - 3)), 'recovery');
+  assert.deepEqual(unexplained(s), []); assert.ok(dl.milestoneTable(s, loadCauses()).find((x) => x.id === 4).delay < 0);
+  assert.equal(edit(1, 'dur', String(s.byId.get(1).dur - 1)), 'recovery');
+  assert.deepEqual(unexplained(s), []);
+  s.undo(); assert.deepEqual(unexplained(s), []);
+});

@@ -165,6 +165,8 @@ export function pendingSource(s, id) {
 
 // ---- variance: total = revision + own + inherited + pending inclusion ----
 const entriesOf = (s, id, type = 'delay') => (s.log || []).filter((e) => e.taskId === id && e.type === type);
+// Days of delay recorded at a task after a lag or link edit: the connection did push it, but the task owns that delay.
+const carried = (s, id) => entriesOf(s, id).reduce((n, e) => n + (e.via === 'link' ? Math.max(0, e.days) : 0), 0);
 export const ownLogged = (s, id) => entriesOf(s, id).reduce((n, e) => n + Math.max(0, e.days), 0);
 // The predecessor that pushes a task: the latest-finishing one that is late or not itself agreed.
 export function sourceOf(s, id) {
@@ -182,11 +184,14 @@ export function sourceOf(s, id) {
 // earliest start its connections allow. Whatever else moved it is the task's own doing.
 function pushOf(s, id, v) {
   const t = s.byId.get(id), a = t.agr;
-  if (!a || v <= 0 || !s.incoming(id).length) return 0;
+  if (!a || v <= 0 || t.scheduling === 'manual' || !s.incoming(id).length) return 0; // a manual task ignores its connections
   const lb = s.lowerBound(id); if (!Number.isFinite(lb)) return 0;
-  const w = s.workFor(t);
-  const f = t.ms ? w.next(Math.max(a.f, lb)) : w.finish(w.next(Math.max(a.s, lb)), Math.max(1, w.count(a.s, a.f + 1))) - 1;
-  return Math.min(v, Math.max(0, wd(s, a.f, f, id)));
+  // A revision recorded at this very task moved its agreed date for its own typed change: what the predecessors push is measured from
+  // the agreed date without that shift, so an inherited delay stays inherited after the task is revised.
+  const w = s.workFor(t), shift = entriesOf(s, id, 'revision').reduce((n, e) => n + (e.source ? 0 : Math.max(0, e.days)), 0);
+  const af = w.shift(a.f, -shift), as = w.shift(a.s, -shift);
+  const f = t.ms ? w.next(Math.max(af, lb)) : w.finish(w.next(Math.max(as, lb)), Math.max(1, w.count(as, af + 1))) - 1;
+  return Math.min(v, Math.max(0, wd(s, af, f, id)));
 }
 export function row(s, id) {
   return memo(s, `row${id}`, () => {
@@ -197,7 +202,7 @@ export function row(s, id) {
     if (f.summary) own = v;
     else {
       pend = v > 0 ? Math.min(v, pendOf(s, id)) : 0;
-      inherited = Math.max(0, pushOf(s, id, v) - pend);
+      inherited = Math.max(0, pushOf(s, id, v) - pend - carried(s, id));
       own = v - inherited - pend;
       source = inherited ? sourceOf(s, id) : null;
     }
@@ -209,7 +214,7 @@ export function originOf(s, id) {
   for (let i = 0; i < 100; i++) { const r = row(s, id); if (!r || r.own > 0 || r.source == null) return id; id = r.source; }
   return id;
 }
-export const lastDelay = (s, id) => entriesOf(s, id).at(-1) || null;
+export const lastDelay = (s, id) => entriesOf(s, id).filter((e) => e.days > 0).at(-1) || null;
 
 // ---- overdue: unfinished and past its agreed (and expected) date; the app never moves anything by itself ----
 export function overdue(s, id, today = TODAY) {
@@ -258,13 +263,14 @@ export function whatIfFinish(s, id, day) {
 }
 
 // ---- effects of every recorded change on every milestone ----
-const delayEntries = (s) => (s.log || []).filter((e) => e.type === 'delay' && e.days > 0 && s.byId.has(e.taskId));
+const delayEntries = (s) => (s.log || []).filter((e) => e.type === 'delay' && (e.days > 0 || e.eff) && s.byId.has(e.taskId));
 // Delays are taken out newest first, so the effects add up exactly (telescoping): effect = date(before removal) - date(after).
 // Revisions, inclusions and omissions moved the agreed dates themselves; each entry stores that effect (entry.eff).
 export const changeEffects = (s) => memo(s, 'fx', () => {
   const ps = pendState(s), out = [];
   let cur = ps ? ps.view : s;
   for (const e of [...delayEntries(s)].reverse()) {
+    if (e.eff) { out.push({ entry: e, effects: Object.fromEntries(targets(s).map((tg) => [tg.id, e.eff?.[tg.id] ?? 0])) }); continue; }
     const next = copyView(cur, (tasks) => {
       const t = tasks.find((x) => x.id === e.taskId); if (!t) return;
       if (e.op === 'start') t.start = s.workFor(t).shift(t.start, -e.days);
@@ -275,6 +281,16 @@ export const changeEffects = (s) => memo(s, 'fx', () => {
     out.push({ entry: e, effects });
     cur = next;
   }
+  // A change that moved an agreed date without moving the schedule (an Agreed baseline or a new agreed deadline) excuses the delay
+  // recorded before it: that part of the date is now agreed, so it is counted under Revisions and no longer as delay.
+  const chrono = [...out].sort((a, b) => a.entry.id - b.entry.id);
+  for (const r of (s.log || []).filter((e) => e.type === 'revision' && e.source && e.eff)) {
+    for (const [k, v] of Object.entries(r.eff)) {
+      let left = Math.abs(v); const dir = Math.sign(v); if (!dir) continue; // agreed later absorbs earlier delay, agreed earlier absorbs earlier recovery
+      for (const x of chrono) { const n = x.effects[k]; if (x.entry.id < r.id && n * dir > 0 && left > 0) { const take = Math.min(Math.abs(n), left); x.effects = { ...x.effects, [k]: n - dir * take }; left -= take; } }
+    }
+  }
+  for (const r of (s.log || []).filter((e) => e.type === 'revision' && e.slip)) out.push({ entry: { id: r.id, type: 'delay', slipOf: r.id, taskId: r.taskId, taskName: r.taskName, days: 0, kind: 'Overrun', cause: null, party: '', eff: r.slip }, effects: Object.fromEntries(targets(s).map((tg) => [tg.id, r.slip[tg.id] ?? 0])) });
   const agreed = (s.log || []).filter((e) => e.type !== 'delay').map((entry) => ({ entry, effects: Object.fromEntries(targets(s).map((tg) => [tg.id, entry.eff?.[tg.id] ?? 0])) }));
   return { list: [...agreed, ...out.reverse()], pend: ps?.steps ?? [], base: cur };
 });
@@ -291,7 +307,7 @@ export function milestoneTable(s, causes, stars = new Set(), fx = changeEffects(
     for (const { entry, effects } of fx.list) {
       const n = effects[tg.id]; if (!n) continue;
       if (entry.type !== 'delay') continue; // causes explain the Delay column; agreed changes are in Revisions
-      const label = causeName(causes, entry.cause);
+      const label = causeText(causes, entry);
       by.set(label, (by.get(label) || 0) + n);
     }
     const explained = [...by.values()].reduce((n, d) => n + d, 0);
@@ -300,6 +316,8 @@ export function milestoneTable(s, causes, stars = new Set(), fx = changeEffects(
   }
   return rows;
 }
+// The cause column for an entry: recoveries and moves within the agreed date have no cause of their own.
+const causeText = (causes, e) => (e.days < 0 ? 'Recovered' : e.days === 0 && e.eff ? 'Within agreed date' : causeName(causes, e.cause));
 export const nameOf = (s, id) => s.byId.get(id)?.name ?? (s.log || []).find((e) => e.taskId === id)?.taskName ?? `#${id}`;
 // Names the task as well as the change, so a grid row and a waterfall step say where it happened.
 const entryLabel = (s, e) => {
@@ -307,7 +325,9 @@ const entryLabel = (s, e) => {
   if (e.type === 'revision') return `Revision · ${task}: ${e.reason || 'agreed change'}`;
   if (e.type === 'inclusion') return `Inclusion · ${task}${e.reason ? `: ${e.reason}` : ''}`;
   if (e.type === 'omission') return `Omission · ${task}${e.reason ? `: ${e.reason}` : ''}`;
-  return `${nameOf(s, e.taskId)} · own ${sign(e.days)}`;
+  if (e.slipOf) return `Revision spill-over · ${task}`;
+  if (e.days === 0 && e.eff) return `Within agreed · ${nameOf(s, e.taskId)}`;
+  return e.days < 0 ? `Recovery · ${nameOf(s, e.taskId)}` : `${nameOf(s, e.taskId)} · own ${sign(e.days)}`;
 };
 // Task × milestone: each column sums exactly to that milestone's total; the last row is whatever the log cannot explain.
 export function impactGrid(s, causes, stars = new Set()) {
@@ -333,7 +353,7 @@ export function explainSteps(s, causes, id, stars = new Set()) {
   if (m.rev !== changed) add('revision', 'Other agreed changes', m.rev - changed, { task: '', approvedBy: '', reason: '' });
   const agreedAt = at;
   let delayDays = 0;
-  for (const { entry, effects } of fx.list) if (entry.type === 'delay' && effects[id]) { add('delay', `${nameOf(s, entry.taskId)} · ${entry.kind || 'Delay'}`, effects[id], { task: nameOf(s, entry.taskId), cause: causeName(causes, entry.cause), party: entry.party || '', own: entry.days }); delayDays += effects[id]; }
+  for (const { entry, effects } of fx.list) if (entry.type === 'delay' && effects[id]) { add('delay', `${nameOf(s, entry.taskId)} · ${entry.days < 0 ? 'Recovered' : entry.days === 0 ? 'Within agreed date' : entry.kind || 'Delay'}`, effects[id], { task: nameOf(s, entry.taskId), cause: causeText(causes, entry), party: entry.party || '', own: entry.days }); delayDays += effects[id]; }
   if (m.delay !== delayDays) add('residual', 'Other / unexplained', m.delay - delayDays, { task: '', cause: '' });
   for (const p of fx.pend) if (p.effects[id]) add('pending', `Pending inclusion: ${p.name}`, p.effects[id], { task: p.name });
   return { id, name: m.name, orig: m.orig, agreed: agreedAt, exp: m.exp, total: m.total, steps, status: m.status };
@@ -360,7 +380,7 @@ export function reconcile(s) {
 }
 export function delayLog(s, causes) {
   const label = { delay: 'Delay', revision: 'Revision', inclusion: 'Inclusion', omission: 'Omission' };
-  return (s.log || []).map((e) => ({ ...e, taskName: s.byId.get(e.taskId)?.name ?? e.taskName, typeLabel: e.type === 'delay' && e.days < 0 ? 'Recovery' : label[e.type], causeLabel: e.type === 'delay' ? causeName(causes, e.cause) : '' }));
+  return (s.log || []).map((e) => ({ ...e, taskName: s.byId.get(e.taskId)?.name ?? e.taskName, typeLabel: e.type === 'delay' && e.days < 0 ? 'Recovery' : e.type === 'delay' && e.days === 0 ? 'Within agreed' : label[e.type], kind: e.type === 'delay' && e.days <= 0 ? '' : e.kind, causeLabel: e.type === 'delay' ? (e.days < 0 ? 'Recovered' : e.days === 0 ? 'Within agreed date' : causeName(causes, e.cause)) : '' }));
 }
 
 // ---- version types ----
@@ -459,7 +479,7 @@ export function agreeBaseline(store, { replace = false, reason = '', approvedBy 
 }
 // An edit just moved `id` later. `pre` is snapshotBefore() taken before it. Records a delay or a revision at that task;
 // a revision also moves the agreed dates of the tasks it pushed, so only the edited task shows variance against its new date.
-export function record(store, id, pre, entry, { anchor = false } = {}) {
+export function record(store, id, pre, entry, { anchor = false, link = false } = {}) {
   const t = store.byId.get(id), a = t?.agr; if (!a) return 'This task has no agreed date';
   if (entry.type === 'revision' && (need(entry.reason) || need(entry.approvedBy))) return 'A revision needs a reason and who approved it';
   const now = fin(store, id), from = Math.max(pre.fins.get(id) ?? now, a.f), days = Math.max(1, wd(store, from, now, id));
@@ -474,16 +494,45 @@ export function record(store, id, pre, entry, { anchor = false } = {}) {
     const e = { type: entry.type, taskId: id, taskName: t.name, days, op: entry.op === 'start' ? 'start' : 'finish', note: entry.note || '' };
     if (entry.type === 'revision') Object.assign(e, { reason: entry.reason.trim(), approvedBy: entry.approvedBy.trim() });
     else Object.assign(e, { kind: KINDS.includes(entry.kind) ? entry.kind : e.op === 'start' ? 'Late start' : 'Overrun', cause: entry.cause || null, party: String(entry.party || '').trim() });
-    if (anchor && t.scheduling === 'manual') t.scheduling = 'anchor';
+    // A typed start on a task that was automatic becomes a date anchor; a task that was already manual (or an anchor) keeps its mode.
+    if (anchor && t.scheduling === 'manual' && (pre.sched?.get(id) ?? 'auto') === 'auto') t.scheduling = 'anchor';
+    if (e.type === 'delay') {
+      // What this edit moved on every milestone and on the completion, stored with the entry. Replaying a delay later (taking its days
+      // off the task) cannot work once the task became an anchor or was bounded by a lag, so the effect is kept as it was recorded.
+      if (link) e.via = 'link'; // a lag or link edit: the connection did push the task, but the task owns that delay
+      e.eff = {};
+      for (const tg of targets(store)) { const d = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0; if (d) e.eff[tg.id] = d; }
+    }
     if (e.type === 'revision') { // the agreed date moves by the days of this change only; earlier delays on the task stay delays
       const w = store.workFor(t), ds = e.op === 'start' ? Math.max(0, wd(store, pre.starts.get(id) ?? a.s, store.info.get(id).start, id)) : 0;
       t.agr = { s: t.ms ? w.shift(a.f, days) : w.shift(a.s, ds), f: w.shift(a.f, days), o: a.o };
       for (const [k, d, dStart] of pushes) { const kw = store.workFor(k); k.agr = { s: k.ms ? kw.shift(k.agr.f, d) : kw.shift(k.agr.s, dStart), f: kw.shift(k.agr.f, d), o: k.agr.o }; }
       e.eff = effSince(store, m0);
+      // The edit moved some milestones by more (or less) than their agreed dates moved, e.g. where the agreed completion is set by another
+      // path: that difference is delay the revision caused. It is kept with the entry so it is explained rather than unexplained.
+      const slip = {};
+      for (const tg of targets(store)) {
+        const x = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0, d = x - (e.eff[tg.id] || 0);
+        if (d) slip[tg.id] = d;
+      }
+      if (Object.keys(slip).length) e.slip = slip;
     }
     push(store, e);
   });
   return null;
+}
+// An edit moved an agreed task without opening the record popover: it finished earlier (a recovery, negative days), or later but still
+// within its agreed date (0 days: it used up slack). Either way the effect on the milestones is attributed to that task and stored, so
+// it is explained instead of "unexplained". Returns the signed days, or null when nothing moved.
+export function recover(store, id, pre) {
+  const t = store.byId.get(id); if (!t?.agr || !pre || store.info.get(id).summary) return null;
+  const was = pre.fins.get(id), now = fin(store, id); if (was == null) return null;
+  const eff = {};
+  for (const tg of targets(store)) { const d = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0; if (d) eff[tg.id] = d; }
+  if (now === was && !Object.keys(eff).length) return null;
+  const days = now < was ? -Math.max(1, wd(store, now, was, id)) : 0, startMoved = store.info.get(id).start !== (pre.starts.get(id) ?? store.info.get(id).start);
+  store.amend(() => push(store, { type: 'delay', taskId: id, taskName: t.name, days, op: startMoved && now === was ? 'start' : 'finish', kind: 'Overrun', cause: null, party: '', note: '', eff }));
+  return days;
 }
 // Re-classify a recorded delay (cause, party, kind, note). One undo step.
 export function reclassify(store, entryId, patch) {
@@ -498,7 +547,7 @@ export function reclassify(store, entryId, patch) {
 }
 // Recorded delays (not recoveries) that still have no cause: the soft check when an Agreed baseline is saved.
 export const unclassifiedDelays = (s) => (s.log || []).filter((e) => e.type === 'delay' && !e.cause && e.days > 0);
-export const delaysOf = (s, taskId) => (s.log || []).filter((e) => e.type === 'delay' && e.taskId === taskId);
+export const delaysOf = (s, taskId) => (s.log || []).filter((e) => e.type === 'delay' && e.taskId === taskId && e.days > 0);
 export function agreeInclusion(store, id, { finishDay = null, reason = '', approvedBy = '' } = {}) {
   const err = store.structureError(); if (err) return err;
   const t = store.byId.get(id); if (!t?.inc) return 'This task is not a pending inclusion';
