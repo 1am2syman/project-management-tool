@@ -17,6 +17,12 @@ export const COLS = [
   { id: 'pred', letter: 'I', label: 'Depends on', w: 104, group: 'dep' },
   { id: 'owner', letter: 'J', label: 'Owner', w: 112, group: 'dep' },
   { id: 'email', letter: 'K', label: 'Email', w: 190, group: 'dep' },
+  // Delay accounting: shown once the project has agreed dates (see delayui.js colVisible)
+  { id: 'agreedO', letter: 'L', label: 'Original agreed', w: 112, group: 'dly', ctr: true, dly: true },
+  { id: 'agreed', letter: 'M', label: 'Agreed', w: 84, group: 'dly', ctr: true, dly: true },
+  { id: 'var', letter: 'N', label: 'Variance', w: 82, group: 'dly', num: true, dly: true },
+  { id: 'origin', letter: 'O', label: 'Delay origin', w: 168, group: 'dly', dly: true },
+  { id: 'cause', letter: 'P', label: 'Cause', w: 220, group: 'dly', dly: true },
 ];
 const GROUPS = [
   { id: 'task', label: 'Task' },
@@ -25,6 +31,7 @@ const GROUPS = [
   { id: 'slack', label: 'Slack · working days' },
   { id: 'trend', label: 'Trend' },
   { id: 'dep', label: 'Dependencies & team' },
+  { id: 'dly', label: 'Agreed vs expected · working days', hl: true },
 ];
 const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
 const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgba(79,102,240,${(0.05 + v * 0.62).toFixed(3)});${v > 0.62 ? 'color:#fff;font-weight:600;' : ''}`; };
@@ -64,7 +71,8 @@ export function createGrid(ctx) {
   let hidden = new Set();
   try { const sv = appState.getItem(HKEY); hidden = new Set(sv == null ? ['email'] : JSON.parse(sv)); } catch { hidden = new Set(['email']); }
   hidden.delete('name');
-  const VIS = () => COLS.filter((c) => !hidden.has(c.id));
+  const shownCol = (c) => !hidden.has(c.id) && (!c.dly || !!ctx.delay?.colVisible(c.id));
+  const VIS = () => COLS.filter(shownCol);
   const edge = (c) => {
     const g = GROUPS.find((x) => x.id === c.group); if (!g || !g.hl) return '';
     const v = VIS().filter((x) => x.group === c.group);
@@ -75,7 +83,7 @@ export function createGrid(ctx) {
   const applyTpl = () => { inner.style.setProperty('--tpl', tpl()); gx.style.setProperty('--frz', `${44 + (VIS()[0]?.w || 0) + 6}px`); inner.style.width = `${44 + VIS().reduce((a, c) => a + c.w, 0)}px`; };
 
   function renderHead() {
-    const key = `${ui.col}|${[...hidden].join(',')}`;
+    const key = `${ui.col}|${[...hidden].join(',')}|${ctx.delay?.colKey() ?? ''}`;
     if (key === headKey) return; headKey = key;
     let b = '<div class="c"></div>', ci = 2;
     for (const g of GROUPS) {
@@ -114,7 +122,7 @@ export function createGrid(ctx) {
     switch (c.id) {
       case 'name':
         cls += ' nm' + (t.calendar && !f.summary ? ' has-task-calendar' : ''); style = `padding-left:${9 + t.level * 16}px`;
-        html = (f.summary ? `<span class="tog${store.collapsed.has(t.id) ? '' : ' open'}">▸</span>` : '<span class="tog sp"></span>') + (t.ms ? '<i class="dm"></i>' : '') + `<span class="t">${esc(t.name)}</span>` + (!f.summary ? `<span class="schedule-badge ${store.scheduling(t.id).mode}" title="${esc(store.scheduling(t.id).detail)}" aria-label="${esc(store.scheduling(t.id).label)}">${store.scheduling(t.id).mark}</span>` : '');
+        html = (f.summary ? `<span class="tog${store.collapsed.has(t.id) ? '' : ' open'}">▸</span>` : '<span class="tog sp"></span>') + (t.ms ? '<i class="dm"></i>' : '') + `<span class="t">${esc(t.name)}</span>` + (ctx.delay?.nameBadges(t, f) ?? '') + (!f.summary ? `<span class="schedule-badge ${store.scheduling(t.id).mode}" title="${esc(store.scheduling(t.id).detail)}" aria-label="${esc(store.scheduling(t.id).label)}">${store.scheduling(t.id).mark}</span>` : '');
         if (t.calendar && !f.summary) html += '<span class="task-calendar-marker" role="img" aria-label="Custom task calendar active" title="Custom task calendar active. Right-click → Task calendar to inspect or change it."></span>';
         break;
       case 'start': html = fmtDate(f.start); break;
@@ -131,6 +139,7 @@ export function createGrid(ctx) {
       case 'trend': cls += ' spark'; html = spark(f); break;
       case 'pred': html = esc(store.predText(t.id)) || '<span style="color:#cbd5e1">—</span>'; break;
       case 'email': html = esc(t.email || '') || '<span style="color:#cbd5e1">—</span>'; break;
+      case 'agreedO': case 'agreed': case 'var': case 'origin': case 'cause': { const d = ctx.delay.cell(t, f, c.id); cls += d.cls; html = d.html; break; }
       case 'owner': if (t.owner) { const h = [...t.owner].reduce((a, ch) => a + ch.charCodeAt(0), 0); html = `<span class="chip"><span class="av" style="background:${AV[h % AV.length]}">${esc(t.owner.split(' ').map((w) => w[0]).join('').slice(0, 2))}</span>${esc(t.owner)}</span>`; } break;
     }
     const slack = c.id === 'float' || c.id === 'freeFloat';
@@ -178,6 +187,7 @@ export function createGrid(ctx) {
       else if (c.id === 'dur') v = pd;
       else if (c.id === 'progress') { cl += ' heat'; st = heat(allProg / 100 * 0.95 + 0.1); v = Math.round(allProg) + '%'; }
       else if (c.id === 'float') { cl += ' zero'; v = store.critCount + ' crit'; }
+      else if (c.dly) { const T = ctx.delay.total(c.id); v = T.html; cl += T.cls; }
       else if (c.id === 'owner') v = new Set(store.tasks.map((t) => t.owner).filter(Boolean)).size + ' people';
       tot += `<div class="${cl}"${st ? ` style="${st}"` : ''}>${v}</div>`;
     }
@@ -195,7 +205,7 @@ export function createGrid(ctx) {
     if (editing) return;
     if (col === 'float' || col === 'freeFloat') { if (initial == null) ctx.slack.open(id); return; }
     if (store.readOnly) { store.emit('denied'); return; }
-    const c = COLS.find((x) => x.id === col); if (!c || c.spark) return;
+    const c = COLS.find((x) => x.id === col); if (!c || c.spark || c.dly) return;
     const f = store.info.get(id);
     if (f.summary && ['end', 'dur', 'progress', 'pred'].includes(col)) { ctx.toast('Computed from child tasks'); return; }
     const el = body.querySelector(`.r[data-id="${id}"] .c[data-col="${col}"]`); if (!el) return;
@@ -295,11 +305,11 @@ export function createGrid(ctx) {
   // ---- column picker ----
   const colbtn = $('#colbtn'), colpop = $('#colpop');
   function fillColPop() {
-    const rows = COLS.map((c) => {
+    const rows = COLS.filter((c) => !c.dly || ctx.delay?.colVisible(c.id)).map((c) => {
       const locked = c.id === 'name', on = !hidden.has(c.id);
       return `<label class="ci${locked ? ' lock' : ''}"><input type="checkbox" data-c="${c.id}"${on ? ' checked' : ''}${locked ? ' disabled' : ''}><i></i><span class="cl">${c.letter}</span><span class="cn">${esc(c.label)}</span></label>`;
     }).join('');
-    setHTML(colpop, `<div class="ttl"><b>Columns</b><button data-all="1">Show all</button></div>${rows}<div class="ttl foot">${VIS().length} of ${COLS.length} shown</div>`);
+    setHTML(colpop, `<div class="ttl"><b>Columns</b><button data-all="1">Show all</button></div>${rows}<div class="ttl foot">${VIS().length} of ${COLS.filter((c) => !c.dly || ctx.delay?.colVisible(c.id)).length} shown</div>`);
   }
   function applyCols() {
     try { appState.setItem(HKEY, JSON.stringify([...hidden])); } catch { /* storage unavailable */ }

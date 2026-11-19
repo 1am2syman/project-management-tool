@@ -907,7 +907,9 @@ export class Store {
     const type = (fromEnd === 'f' ? 'F' : 'S') + (toEnd === 'f' ? 'F' : 'S');
     const err = this.canLink(from, to); if (err) return err;
     if (this.linksBetween(from, to).length) return 'A relationship already exists between these tasks';
+    const pre = this.hook?.before() ?? null;
     this.tx(() => { this.links.push({ id: 'l' + this.nextLink++, from, to, type, lag: 0 }); });
+    this.hook?.after({ id: to, kind: 'link', pre });
     return null;
   }
   updateLink(id, patch, { resolvePair = false } = {}) {
@@ -920,10 +922,12 @@ export class Store {
     if (!Number.isSafeInteger(lag)) return 'Lag must be a whole number of days';
     const err = this.canLink(link.from, link.to); if (err) return err;
     if (!resolvePair && this.linksBetween(link.from, link.to).length > 1) return 'Review the existing relationships and choose one to keep';
+    const pre = this.hook?.before() ?? null;
     this.tx(() => {
       Object.assign(link, { type, lag });
       if (resolvePair) this.links = this.links.filter((l) => l.id === id || l.from !== link.from || l.to !== link.to);
     });
+    this.hook?.after({ id: link.to, kind: 'link', pre });
     return null;
   }
   removeLink(id) { this.tx(() => { this.links = this.links.filter((l) => l.id !== id); }); }

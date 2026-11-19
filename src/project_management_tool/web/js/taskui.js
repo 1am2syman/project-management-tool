@@ -38,6 +38,7 @@ export function createTaskUI(ctx, grid) {
       html += `<div role="separator"></div>${item('Auto-calculate from connections', 'schedule-auto', modeError)}${item('Use manual dates', 'schedule-manual', modeError)}${item('Use date anchor', 'schedule-anchor', modeError)}`;
       const indentError = (dir) => { const plan = store.indentPlan(id, dir); return plan.error || store.movePlan(id, plan.targetId, plan.position).error; };
       html += `<div role="separator"></div>${item('Indent cascade', 'indent', indentError(1), 'Alt+→')}${item('Outdent cascade', 'outdent', indentError(-1), 'Alt+←')}`;
+      html += ctx.delay.menuHtml(id, item);
     }
     setHTML(menu, html); menu.hidden = false;
     menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
@@ -60,6 +61,7 @@ export function createTaskUI(ctx, grid) {
     const action = button.dataset.taskAction; closeMenu(true);
     if (action === 'calendar') { ctx.calendar.open(menuId);
     } else if (action === 'slack') { ctx.slack.open(menuId);
+    } else if (action.startsWith('dly-')) { ctx.delay.menuAction(action.slice(4), menuId);
     } else if (action.startsWith('critical-')) {
       const error = store.setCriticalTarget(action === 'critical-project' ? null : menuId); if (error) ctx.toast(error);
     } else if (action.startsWith('schedule-')) {

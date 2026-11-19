@@ -27,11 +27,11 @@ export function createVersionsUI(ctx) {
     snapBtn.disabled = !!store.stale;
     app.classList.toggle('previewing', !!v);
     banner.hidden = !v;
-    if (v && banner._key !== `${v.id}|${v.name}|${v.note}`) {
-      banner._key = `${v.id}|${v.name}|${v.note}`;
+    if (v && banner._key !== `${v.id}|${v.name}|${v.note}|${v.type}`) {
+      banner._key = `${v.id}|${v.name}|${v.note}|${v.type}`;
       const ro = store.sheet().readOnly;
       setHTML(banner, `<span class="lock"><svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>Viewing version</span>` +
-        `<span class="vb-name"><b>${esc(versionLabel(v))}</b> · saved ${esc(when(v.at))}${v.by ? ` by ${esc(v.by)}` : ''} · read-only</span>` +
+        `<span class="vb-name"><b>${esc(versionLabel(v))}</b> ${ctx.delay.typeChip(v)} · saved ${esc(when(v.at))}${v.by ? ` by ${esc(v.by)}` : ''} · read-only</span>` +
         (v.note ? `<span class="vb-note" title="${esc(v.note)}">${esc(v.note)}</span>` : '') +
         `<span class="grow"></span><button data-vb="analyze">Compare to current</button>` +
         `<button data-vb="restore"${ro ? ' disabled title="Shared read-only projects cannot be restored"' : ''}>Restore…</button>` +
@@ -46,7 +46,7 @@ export function createVersionsUI(ctx) {
     const list = store.versions(), current = store.previewing?.id || '';
     const row = (v) => {
       const m = summary(v);
-      return `<div class="vrow-wrap${v.id === current ? ' on' : ''}"><button class="vrow" role="menuitemradio" aria-checked="${v.id === current}" data-v="${esc(v.id)}"><b>${esc(versionLabel(v))}</b><span>${esc(when(v.at))}${m ? ` · finish ${esc(fmtDay(m.finish))}` : ''}${v.by ? ` · ${esc(v.by)}` : ''}</span>${v.note ? `<em>${esc(v.note)}</em>` : ''}</button>` +
+      return `<div class="vrow-wrap${v.id === current ? ' on' : ''}"><button class="vrow" role="menuitemradio" aria-checked="${v.id === current}" data-v="${esc(v.id)}"><b>${esc(versionLabel(v))}</b>${ctx.delay.typeChip(v)}<span>${esc(when(v.at))}${m ? ` · finish ${esc(fmtDay(m.finish))}` : ''}${v.by ? ` · ${esc(v.by)}` : ''}</span>${v.note ? `<em>${esc(v.note)}</em>` : ''}</button>` +
         `<button class="vx" data-edit="${esc(v.id)}" title="Rename or edit note" aria-label="Rename ${esc(versionLabel(v))}">✎</button><button class="vx del" data-del="${esc(v.id)}" title="Delete version" aria-label="Delete ${esc(versionLabel(v))}">✕</button></div>`;
     };
     setHTML(menu, `<div class="ttl">Versions · ${esc(store.sheet().name)}</div>` +
@@ -93,13 +93,17 @@ export function createVersionsUI(ctx) {
       <p class="help">Saves the current plan of <b>${esc(store.sheet().name)}</b> — tasks, dates, relationships, calendar and scheduling modes — as a read-only version you can view, restore and compare later.</p>
       ${same ? `<p class="vwarn">No changes since ${esc(versionLabel(latest))}.</p>` : ''}
       <label class="fld"><span>Version name</span><input id="vname" maxlength="80" value="${esc(`Version ${n}`)}"></label>
+      ${ctx.delay.typeFieldHtml('status', { baseline: true })}
       <label class="fld"><span>Note (optional)</span><textarea id="vnote" rows="3" maxlength="1000" placeholder="e.g. Baseline approved by the steering committee"></textarea></label>
       <p class="set-err" role="alert"></p>
       <div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-save>Save version</button></div>`);
     const body = dialog.body, name = body.querySelector('#vname'), err = body.querySelector('.set-err');
     setTimeout(() => { name.focus(); name.select(); }, 0);
+    ctx.delay.bindTypeField(body);
     const save = () => {
-      const r = store.snapshotVersion({ name: name.value, note: body.querySelector('#vnote').value, by: '' });
+      const type = ctx.delay.readType(body);
+      if (type === 'baseline') { const e = ctx.delay.agreeOnSave(body); if (e) { err.textContent = e; return; } } // the agreed dates are part of the saved plan
+      const r = store.snapshotVersion({ name: name.value, note: body.querySelector('#vnote').value, by: '', type });
       if (r.error) { err.textContent = r.error; return; }
       dialog.close(); ctx.toast(`Saved ${versionLabel(r.version)}`);
     };
@@ -111,12 +115,13 @@ export function createVersionsUI(ctx) {
     const v = store.version(vid); if (!v) return;
     const dialog = openModal(`Edit ${versionLabel(v)}`, `
       <label class="fld"><span>Version name</span><input id="vname" maxlength="80" value="${esc(v.name)}"></label>
+      ${ctx.delay.typeFieldHtml(v.type || '', { baseline: false })}
       <label class="fld"><span>Note</span><textarea id="vnote" rows="3" maxlength="1000">${esc(v.note)}</textarea></label>
       <p class="mut">Saved ${esc(when(v.at))}${v.by ? ` by ${esc(v.by)}` : ''}. The plan inside a version cannot be edited.</p>
       <p class="set-err" role="alert"></p>
       <div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-save>Save</button></div>`);
     const body = dialog.body, err = body.querySelector('.set-err');
-    const save = () => { const e = store.updateVersion(vid, { name: body.querySelector('#vname').value, note: body.querySelector('#vnote').value }); if (e) err.textContent = e; else dialog.close(); };
+    const save = () => { const e = store.updateVersion(vid, { name: body.querySelector('#vname').value, note: body.querySelector('#vnote').value, type: ctx.delay.readType(body) }); if (e) err.textContent = e; else dialog.close(); };
     body.querySelector('[data-save]').addEventListener('click', save);
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
     body.querySelector('#vname').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });

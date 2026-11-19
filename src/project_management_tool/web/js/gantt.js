@@ -215,7 +215,14 @@ export function createGantt(ctx) {
       positionBar(el, ms, x1, x2);
       el.style.top = pixel(y) + 'px';
       if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
-      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days` : ''}`;
+      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days` : ''}${ctx.delay?.tooltip(t.id) ?? ''}`;
+      { // soft shading on the task where the delay started, only for its own delay days
+        const sh = ms || f.summary ? null : ctx.delay?.shade(t.id);
+        if (sh) {
+          if (!el._shade) { el._shade = document.createElement('div'); el._shade.className = 'dly-shade'; el.appendChild(el._shade); }
+          el._shade.style.width = Math.max(2, Math.min(w, (sh.to - sh.from) * ppd)) + 'px';
+        } else if (el._shade) { el._shade.remove(); el._shade = null; }
+      }
       // Keep readable bars self-contained; only very short bars need an external label.
       const out = !f.summary && !ms && w < 80 && textW(t.name) + 16 > w;
       el._label.classList.toggle('out', out);
@@ -309,7 +316,7 @@ export function createGantt(ctx) {
     const tx = xOf(today) + ppd / 2;
     todayline.style.height = taskH + 'px';
     todayline.style.display = taskH > 0 && tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
-    renderBars(); renderLinks(); renderSlack();
+    renderBars(); renderLinks(); renderSlack(); ctx.delay?.decorate({ canvas, W, H: taskH, xOf, pixel });
     if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
     updateSeg();
   }

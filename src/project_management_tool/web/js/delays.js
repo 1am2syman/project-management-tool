@@ -74,6 +74,8 @@ export function fin(s, id) {
   for (let j = f.i + 1; j <= f.sub; j++) if (!s.info.get(s.tasks[j].id).summary) m = Math.max(m, finOf(s, s.tasks[j]));
   return m;
 }
+// The project's last day: its latest task finish or milestone date.
+export function endDay(s) { let m = -Infinity; for (const t of s.tasks) if (!s.info.get(t.id).summary) m = Math.max(m, finOf(s, t)); return m; }
 // Signed working days from finish a to finish b.
 export function wd(s, a, b, id = null) {
   if (a === b) return 0;
@@ -111,7 +113,7 @@ function agreedEnd(s) {
 export function completion(s) {
   if (!s.baselined) return null;
   const kids = leaves(s).filter((k) => k.agr); if (!kids.length) return null;
-  const f = Math.max(...kids.map((k) => k.agr.f)), o = s.agreedOrig?.end ?? Math.max(...kids.map((k) => k.agr.o)), expected = s.project.end - 1;
+  const f = Math.max(...kids.map((k) => k.agr.f)), o = s.agreedOrig?.end ?? Math.max(...kids.map((k) => k.agr.o)), expected = endDay(s);
   const pend = pendEffect(s, 'end');
   return { o, f, expected, delay: wd(s, f, expected) - pend, pend, rev: wd(s, o, f), total: wd(s, o, expected) };
 }
@@ -135,9 +137,9 @@ function copyView(s, mutate) {
   return v;
 }
 const without = (s, ids) => copyView(s, (tasks, links) => bridge(tasks, links, ids));
-const dateIn = (v, id) => (id === 'end' ? v.project.end - 1 : finOf(v, v.byId.get(id)));
+const dateIn = (v, id) => (id === 'end' ? endDay(v) : finOf(v, v.byId.get(id)));
 export const targets = (s) => [...leaves(s).filter((t) => t.ms).map((t) => ({ id: t.id, name: t.name, ms: true })), { id: 'end', name: 'Project completion', ms: false }];
-const expectedOf = (s, id) => (id === 'end' ? s.project.end - 1 : fin(s, id));
+const expectedOf = (s, id) => (id === 'end' ? endDay(s) : fin(s, id));
 const diffAt = (s, a, b, id) => (id !== 'end' && (!a.byId.has(id) || !b.byId.has(id)) ? null : wd(s, dateIn(a, id), dateIn(b, id)));
 
 // Pending inclusions are scheduled out one at a time (newest first), so each one's push on every milestone adds up exactly.
@@ -173,6 +175,7 @@ export function sourceOf(s, id) {
     if (p.agr && (e <= p.agr.f || wd(s, p.agr.f, e, l.from) <= 0)) continue;
     if (!best || e > best.e) best = { id: l.from, e };
   }
+  if (!best) for (const l of s.incoming(id)) { const e = s.byId.has(l.from) ? fin(s, l.from) : -Infinity; if (!best || e > best.e) best = { id: l.from, e }; } // pushed by a connection, not by a late predecessor
   return best?.id ?? null;
 }
 // Days its predecessors push the task past its agreed finish: the task re-scheduled with its agreed length from the
@@ -244,6 +247,14 @@ export function ganttModel(s, id) {
   }
   if (!t.ms && r.own > 0 && f.start > a.s && lastDelay(s, id)?.kind === 'Late start') out.leadIn = { from: a.s, to: f.start };
   return out;
+}
+
+// What typing a later finish for one task would do: how many agreed tasks it pushes and how far the project finish moves.
+export function whatIfFinish(s, id, day) {
+  const cf = copyView(s, (tasks) => { const x = tasks.find((q) => q.id === id); if (!x) return; if (x.ms) x.start = day; else x.dur = Math.max(1, s.workFor(x).count(x.start, day + 1)); });
+  let pushed = 0;
+  for (const k of leaves(s)) if (k.id !== id && k.agr && cf.byId.has(k.id) && fin(cf, k.id) > fin(s, k.id)) pushed++;
+  return { pushed, finish: Math.max(0, wd(s, endDay(s), endDay(cf))) };
 }
 
 // ---- effects of every recorded change on every milestone ----
@@ -350,7 +361,7 @@ export const latestBaseline = (versions) => [...versions].reverse().find((v) => 
 export function snapshotBefore(s) {
   const fins = new Map(), starts = new Map(), sched = new Map();
   for (const t of leaves(s)) { fins.set(t.id, fin(s, t.id)); starts.set(t.id, s.info.get(t.id).start); sched.set(t.id, t.scheduling); }
-  return { fins, starts, sched, end: s.project.end };
+  return { fins, starts, sched, end: endDay(s) };
 }
 // Entries are stored in the same clean shape a reload produces, so undo and a file round trip give identical data.
 const push = (store, e) => { store.log.push(...cleanLog([{ id: store.nextLog++, at: Date.now(), ...e }])); };

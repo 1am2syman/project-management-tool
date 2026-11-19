@@ -17,6 +17,7 @@ import { createImport } from './import.js';
 import { createProjectFiles } from './projectfiles.js';
 import { createPeople } from './people.js';
 import { createVersionsUI } from './versionsui.js';
+import { createDelayUI } from './delayui.js';
 import { createAnalysis } from './analysis.js';
 import { initDensity, setDensity, fitDensity, dims } from './dims.js';
 
@@ -74,6 +75,7 @@ createProjectFiles(ctx);
 createImport(ctx);
 createHistory();
 ctx.people = createPeople(ctx);
+ctx.delay = createDelayUI(ctx);
 const banner = $('#robanner');
 banner.addEventListener('click', (event) => {
   if (event.target.closest('#roCopy')) {
@@ -97,7 +99,7 @@ function status() {
   const leaves = store.tasks.filter((t) => !store.info.get(t.id).summary), ms = leaves.filter((t) => t.ms).length, P = store.project;
   const viol = store.links.filter((l) => l.violated).length;
   setHTML($('#stat'), `<span><b>${leaves.length - ms}</b> tasks · <b>${ms}</b> milestones · <b>${store.links.length}</b> links</span>` +
-    `<span>Finish <b>${fmtDate(P.end - 1)}</b> · <b>${P.end - P.start}</b> days</span>` +
+    `<span>Finish <b>${fmtDate(P.end - 1)}</b> · <b>${P.end - P.start}</b> days</span>` + ctx.delay.statusHtml() +
     `<span class="cr" title="${esc(target?.name || 'Project completion')}">Critical path${target ? ` to ${esc(target.name)}` : ' to Project completion'}: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
 }
 
@@ -109,6 +111,7 @@ function renderAll() {
   { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
   fitDensity($('#gb').clientHeight, store.rows.length);
   $('#density').value = dims.name;
+  ctx.delay.refresh();
   grid.render(); gantt.render(); status(); sheets.render(); paintReadOnly(); ctx.relationships.render(); ctx.slack.render();
   $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
@@ -151,7 +154,12 @@ const act = {
   outdent: () => { grid.commitEdit(); if (ui.selId != null) { const err = store.indent(ui.selId, -1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
   del: () => {
     if (ui.linkId) { store.removeLink(ui.linkId); ui.linkId = null; gantt.closePop(); }
-    else if (ui.selId != null) { const rows = store.rows, i = rows.findIndex((t) => t.id === ui.selId); store.deleteTask(ui.selId); const n = store.rows[Math.min(i, store.rows.length - 1)]; ui.selId = n ? n.id : null; }
+    else if (ui.selId != null) {
+      const id = ui.selId, rows = store.rows, i = rows.findIndex((t) => t.id === id);
+      const after = () => { const n = store.rows[Math.min(i, store.rows.length - 1)]; ui.selId = n ? n.id : null; };
+      // a task with an agreed date leaves the plan as an agreed omission (kept in the Delay log) or is deleted outright
+      ctx.delay.confirmDelete(id, () => { store.deleteTask(id); after(); }, after);
+    }
   },
   undo: () => store.undo(), redo: () => store.redo(),
   reset: () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) store.resetAll(); },
