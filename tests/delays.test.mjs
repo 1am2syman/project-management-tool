@@ -311,7 +311,7 @@ test('opening a file with unknown causes adds them to the list and maps known on
   for (const v of doc.project.versions || []) void v;
   openProjectFile(s, JSON.stringify(doc));
   const list = loadCauses().list, weather = list.find((c) => c.name === 'Weather');
-  assert.ok(weather); assert.equal(weather.retired, true, 'unknown causes stay out of the picker');
+  assert.ok(weather); assert.equal(weather.retired, false, 'unknown causes join the list as active');
   const causeIds = s.log.filter((e) => e.type === 'delay').map((e) => e.cause);
   assert.ok(causeIds.every((c) => list.some((x) => x.id === c)));
   assert.ok(causeIds.includes(C('Client / approver')));
@@ -351,4 +351,134 @@ test('Skip reason records an unclassified delay and the log lists every kind of 
   assert.equal(dl.reclassify(s, log[0].id, { cause: C('Resource availability'), party: 'Tom' }), null);
   assert.equal(dl.delayLog(s, loadCauses())[0].causeLabel, 'Resource availability');
   assert.equal(dl.reclassify(s, 99, {}), 'That entry no longer exists');
+});
+
+// ---- scope changes are not delay ----
+function baselined() { const s = demo(); dl.setAgreed(s, 5, dl.fin(s, 5)); dl.agreeBaseline(s); return s; }
+function insertJoineryFollower(s, dur = 4) {
+  const { id } = s.insertTask(13); s.setCell(id, 'dur', String(dur));
+  assert.equal(s.addLink(13, 'f', id, 's'), null); assert.equal(s.addLink(id, 'f', 14, 's'), null);
+  return id;
+}
+const parts = (s, id) => { const r = dl.row(s, id); return [r.own, r.inherited, r.pend, r.rev, r.total]; };
+
+test('a pending inclusion pushes later tasks without being charged as their delay', () => {
+  const s = baselined(), id = insertJoineryFollower(s);
+  assert.equal(s.byId.get(id).inc, true);
+  assert.deepEqual(parts(s, 14), [0, 0, 4, 0, 4]);
+  assert.deepEqual(parts(s, 16), [0, 0, 4, 0, 4]);
+  assert.equal(dl.ganttModel(s, 16).shade, null, 'a pushed task is not shaded');
+  assert.equal(dl.row(s, 14).pendSource, id);
+  assert.deepEqual(dl.reconcile(s), []);
+  const end = dl.milestoneTable(s, loadCauses()).find((r) => r.id === 'end');
+  assert.deepEqual([end.delay, end.pend, end.status, end.total], [0, 4, 'Pending inclusion', 4]);
+  const g = dl.impactGrid(s, loadCauses());
+  assert.deepEqual(g.rows.map((r) => [r.label, r.effects.end]), [['Pending inclusion: New task', 4]]);
+  assert.deepEqual(g.unexplained, { 5: 0, 8: 0, 14: 0, end: 0 });
+  assert.deepEqual(dl.ownerTable(s), [], 'nobody owns the pending push');
+});
+
+test('agreeing an inclusion moves the agreed dates it pushes; variance stays zero and the original completion stays', () => {
+  const s = baselined(), id = insertJoineryFollower(s), originalEnd = D('2027-01-05');
+  assert.equal(dl.agreeInclusion(s, id, { reason: 'Level 3 outlets' }), 'An agreed inclusion needs a reason and who approved it');
+  assert.equal(dl.agreeInclusion(s, id, { reason: 'Level 3 outlets', approvedBy: 'SG' }), null);
+  assert.deepEqual(parts(s, 14), [0, 0, 0, 4, 4]);
+  const c = dl.completion(s);
+  assert.deepEqual([c.o, fd(c.f), c.delay, c.rev], [originalEnd, '2027-01-09', 0, 4]);
+  const g = dl.impactGrid(s, loadCauses());
+  assert.deepEqual(g.rows.map((r) => [r.label, r.effects[14], r.effects.end]), [['Inclusion: New task', 4, 4]]);
+  assert.deepEqual(g.unexplained, { 5: 0, 8: 0, 14: 0, end: 0 });
+  const w = dl.explainSteps(s, loadCauses(), 'end');
+  assert.deepEqual(w.steps.map((x) => [x.type, x.days, x.reason, x.approvedBy]), [['inclusion', 4, 'Level 3 outlets', 'SG']]);
+  assert.equal(w.agreed, w.exp);
+  s.undo(); assert.equal(s.byId.get(id).inc, true); assert.equal(s.log.length, 0); assert.deepEqual(parts(s, 14), [0, 0, 4, 0, 4]);
+  s.redo(); assert.equal(s.byId.get(id).agr.f, dl.fin(s, id)); assert.equal(s.log.length, 1);
+});
+
+test('an inclusion that ends the project later does not move the original agreed completion', () => {
+  const s = baselined(), { id } = s.insertTask(16); s.setCell(id, 'dur', '6');
+  assert.equal(s.addLink(16, 'f', id, 's'), null);
+  assert.equal(dl.agreeInclusion(s, id, { reason: 'Extra snagging', approvedBy: 'SG' }), null);
+  const c = dl.completion(s);
+  assert.equal(c.o, D('2027-01-05')); assert.equal(c.rev, 6); assert.equal(c.delay, 0);
+  assert.equal(s.agreedOrig.end, D('2027-01-05'));
+  assert.equal(dl.agreedOf(s, 15).o, dl.agreedOf(s, 15).o); assert.equal(dl.agreedOf(s, 1).o, s.agreedOrig.sums[1]);
+  assert.equal(JSON.parse(encodeProjectFile(s)).project.data.agreedOrig.end, D('2027-01-05'));
+});
+
+test('an agreed omission pulls the agreed dates earlier with the chain kept; it is not a recovery', () => {
+  const s = baselined();
+  assert.equal(dl.omit(s, 13, { reason: 'Client dropped joinery' }), 'An agreed omission needs a reason and who approved it');
+  assert.deepEqual(dl.omitChain(s, 13), { preds: [5, 12], succs: [14] });
+  assert.equal(dl.omit(s, 13, { reason: 'Client dropped joinery', approvedBy: 'SG' }), null);
+  assert.equal(s.links.some((l) => l.from === 12 && l.to === 14), true, 'the chain is kept');
+  assert.deepEqual(parts(s, 14), [0, 0, 0, -5, -5]);
+  assert.deepEqual(parts(s, 16), [0, 0, 0, -5, -5]);
+  const c = dl.completion(s);
+  assert.deepEqual([c.o, fd(c.f), c.delay, c.rev], [D('2027-01-05'), '2026-12-31', 0, -5]);
+  const g = dl.impactGrid(s, loadCauses());
+  assert.deepEqual(g.rows.map((r) => [r.label, r.effects.end]), [['Omission: Joinery & finishes', -5]]);
+  assert.deepEqual(g.unexplained, { 5: 0, 8: 0, 14: 0, end: 0 });
+  assert.equal(dl.explainSteps(s, loadCauses(), 14).steps[0].type, 'omission');
+  s.undo(); assert.equal(s.byId.has(13), true); assert.equal(s.log.length, 0); assert.equal(s.byId.get(14).agr.f, D('2026-12-20'));
+  assert.equal(dl.omit(s, 13, { reason: 'x', approvedBy: 'y', relink: false }), null);
+  assert.equal(s.links.some((l) => l.from === 12 && l.to === 14), false);
+});
+
+test('a task pushed by a predecessor without an agreed date never shows own delay', () => {
+  const s = demo();
+  assert.equal(dl.setAgreed(s, 14, dl.fin(s, 14)), null);
+  s.setCell(12, 'dur', '24');
+  const r = dl.row(s, 14);
+  assert.deepEqual([r.own, r.inherited, r.v], [0, 4, 4]);
+  assert.equal(r.source, 13, 'the latest-finishing predecessor is named');
+});
+
+test('agreeing a baseline can agree the waiting inclusions with it', () => {
+  const s = baselined(), id = insertJoineryFollower(s);
+  assert.deepEqual(dl.pendingInclusions(s), [{ id, name: 'New task' }]);
+  assert.equal(dl.agreeBaseline(s, { includePending: true }), 'Agreeing inclusions needs a reason and who approved it');
+  assert.equal(dl.agreeBaseline(s, { includePending: true, reason: 'Scope signed off', approvedBy: 'SG' }), null);
+  assert.equal(s.byId.get(id).inc, undefined);
+  assert.equal(s.log.filter((e) => e.type === 'inclusion').length, 1);
+  assert.deepEqual(parts(s, 14), [0, 0, 0, 4, 4]);
+  assert.equal(s.agreedOrig.end, D('2027-01-05'), 'the first baseline froze the original');
+});
+
+test('the waterfall lists every agreed change with its reason', () => {
+  const s = baselined();
+  assert.equal(dl.setAgreed(s, 14, D('2026-12-24'), { reason: 'Client asked', approvedBy: 'SG' }), null);
+  const w = dl.explainSteps(s, loadCauses(), 14);
+  assert.deepEqual(w.steps.slice(0, 1).map((x) => [x.type, x.days, x.reason, x.approvedBy, x.source]), [['revision', 4, 'Client asked', 'SG', 'deadline']]);
+  assert.equal(w.agreed, D('2026-12-24'));
+  assert.deepEqual(w.steps.slice(1).map((x) => [x.type, x.days]), [['residual', -4]], 'the plan still finishes on the old date, four days early');
+});
+
+test('analysis data for a large plan with a long log builds quickly', () => {
+  const s = demo();
+  const tasks = [], links = [];
+  for (let i = 0; i < 300; i++) { tasks.push({ id: 100 + i, name: `T${i}`, level: 0, start: D('2026-11-02'), dur: 3 + (i % 5), progress: 0, owner: `O${i % 9}`, email: '', noRem: false, ms: i % 30 === 29, scheduling: 'auto' }); if (i) links.push({ id: `x${i}`, from: 99 + i, to: 100 + i, type: 'FS', lag: 0 }); }
+  const big = new Store({ workbook: { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Big', data: { calendar: s.calendar, tasks, links, collapsed: [], nextId: 500, nextLink: 400 }, rem: {} }] }, templates: [], preferences: {}, history: {} });
+  dl.agreeBaseline(big);
+  for (let i = 0; i < 40; i++) {
+    const id = 110 + i * 7, pre = dl.snapshotBefore(big);
+    big.setCell(id, 'dur', String(big.byId.get(id).dur + 1));
+    if (big.byId.get(id).ms) continue;
+    dl.record(big, id, pre, { type: 'delay', cause: C('Unknown') });
+  }
+  const t0 = Date.now();
+  const g = dl.impactGrid(big, loadCauses()); dl.explainSteps(big, loadCauses(), 'end'); dl.milestoneTable(big, loadCauses()); dl.ownerTable(big);
+  for (const t of big.tasks) dl.row(big, t.id);
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
+  assert.ok(g.rows.length >= 30);
+  for (const c of g.cols) assert.equal(c.total, g.rows.reduce((n, r) => n + (r.effects[c.id] || 0), 0) + g.unexplained[c.id]);
+});
+
+test('templates carry no agreed data, including templates saved earlier', () => {
+  const s = baselined(); insertJoineryFollower(s);
+  const { tpl } = s.saveTemplate('Fit-out');
+  assert.ok(tpl.tasks.every((t) => !t.agr && !t.inc) && !tpl.log && !tpl.baselined);
+  const old = { ...tpl, tasks: tpl.tasks.map((t) => ({ ...t, agr: { s: 1, f: 2, o: 2 }, inc: true })) };
+  const sheet = s.instantiate(old, D('2027-03-01'), 'From template');
+  assert.ok(s.tasks.every((t) => !t.agr && !t.inc)); assert.equal(s.baselined, false); void sheet;
 });

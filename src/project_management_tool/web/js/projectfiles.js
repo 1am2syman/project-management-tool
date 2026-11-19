@@ -24,9 +24,13 @@ function validateAgreed(t, fileVersion, summary) {
 }
 
 function validateLog(d, fileVersion, where, causeIds) {
-  if (d.log == null && d.nextLog == null && d.baselined == null) return;
+  if (d.log == null && d.nextLog == null && d.baselined == null && d.agreedOrig == null) return;
   if (fileVersion < 6) invalid(`${where}the change log requires file version 6.`);
   if (d.baselined != null && d.baselined !== true) invalid(`${where}the baseline flag is invalid.`);
+  if (d.agreedOrig != null) {
+    if (d.baselined !== true || !object(d.agreedOrig) || (d.agreedOrig.end != null && !integer(d.agreedOrig.end, -99999999, 99999999))) invalid(`${where}the original agreed dates are invalid.`);
+    if (d.agreedOrig.sums != null && (!object(d.agreedOrig.sums) || !Object.entries(d.agreedOrig.sums).every(([k, v]) => /^[1-9]\d{0,15}$/.test(k) && integer(v, -99999999, 99999999)))) invalid(`${where}the original agreed summary dates are invalid.`);
+  }
   const log = d.log ?? [], ids = new Set();
   if (!Array.isArray(log) || log.length > 20000) invalid(`${where}the change log must be a list of at most 20,000 entries.`);
   for (const e of log) {
@@ -34,6 +38,7 @@ function validateLog(d, fileVersion, where, causeIds) {
     if (e.op != null && !['start', 'finish'].includes(e.op)) invalid(`${where}a change log entry has an invalid operation.`);
     if (e.kind != null && !LOG_KINDS.includes(e.kind)) invalid(`${where}a change log entry has an invalid kind.`);
     for (const k of ['party', 'reason', 'approvedBy', 'note', 'source']) if (e[k] != null && !text(e[k], 500)) invalid(`${where}a change log entry has invalid text.`);
+    if (e.eff != null && (!object(e.eff) || !Object.entries(e.eff).every(([k, v]) => (k === 'end' || /^[1-9]\d{0,15}$/.test(k)) && integer(v, -99999999, 99999999)))) invalid(`${where}a change log entry has invalid agreed-date effects.`);
     if (e.cause != null && (typeof e.cause !== 'string' || !causeIds.has(e.cause))) invalid(`${where}a change log entry names a cause the file does not define.`);
     ids.add(e.id);
   }

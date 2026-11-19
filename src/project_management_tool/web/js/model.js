@@ -137,6 +137,8 @@ function cleanAgreed(r, ms) {
   if (r.inc === true && !out.agr) out.inc = true;
   return out;
 }
+// Templates describe a plan's shape only: agreed dates belong to the project they were agreed in.
+const withoutAgreed = (t) => { const c = { ...t }; delete c.agr; delete c.inc; return c; };
 const text = (v, n) => String(v ?? '').trim().slice(0, n);
 export function cleanLog(list) {
   const out = [], ids = new Set();
@@ -152,15 +154,34 @@ export function cleanLog(list) {
     if (e.type !== 'delay') { x.reason = text(e.reason, 500); x.approvedBy = text(e.approvedBy, 120); }
     if (e.note) x.note = text(e.note, 500);
     if (e.source) x.source = text(e.source, 20);
+    { const eff = cleanEff(e.eff); if (eff) x.eff = eff; }
     for (const k of ['from', 'to']) if (dayInt(e[k]) != null) x[k] = e[k];
     out.push(x);
   }
   return out;
 }
+// The original agreed completion and each summary's original agreed finish, frozen when the first baseline is agreed:
+// later agreed changes appear as steps from these, they never rewrite them.
+export function cleanOrig(o) {
+  if (!o || typeof o !== 'object') return null;
+  const out = {}, end = dayInt(o.end);
+  if (end != null) out.end = end;
+  const sums = {};
+  if (o.sums && typeof o.sums === 'object') for (const [k, v] of Object.entries(o.sums).slice(0, 20000)) if (/^[1-9]\d{0,15}$/.test(k) && dayInt(v) != null) sums[k] = v;
+  if (Object.keys(sums).length) out.sums = sums;
+  return Object.keys(out).length ? out : null;
+}
+// Per-entry agreed-date effects: days the entry moved the agreed date of a milestone (by task id) or of the project completion ('end').
+function cleanEff(e) {
+  if (!e || typeof e !== 'object') return null;
+  const out = {};
+  for (const [k, v] of Object.entries(e).slice(0, 2000)) if ((k === 'end' || /^[1-9]\d{0,15}$/.test(k)) && dayInt(v) && v !== 0) out[k] = v;
+  return Object.keys(out).length ? out : null;
+}
 function cleanLogFields(d) {
-  const log = cleanLog(d?.log), baselined = d?.baselined === true;
+  const log = cleanLog(d?.log), baselined = d?.baselined === true, orig = baselined ? cleanOrig(d?.agreedOrig) : null;
   if (!log.length && !baselined) return {};
-  return { log, nextLog: Math.max(Number.isSafeInteger(d?.nextLog) ? d.nextLog : 1, Math.max(0, ...log.map((e) => e.id)) + 1), ...(baselined ? { baselined } : {}) };
+  return { log, nextLog: Math.max(Number.isSafeInteger(d?.nextLog) ? d.nextLog : 1, Math.max(0, ...log.map((e) => e.id)) + 1), ...(baselined ? { baselined } : {}), ...(orig ? { agreedOrig: orig } : {}) };
 }
 
 // Coerce arbitrary (possibly corrupt / hand-edited) saved data into a valid project.
@@ -286,14 +307,14 @@ export class Store {
     const c = sanitize(d);
     this.calendar = c.calendar; this.work = new WorkingCalendar(this.calendar);
     this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
-    this.log = c.log || []; this.nextLog = c.nextLog || 1; this.baselined = !!c.baselined;
+    this.log = c.log || []; this.nextLog = c.nextLog || 1; this.baselined = !!c.baselined; this.agreedOrig = c.agreedOrig || null;
     this.settle();
   }
   // What is stored: tasks and the user-authored fields of links (slack/violated/critical are recomputed on load).
   // Undo snapshots leave out which groups are collapsed: folding a group is a view choice, not an edit to be undone.
   serialize(withView = true) {
     const o = { calendar: this.calendar, tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
-    if (this.log?.length || this.baselined) { o.log = this.log; o.nextLog = this.nextLog; if (this.baselined) o.baselined = true; }
+    if (this.log?.length || this.baselined) { o.log = this.log; o.nextLog = this.nextLog; if (this.baselined) o.baselined = true; if (this.agreedOrig) o.agreedOrig = this.agreedOrig; }
     if (withView) o.collapsed = [...this.collapsed];
     return JSON.stringify(o);
   }
@@ -393,14 +414,14 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined });
+    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
     v.settle(); return v;
   }
   // Computed, frozen copy of a saved version: dates exactly as they were when it was taken.
   versionView(vid, sheetId = this.wb.active) {
     const version = this.version(vid, sheetId); if (!version) return null;
     const v = Object.create(Store.prototype), c = sanitize(JSON.parse(version.data));
-    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined });
+    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
     v.settle(); return v;
   }
 
@@ -462,7 +483,7 @@ export class Store {
     const c = sanitize(JSON.parse(v.data)), ids = new Set(c.tasks.map((t) => t.id)), sheetId = this.wb.active;
     this.tx(() => {
       this.calendar = c.calendar; this.work = new WorkingCalendar(c.calendar);
-      this.tasks = c.tasks; this.links = c.links; this.log = c.log || []; this.baselined = !!c.baselined;
+      this.tasks = c.tasks; this.links = c.links; this.log = c.log || []; this.baselined = !!c.baselined; this.agreedOrig = c.agreedOrig || null;
       this.nextLog = Math.max(this.nextLog, c.nextLog || 1);
       this.nextId = Math.max(this.nextId, c.nextId); this.nextLink = Math.max(this.nextLink, c.nextLink);
       this.collapsed = new Set([...this.collapsed].filter((id) => ids.has(id)));
@@ -493,7 +514,7 @@ export class Store {
       id: `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: n, builtin: false, savedAt: Date.now(),
       desc: `Saved from "${this.sheet().name}"`,
       calendar: cleanCalendar(this.calendar),
-      tasks: this.tasks.map((x) => ({ ...x, start: x.start - base, progress: 0 })),
+      tasks: this.tasks.map((x) => ({ ...withoutAgreed(x), start: x.start - base, progress: 0 })),
       links: this.links.map(({ id, from, to, type, lag }) => ({ id, from, to, type, lag })), nextId: this.nextId, nextLink: this.nextLink,
     };
     const i = this.templates.findIndex((x) => x.name.toLowerCase() === n.toLowerCase());
@@ -502,7 +523,7 @@ export class Store {
   }
   deleteTemplate(id) { this.templates = this.templates.filter((t) => t.id !== id); this.saveTpl(); this.emit('meta'); }
   instantiate(tpl, startDay, name) {
-    const data = { calendar: cleanCalendar(tpl.calendar), tasks: tpl.tasks.map((t) => ({ ...t, start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
+    const data = { calendar: cleanCalendar(tpl.calendar), tasks: tpl.tasks.map((t) => ({ ...withoutAgreed(t), start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
     const id = this.addSheet(data, name || tpl.name);
     this.recalc(); this.propagate(); this.recalc(); this.save(); this.emit('sheet'); // always resolve links once, even with auto-schedule off
     return id;
@@ -660,7 +681,7 @@ export class Store {
     for (const d of desc) { up.delete(d); down.delete(d); }
     return { anc, desc, up, down, upL, downL };
   }
-  settle() { this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
+  settle() { this.rev = (this.rev || 0) + 1; this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
 
   // ---- derived state ----
   recalc() {
