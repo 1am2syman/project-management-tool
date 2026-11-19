@@ -386,7 +386,7 @@ test('agreeing an inclusion moves the agreed dates it pushes; variance stays zer
   const c = dl.completion(s);
   assert.deepEqual([c.o, fd(c.f), c.delay, c.rev], [originalEnd, '2027-01-09', 0, 4]);
   const g = dl.impactGrid(s, loadCauses());
-  assert.deepEqual(g.rows.map((r) => [r.label, r.effects[14], r.effects.end]), [['Inclusion: New task', 4, 4]]);
+  assert.deepEqual(g.rows.map((r) => [r.label, r.effects[14], r.effects.end]), [['Inclusion · New task: Level 3 outlets', 4, 4]]);
   assert.deepEqual(g.unexplained, { 5: 0, 8: 0, 14: 0, end: 0 });
   const w = dl.explainSteps(s, loadCauses(), 'end');
   assert.deepEqual(w.steps.map((x) => [x.type, x.days, x.reason, x.approvedBy]), [['inclusion', 4, 'Level 3 outlets', 'SG']]);
@@ -417,7 +417,7 @@ test('an agreed omission pulls the agreed dates earlier with the chain kept; it 
   const c = dl.completion(s);
   assert.deepEqual([c.o, fd(c.f), c.delay, c.rev], [D('2027-01-05'), '2026-12-31', 0, -5]);
   const g = dl.impactGrid(s, loadCauses());
-  assert.deepEqual(g.rows.map((r) => [r.label, r.effects.end]), [['Omission: Joinery & finishes', -5]]);
+  assert.deepEqual(g.rows.map((r) => [r.label, r.effects.end]), [['Omission · Joinery & finishes: Client dropped joinery', -5]]);
   assert.deepEqual(g.unexplained, { 5: 0, 8: 0, 14: 0, end: 0 });
   assert.equal(dl.explainSteps(s, loadCauses(), 14).steps[0].type, 'omission');
   s.undo(); assert.equal(s.byId.has(13), true); assert.equal(s.log.length, 0); assert.equal(s.byId.get(14).agr.f, D('2026-12-20'));
@@ -466,10 +466,10 @@ test('analysis data for a large plan with a long log builds quickly', () => {
     if (big.byId.get(id).ms) continue;
     dl.record(big, id, pre, { type: 'delay', cause: C('Unknown') });
   }
-  const t0 = Date.now();
+  const t0 = performance.now(); // test files run in parallel, so allow generous headroom: this guards against quadratic work, not speed
   const g = dl.impactGrid(big, loadCauses()); dl.explainSteps(big, loadCauses(), 'end'); dl.milestoneTable(big, loadCauses()); dl.ownerTable(big);
   for (const t of big.tasks) dl.row(big, t.id);
-  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
+  assert.ok(performance.now() - t0 < 3000, `took ${Math.round(performance.now() - t0)}ms`);
   assert.ok(g.rows.length >= 30);
   for (const c of g.cols) assert.equal(c.total, g.rows.reduce((n, r) => n + (r.effects[c.id] || 0), 0) + g.unexplained[c.id]);
 });
@@ -511,4 +511,57 @@ test('typing a predecessor with a lag is a link edit the delay hook sees', () =>
   s.hook = { before: () => dl.snapshotBefore(s), after: (e) => seen.push(e.kind) };
   assert.equal(s.setCell(13, 'pred', '13+3'), null);
   assert.deepEqual(seen, ['link']);
+});
+
+test('owners are charged revisions only at the tasks where they were recorded, not where a revision merely pushed later tasks', () => {
+  const s = story(), rows = dl.ownerTable(s), by = (o) => rows.find((r) => r.owner === o);
+  assert.equal(by('Sana').revisions, 3, 'the revision was recorded at Joinery & finishes');
+  assert.equal(by('Omar')?.revisions ?? 0, 0, 'Snag list was only pushed by it');
+  assert.ok(rows.every((r) => !(r.owner === 'Unassigned' && r.revisions)), 'Handover has no revision of its own');
+  assert.equal(rows.reduce((n, r) => n + r.revisions, 0), 3, 'a revision is counted once');
+});
+
+test('milestone causes explain only the Delay column, and the rest is Other / unexplained', () => {
+  const s = story(), t = dl.milestoneTable(s, loadCauses()), h = t.find((r) => r.name === 'Handover');
+  assert.ok(h.rev > 0 && h.delay > 0);
+  assert.equal(h.causes.reduce((n, c) => n + c.days, 0), h.delay, 'causes add up to the Delay');
+  assert.ok(h.causes.every((c) => c.name !== 'Revision'));
+  const u = demo(); dl.agreeBaseline(u); u.tx(() => { u.byId.get(12).dur += 3; });
+  const e = dl.milestoneTable(u, loadCauses()).find((r) => r.id === 'end');
+  assert.deepEqual(e.causes, [{ name: 'Other / unexplained', days: 3 }]);
+});
+
+test('grid rows and steps name the task of a revision, inclusion and omission', () => {
+  const s = story(), g = dl.impactGrid(s, loadCauses());
+  assert.ok(g.rows.some((r) => r.label === 'Revision · Joinery & finishes: Client added level 3'));
+});
+
+test('the Explain waterfall has a Current agreed subtotal after the agreed changes and before the delays', async () => {
+  const { toWaterfall } = await import('../src/project_management_tool/web/js/delayanalysis.js');
+  const s = story(), id = dl.milestoneTable(s, loadCauses()).find((r) => r.name === 'Handover').id;
+  const w = toWaterfall(dl.explainSteps(s, loadCauses(), id));
+  assert.deepEqual(w.steps.map((x) => x.type), ['revision', 'subtotal', 'delay']);
+  const sub = w.steps[1];
+  assert.equal(sub.title, 'Current agreed'); assert.equal(sub.reason, 'The agreed date after approved changes');
+  assert.equal(fd(sub.to), '2026-12-23'); assert.equal(sub.from, w.steps[0].to); assert.equal(w.steps[2].from, sub.to);
+  const none = toWaterfall(dl.explainSteps(demo(), loadCauses(), 'end') || { name: 'x', orig: 1, exp: 1, total: 0, agreed: 1, steps: [] });
+  assert.equal(none.steps.some((x) => x.type === 'subtotal'), false, 'no agreed changes: no subtotal');
+});
+
+test('key milestones are saved with the project, survive the file round trip and do not leak between projects', () => {
+  const s = story();
+  assert.equal(s.setKeyMilestone(14, true), true); assert.equal(s.setKeyMilestone(5, true), true);
+  assert.deepEqual([...s.keyMilestones()].sort((a, b) => a - b), [5, 14]);
+  s.undo(); assert.deepEqual([...s.keyMilestones()].sort((a, b) => a - b), [5, 14], 'a view choice, not an edit');
+  const doc = JSON.parse(encodeProjectFile(s));
+  assert.deepEqual(doc.project.data.stars.sort((a, b) => a - b), [5, 14]);
+  assert.ok((doc.project.versions || []).every((v) => !('stars' in v.plan)));
+  const t = demo(); openProjectFile(t, JSON.stringify(doc));
+  assert.deepEqual([...t.keyMilestones()].sort((a, b) => a - b), [5, 14]);
+  assert.equal(demo().keyMilestones().size, 0, 'another project starts with none');
+  const bad = JSON.parse(JSON.stringify(doc)); bad.project.data.stars = [999];
+  assert.throws(() => parseProjectFile(JSON.stringify(bad)), /key milestones/);
+  bad.project.data.stars = [5]; bad.version = 5;
+  assert.throws(() => parseProjectFile(JSON.stringify(bad)), /version 6/);
+  s.setKeyMilestone(14, false); assert.deepEqual([...s.keyMilestones()], [5]);
 });

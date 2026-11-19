@@ -149,6 +149,10 @@ function validateDocument(doc) {
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links) || !Array.isArray(d.collapsed)) invalid('tasks, relationships or collapsed groups are missing.');
   const causeIds = validateCauses(p.causes, doc.version);
   const ids = validatePlan(d, doc.version, '', causeIds);
+  if (d.stars != null) {
+    if (doc.version < 6) invalid('key milestones require file version 6.');
+    if (!Array.isArray(d.stars) || new Set(d.stars).size !== d.stars.length || d.stars.some((id) => !ids.has(id))) invalid('key milestones refer to missing or repeated tasks.');
+  }
   if (d.collapsed.some((id) => !ids.has(id)) || new Set(d.collapsed).size !== d.collapsed.length) invalid('collapsed groups refer to missing or repeated tasks.');
   validateReminders(p.rem);
   if (p.versions !== undefined || p.nextVersion !== undefined) {
@@ -160,7 +164,7 @@ function validateDocument(doc) {
 
 // Plans carry reminder opt-outs as explicit booleans; newly inserted tasks acquire theirs on the next model load.
 function portablePlan(data) {
-  delete data.collapsed;
+  delete data.collapsed; delete data.stars;
   for (const task of data.tasks) task.noRem = !!task.noRem;
   return data;
 }
@@ -178,7 +182,7 @@ export function encodeProjectFile(store) {
   if (data.tasks.some((t) => t.calendar) || versions.some((v) => JSON.parse(v.data).tasks.some((t) => t.calendar))) version = 5;
   const project = { name: sheet.name, data, rem: cleanRem(sheet.rem) };
   const logs = [data.log || [], ...versions.map((v) => JSON.parse(v.data).log || [])].flat();
-  const delayData = (d) => d.log?.length || d.baselined || d.tasks.some((t) => t.agr || t.inc);
+  const delayData = (d) => d.log?.length || d.baselined || d.stars?.length || d.tasks.some((t) => t.agr || t.inc);
   if (delayData(data) || versions.some((v) => v.type || delayData(JSON.parse(v.data)))) {
     version = VERSION;
     const used = usedCauses(loadCauses(), logs);

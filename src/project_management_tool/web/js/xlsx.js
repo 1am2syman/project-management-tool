@@ -85,14 +85,16 @@ const WK = { n: '5B7CFA', d: '3A5BDC', cn: 'F43F5E', cd: 'E11D48', sum: '334155'
 
 // Delay accounting columns of the task sheet (after the critical-path target cells), present once something is agreed.
 const AGREED_HEADS = ['Agreed finish', 'Variance (workdays)', 'Own delay', 'Inherited delay', 'Cause'];
-function agreedCells(S, st, sh, causes, r, t, fl) {
-  const row = DL.row(st, t.id); if (!row) { if (t.inc) sh.set(r, 15, 'Pending inclusion', fl({ color: '0E7490' })); return; }
-  const e = DL.lastDelay(st, t.id), num = (v, o = {}) => fl({ fmt: '+0;-0;0', h: 'center', ...o });
-  sh.set(r, 15, serial(row.agreed), fl({ fmt: 'mmm d, yyyy', h: 'center' }));
-  sh.set(r, 16, row.v, num(row.v, { color: row.v > 0 ? 'BE123C' : row.v < 0 ? '15803D' : '64748B', b: row.v ? 1 : 0 }));
+// With a revision there is one more column in front: the original agreed finish, like the app's sheet.
+function agreedCells(st, sh, causes, r, t, fl, rev) {
+  const row = DL.row(st, t.id), c0 = 15 + (rev ? 1 : 0); if (!row) { if (t.inc) sh.set(r, 15, 'Pending inclusion', fl({ color: '0E7490' })); return; }
+  const e = DL.lastDelay(st, t.id), num = (o = {}) => fl({ fmt: '+0;-0;0', h: 'center', ...o });
+  if (rev) sh.set(r, 15, serial(row.orig), fl({ fmt: 'mmm d, yyyy', h: 'center', color: '64748B' }));
+  sh.set(r, c0, serial(row.agreed), fl({ fmt: 'mmm d, yyyy', h: 'center' }));
+  sh.set(r, c0 + 1, row.v, num({ color: row.v > 0 ? 'BE123C' : row.v < 0 ? '15803D' : '64748B', b: row.v ? 1 : 0 }));
   if (row.rollup) return;
-  sh.set(r, 17, row.own, num(row.own)); sh.set(r, 18, row.inherited, num(row.inherited));
-  sh.set(r, 19, row.own > 0 && e ? DL.causeName(causes, e.cause) : row.own > 0 ? 'Unclassified' : '', fl({}));
+  sh.set(r, c0 + 2, row.own, num()); sh.set(r, c0 + 3, row.inherited, num());
+  sh.set(r, c0 + 4, row.own > 0 && e ? DL.causeName(causes, e.cause) : row.own > 0 ? 'Unclassified' : '', fl({}));
 }
 function tasksSheet(S, st, name, tab, causes) {
   const sh = new Sheet(name, tab); sh.freeze = [2, 1];
@@ -103,7 +105,8 @@ function tasksSheet(S, st, name, tab, causes) {
   const target = st.criticalTarget();
   sh.set(0, 13, 'Critical-path target', head); sh.set(0, 14, target?.name || 'Project completion', head);
   const agreed = DL.hasAgreed(st) || DL.hasInclusions(st);
-  if (agreed) { AGREED_HEADS.forEach((h, c) => sh.set(0, 15 + c, h, head)); sh.widths.push(14, 12, 10, 12, 26); }
+  const revised = agreed && DL.hasRevision(st);
+  if (agreed) { [...(revised ? ['Original agreed finish'] : []), ...AGREED_HEADS].forEach((h, c) => sh.set(0, 15 + c, h, head)); sh.widths.push(...(revised ? [14] : []), 14, 12, 10, 12, 26); }
   st.tasks.forEach((t, i) => {
     const f = st.info.get(t.id), r = i + 1, sum = f.summary, ms = t.ms && !sum, crit = f.critical && st.critical;
     const base = { b: sum ? 1 : 0, fill: sum ? 'F1F5F9' : null, bb: 'E2E8F0', color: crit && !sum ? 'BE123C' : '0F172A' };
@@ -121,7 +124,7 @@ function tasksSheet(S, st, name, tab, causes) {
     sh.set(r, 10, st.predText(t.id), fl({ color: '475569' }));
     sh.set(r, 11, t.owner, fl({}));
     sh.set(r, 12, t.email || '', fl({ color: '475569' }));
-    if (agreed) agreedCells(S, st, sh, causes, r, t, fl);
+    if (agreed) agreedCells(st, sh, causes, r, t, fl, revised);
     if (t.level > 0) sh.outline.set(r, Math.min(7, t.level));
   });
   sh.filter = `A1:${colL(heads.length - 1)}${st.tasks.length + 1}`;

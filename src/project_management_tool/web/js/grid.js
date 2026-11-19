@@ -6,15 +6,15 @@ import { esc, setHTML } from './dom.js';
 import { slackLabel } from './slackui.js';
 
 export const COLS = [
-  { id: 'name', letter: 'A', label: 'Task', w: 230, group: 'task' },
-  { id: 'start', letter: 'B', label: 'Start', w: 72, group: 'sched', ctr: true },
-  { id: 'end', letter: 'C', label: 'End', w: 72, group: 'sched', ctr: true },
+  { id: 'name', letter: 'A', label: 'Task', w: 188, group: 'task' },
+  { id: 'start', letter: 'B', label: 'Start', w: 70, group: 'sched', ctr: true },
+  { id: 'end', letter: 'C', label: 'End', w: 70, group: 'sched', ctr: true },
   { id: 'dur', letter: 'D', label: 'Days', w: 58, group: 'sched', num: true },
   // Delay accounting: shown once the project has agreed dates (see delayui.js colVisible)
-  { id: 'agreedO', letter: 'L', label: 'Original agreed', w: 104, group: 'dly', ctr: true, dly: true },
-  { id: 'agreed', letter: 'M', label: 'Agreed', w: 78, group: 'dly', ctr: true, dly: true },
-  { id: 'var', letter: 'N', label: '± days', w: 70, group: 'dly', num: true, dly: true },
-  { id: 'origin', letter: 'O', label: 'Own / Inherited', w: 132, group: 'dly', dly: true },
+  { id: 'agreedO', letter: 'L', label: 'Original agreed', w: 128, group: 'dly', ctr: true, dly: true },
+  { id: 'agreed', letter: 'M', label: 'Agreed', w: 76, group: 'dly', ctr: true, dly: true },
+  { id: 'var', letter: 'N', label: '± days', w: 66, group: 'dly', num: true, dly: true },
+  { id: 'origin', letter: 'O', label: 'Own / Inherited', w: 136, group: 'dly', dly: true },
   { id: 'cause', letter: 'P', label: 'Cause', w: 130, group: 'dly', dly: true },
   { id: 'progress', letter: 'E', label: 'Done', w: 66, group: 'prog', num: true },
   { id: 'float', letter: 'F', label: 'Total slack', w: 104, group: 'slack', num: true },

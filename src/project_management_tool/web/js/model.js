@@ -209,10 +209,12 @@ function sanitize(d) {
   }
   const uniq = new Set(); const clean = links.filter((l) => { if (uniq.has(l.id)) return false; uniq.add(l.id); return true; });
   const collapsed = (Array.isArray(d && d.collapsed) ? d.collapsed : []).filter((x) => ids.has(x));
-  return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, ...cleanLogFields(d), nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
+  // Key milestones for the delay analysis: a view choice kept with the project, like which groups are collapsed.
+  const stars = [...new Set(Array.isArray(d && d.stars) ? d.stars : [])].filter((x) => ids.has(x));
+  return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, ...(stars.length ? { stars } : {}), ...cleanLogFields(d), nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
 }
 
-function planText(data) { const plan = sanitize(data); delete plan.collapsed; return JSON.stringify(plan); }
+function planText(data) { const plan = sanitize(data); delete plan.collapsed; delete plan.stars; return JSON.stringify(plan); }
 
 function blank() {
   const t = (id, name, level, dur) => ({ id, name, level, start: today, dur, progress: 0, owner: '', ms: false });
@@ -306,7 +308,7 @@ export class Store {
   load(d) {
     const c = sanitize(d);
     this.calendar = c.calendar; this.work = new WorkingCalendar(this.calendar);
-    this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
+    this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.stars = new Set(c.stars || []); this.nextId = c.nextId; this.nextLink = c.nextLink;
     this.log = c.log || []; this.nextLog = c.nextLog || 1; this.baselined = !!c.baselined; this.agreedOrig = c.agreedOrig || null;
     this.settle();
   }
@@ -315,7 +317,7 @@ export class Store {
   serialize(withView = true) {
     const o = { calendar: this.calendar, tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
     if (this.log?.length || this.baselined) { o.log = this.log; o.nextLog = this.nextLog; if (this.baselined) o.baselined = true; if (this.agreedOrig) o.agreedOrig = this.agreedOrig; }
-    if (withView) o.collapsed = [...this.collapsed];
+    if (withView) { o.collapsed = [...this.collapsed]; const live = new Set(this.tasks.map((t) => t.id)), stars = [...(this.stars || [])].filter((id) => live.has(id)); if (stars.length) o.stars = stars; }
     return JSON.stringify(o);
   }
   snap() { return this.serialize(false); }
@@ -482,7 +484,7 @@ export class Store {
     const v = this.version(vid); if (!v) return 'That version no longer exists';
     if (!this.preview) this.save();
     this.preview = { id: v.id, target: v.target };
-    this.load({ ...JSON.parse(v.data), collapsed: [...this.collapsed] });
+    this.load({ ...JSON.parse(v.data), collapsed: [...this.collapsed], stars: [...(this.stars || [])] });
     this.emit('version'); return null;
   }
   exitPreview() {
@@ -503,6 +505,7 @@ export class Store {
       this.nextLog = Math.max(this.nextLog, c.nextLog || 1);
       this.nextId = Math.max(this.nextId, c.nextId); this.nextLink = Math.max(this.nextLink, c.nextLink);
       this.collapsed = new Set([...this.collapsed].filter((id) => ids.has(id)));
+      this.stars = new Set([...(this.stars || [])].filter((id) => ids.has(id)));
     });
     if (v.target && this.byId.get(v.target)?.ms) this.criticalTargets[sheetId] = v.target; else delete this.criticalTargets[sheetId];
     this.recalc(); this.save(); this.emit();
@@ -561,8 +564,8 @@ export class Store {
     this.emit();
     return r;
   }
-  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.snap()); this.load({ ...JSON.parse(this.undoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
-  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
+  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.snap()); this.load({ ...JSON.parse(this.undoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
+  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
   beginDrag() { this._pre = this.hook?.before() ?? null; this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
@@ -897,6 +900,13 @@ export class Store {
   indent(id, dir) {
     const plan = this.indentPlan(id, dir);
     return plan.error || this.moveTask(id, plan.targetId, plan.position);
+  }
+  // Key milestones the delay analysis shows in its impact grid and trend. Saved with the project; not part of undo.
+  keyMilestones() { return this.stars || new Set(); }
+  setKeyMilestone(id, on) {
+    if (this.sheet().readOnly || this.preview) return false;
+    this.stars = new Set(this.stars || []); if (on) this.stars.add(id); else this.stars.delete(id);
+    this.save(); this.emit('meta'); return true;
   }
   toggle(id) { if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id); this.recalc(); this.save(); this.emit(); }
   reaches(a, b, seen = new Set()) { if (a === b) return true; if (seen.has(a)) return false; seen.add(a); return this.outgoing(a).some((l) => this.reaches(l.to, b, seen)); }

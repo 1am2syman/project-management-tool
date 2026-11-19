@@ -183,6 +183,9 @@ try {
   assert.notEqual(await text(4, 'agreed'), launchAgreed, 'the revision moves the agreed date of the task it pushed');
   assert.equal(await text(3, 'var'), '+4', 'the inherited delay stays');
   assert((await headers()).includes('Original agreed'));
+  for (const [name, ok] of await fits(['Original agreed', 'Agreed', '± days', 'Own / Inherited'])) assert(ok, `${name} is visible in the sheet at 1920 after a revision`);
+  const clipped = await page.evaluate(() => [...document.querySelectorAll('#ghead .c')].filter((c) => ['Original agreed', 'Agreed', '± days', 'Own / Inherited'].includes(c.textContent.trim())).filter((c) => [c, ...c.querySelectorAll('*')].some((e) => e.scrollWidth > e.clientWidth + 1)).map((c) => c.textContent.trim()));
+  assert.deepEqual(clipped, [], 'no delay column header is clipped');
   await page.screenshot({ path: join(evidence, 'after-revision-1920.png') });
 
   // ---------- overdue chip: recording is one undo step ----------
@@ -256,6 +259,65 @@ try {
   await freshPage.locator('#settingsbtn').click();
   await freshPage.getByRole('dialog', { name: 'Settings', exact: true }).locator('.dly-cause-row', { hasText: 'Bad weather' }).waitFor();
   await fresh.close();
+
+  // ---------- analysis: default comparison, every section, grid sums, Current agreed, stars, exports, re-import ----------
+  const taskCount = (await data()).tasks.length;
+  await page.locator('#analysisbtn').click();
+  const an = page.locator('#analysis'); await an.locator('.an-kpis').waitFor(); await settle();
+  assert((await an.locator('#an-a option:checked').innerText()).includes('Baseline'), 'Analysis compares the latest Agreed baseline');
+  assert((await an.locator('#an-b option:checked').innerText()).includes('Current'), 'with the current plan');
+  for (const id of ['dmil', 'dimp', 'dexp', 'dtrd', 'down', 'dlog']) assert.equal(await an.locator(`#an-${id}`).count(), 1, `section ${id} is on the page`);
+  assert(/Milestone table/.test(await an.locator('.an-nav').innerText()), 'the Analysis menu lists the delay sections');
+  const gridSums = () => an.locator('#an-dimp table.dly-grid').evaluate((g) => {
+    const num = (t) => (t.trim() === '—' || !t.trim() ? 0 : +t.replace('−', '-').replace('+', ''));
+    const rows = [...g.querySelectorAll('tbody tr')], total = rows.at(-1), body = rows.slice(0, -1), n = g.querySelectorAll('thead th').length - 1;
+    return { label: total.children[0].textContent.trim(), n, ok: Array.from({ length: n }, (_, i) => body.reduce((a, r) => a + num(r.children[i + 1].textContent), 0) === num(total.children[i + 1].textContent)).every(Boolean) };
+  });
+  let sums = await gridSums(); assert(sums.n >= 1 && sums.ok && /Total/.test(sums.label), 'every impact grid column adds up to its total');
+  const heads = () => an.locator('#an-dimp thead th').allInnerTexts();
+  const keyHeads = await heads();
+  await an.locator('[data-dly-showall]').click(); await settle();
+  const allHeads = await heads(); assert(allHeads.length > keyHeads.length, 'Show all milestones adds columns');
+  sums = await gridSums(); assert(sums.ok, 'all columns add up with every milestone shown');
+  await an.locator('[data-dly-showall]').click(); await settle();
+  const star = an.locator('[data-dly-star]').first(), starId = +(await star.getAttribute('data-dly-star'));
+  await star.click(); await settle();
+  assert((await heads()).length === keyHeads.length + 1, 'starring a milestone adds its column');
+  assert.deepEqual((await data()).stars, [starId], 'key milestones are saved with the project');
+  const revisions = (await an.locator('#an-dmil thead th').allInnerTexts()).includes('Revisions');
+  assert(revisions, 'the fixture has a revision, so the milestone table shows Revisions');
+  {
+    assert(!/bad/.test(await an.locator('#an-dmil td.dly-agr').first().getAttribute('class')), 'a revision is not drawn as delay');
+    await an.locator('[data-dly-explain]').selectOption({ index: 0 }); await settle();
+    const stepTitles = await an.locator('#an-dexp .wf-step').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
+    assert(stepTitles.some((t) => /Current agreed/.test(t)), `Explain has a Current agreed subtotal: ${stepTitles}`);
+    assert(await an.locator('#an-dexp .wf-legend .agreed').count() === 1, 'the legend names agreed changes');
+    await an.locator('#an-dexp').screenshot({ path: join(evidence, 'explain.png') });
+    assert.notEqual(await an.locator('#an-dexp .wf-bar').first().getAttribute('fill'), '#f43f5e', 'an agreed change is not red');
+  }
+  assert(/Own delay/.test(await an.locator('#an-down').innerText()) && /summed per task|per task/.test(await an.locator('#an-down thead').innerText()), 'Inherited says it is summed per task');
+  const dl = async (button) => { const wait = page.waitForEvent('download'); await an.locator(button).click(); const file = await wait; const target = join(temp, file.suggestedFilename()); await file.saveAs(target); return target; };
+  const { execFileSync } = await import('node:child_process'), { readFileSync } = await import('node:fs');
+  const pdf = readFileSync(await dl('[data-an=pdf]')).toString('latin1');
+  for (const part of ['Delay accounting - milestones', 'Impact grid', 'Delay log']) assert(pdf.includes(part), `the Analysis PDF has ${part}`);
+  const unzipOf = (file, name) => execFileSync('unzip', ['-p', file, name], { maxBuffer: 1 << 26 }).toString();
+  const xlsx = await dl('[data-an=xlsx]'), strings = unzipOf(xlsx, 'xl/worksheets/*.xml'), workbookXml = unzipOf(xlsx, 'xl/workbook.xml');
+  for (const part of ['Delay milestones', 'Impact grid', 'Delay log']) assert(workbookXml.includes(`sheet name="${part}"`), `the Analysis Excel has the ${part} sheet`);
+  assert(strings.includes('Main causes') && strings.includes('Total vs original agreed'), 'with the milestone table and the impact grid filled in');
+  await page.keyboard.press('Escape'); await settle();
+  const sheetXlsx = join(temp, 'sheet.xlsx'), exportWait = page.waitForEvent('download');
+  await page.locator('#expbtn').click(); await page.getByRole('button', { name: /Excel · this sheet/ }).click();
+  await (await exportWait).saveAs(sheetXlsx);
+  assert(unzipOf(sheetXlsx, 'xl/workbook.xml').includes('Delay log'), 'the sheet export has a Delay log sheet');
+  assert(unzipOf(sheetXlsx, 'xl/worksheets/*.xml').includes('Agreed finish'), 'the sheet export has the agreed columns');
+  const before = (await page.evaluate(async () => (await (await fetch('/api/projects')).json()).state.workbook.sheets.length));
+  await page.locator('#impbtn').click(); const im = page.getByRole('dialog', { name: 'Import from Excel' }); await im.waitFor();
+  const chooser = page.waitForEvent('filechooser'); await im.locator('[data-im=pick]').click(); await (await chooser).setFiles(sheetXlsx);
+  await im.locator('[data-im=go]').waitFor(); await im.locator('[data-im=go]').click(); await settle(); await saved();
+  const imported = await page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state.workbook; return { sheets: s.sheets.length, tasks: s.sheets.find((x) => x.id === s.active).data.tasks.map((t) => t.name) }; });
+  assert.equal(imported.sheets, before + 1, 'the sheet export imports as a new sheet');
+  assert.equal(imported.tasks.length, taskCount, `re-import brings back exactly the tasks, no Delay log rows: ${imported.tasks}`);
+  await page.locator('.tab', { hasText: 'Delay plan' }).first().click().catch(() => {}); await settle();
 
   // ---------- version types: menu chip, edit dialog, read-only preview ----------
   await page.locator('#versionbtn').click();

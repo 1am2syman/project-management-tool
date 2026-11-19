@@ -2,26 +2,13 @@
 // trend, own vs inherited by owner and the delay log. Every number comes from delays.js; this file only lays it out.
 import { fmtDate } from './model.js';
 import { esc, setHTML } from './dom.js';
-import { appState } from './appstate.js';
 import * as DL from './delays.js';
 import { loadCauses } from './causes.js';
 
 const { sign } = DL;
 const PALETTE = ['#2b59e6', '#f59e0b', '#0d9488', '#7c3aed', '#e11d48', '#15803d'];
-const STARS_KEY = 'pm-delay-stars';
 export const DELAY_SECTIONS = [['dmil', 'Milestone table'], ['dimp', 'Impact grid'], ['dexp', 'Explain a milestone'], ['dtrd', 'Agreed vs expected'], ['down', 'Own vs inherited'], ['dlog', 'Delay log']];
 const TYPE_TITLE = { delay: 'Delay', revision: 'Revision', inclusion: 'Inclusion', omission: 'Omission', residual: 'Other / unexplained', pending: 'Pending inclusion' };
-
-// Key milestones are remembered per project, in the app state like the other view preferences.
-function loadStars(sheetId) {
-  try { const all = JSON.parse(appState.getItem(STARS_KEY) || '{}'); return new Set(Array.isArray(all?.[sheetId]) ? all[sheetId].filter(Number.isInteger) : []); } catch { return new Set(); }
-}
-function saveStars(sheetId, stars) {
-  let all = {};
-  try { all = JSON.parse(appState.getItem(STARS_KEY) || '{}') || {}; } catch { all = {}; }
-  all[sheetId] = [...stars];
-  try { appState.setItem(STARS_KEY, JSON.stringify(all)); } catch { /* storage unavailable */ }
-}
 
 // The shape the finish waterfall draws, from the steps explaining one milestone.
 export function toWaterfall(x) {
@@ -31,6 +18,10 @@ export function toWaterfall(x) {
     relationships: [], paths: [], driversBefore: [], driversAfter: [],
     reason: s.type === 'delay' ? 'The effect of this recorded delay on the milestone, measured by taking it out and scheduling the plan again. Delay inherited from earlier tasks is never a separate step: it is counted where it started.' : s.type === 'residual' ? 'What the recorded changes do not account for.' : s.type === 'pending' ? 'New work waiting to be agreed. It pushes this date but is not delay.' : s.reason || 'An agreed change to the plan.',
   }));
+  // The agreed date after approved changes sits between the agreed changes and the delays.
+  const firstOther = steps.findIndex((s) => !['revision', 'inclusion', 'omission'].includes(s.type));
+  const agreedCount = firstOther < 0 ? steps.length : firstOther;
+  if (agreedCount) steps.splice(agreedCount, 0, { title: 'Current agreed', type: 'subtotal', from: x.agreed, to: x.agreed, days: 0, work: 0, items: [], relationships: [], paths: [], driversBefore: [], driversAfter: [], reason: 'The agreed date after approved changes' });
   return {
     available: true, baseline: x.orig, compared: x.exp, days: x.total, work: x.total, steps, name: x.name,
     title: `Why ${x.name} moved`, startLabel: 'Original agreed', endLabel: 'Expected', shiftLabel: 'Total vs original',
@@ -54,7 +45,7 @@ export function createDelayAnalysis(ctx) {
     return `<table class="an-t dly-mt"><thead><tr><th>Milestone</th><th>Agreed</th>${rv ? '<th class="n">Revisions</th><th>Current agreed</th>' : ''}<th class="n" title="Working days expected later (+) or earlier (−) than the current agreed date">Delay</th><th>Expected</th><th>Status</th><th>Main causes</th></tr></thead><tbody>${t.map((m) => {
       const star = m.id !== 'end' ? `<button class="dly-star${m.starred ? ' on' : ''}" data-dly-star="${m.id}" aria-pressed="${m.starred}" title="${m.starred ? 'Key milestone: shown in the impact grid' : 'Mark as a key milestone'}" aria-label="Key milestone: ${esc(m.name)}">${m.starred ? '★' : '☆'}</button>` : '<span class="dly-star on" title="Always shown">★</span>';
       const causesText = m.causes.slice(0, 3).map((c) => `${esc(c.name)} ${sign(c.days)}`).join(' · ') || '<span class="mut">—</span>';
-      return `<tr data-ms="${m.id}"><td>${star} <strong>${esc(m.name)}</strong></td><td>${fmtDate(m.orig)}</td>${rv ? `<td class="n ${m.rev > 0 ? 'bad' : m.rev < 0 ? 'good' : 'zero'}">${m.rev ? sign(m.rev) : '0'}</td><td>${fmtDate(m.cur)}</td>` : ''}<td class="n ${m.delay > 0 ? 'bad' : m.delay < 0 ? 'good' : 'zero'}">${m.delay ? sign(m.delay) : '0'}</td><td>${fmtDate(m.exp)}</td><td><span class="chip ${stCls(m.status)}">${esc(m.status)}</span></td><td>${causesText}</td></tr>`;
+      return `<tr data-ms="${m.id}"><td>${star} <strong>${esc(m.name)}</strong></td><td>${fmtDate(m.orig)}</td>${rv ? `<td class="n ${m.rev ? 'dly-agr' : 'zero'}">${m.rev ? sign(m.rev) : '0'}</td><td>${fmtDate(m.cur)}</td>` : ''}<td class="n ${m.delay > 0 ? 'bad' : m.delay < 0 ? 'good' : 'zero'}">${m.delay ? sign(m.delay) : '0'}</td><td>${fmtDate(m.exp)}</td><td><span class="chip ${stCls(m.status)}">${esc(m.status)}</span></td><td>${causesText}</td></tr>`;
     }).join('')}</tbody></table>`;
   }
 
@@ -112,13 +103,13 @@ export function createDelayAnalysis(ctx) {
     const width = Math.max(420, Math.round(box.clientWidth || 800)), svg = box.querySelector('svg');
     svg.setAttribute('viewBox', `0 0 ${width} 280`); svg.setAttribute('width', width); svg.setAttribute('height', 280);
     ui.h.setSVG(svg, ui.h.lineChart({ width, height: 280, labels, series, highlight: [ui.versions.findIndex((v) => v.compared)].filter((i) => i >= 0) }));
-    setHTML(box.querySelector('.dly-legend'), series.filter((s, i) => i % 2 === 0).map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name.replace(' · agreed', ''))}</span>`).join('') + '<span class="mut">solid = agreed, dashed = expected</span>');
+    setHTML(box.querySelector('.dly-legend'), series.filter((_s, i) => i % 2 === 0).map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name.replace(' · agreed', ''))}</span>`).join('') + '<span class="mut">solid = agreed, dashed = expected</span>');
   }
 
   function owners() {
     const o = DL.ownerTable(ui.cur); if (!o.length) return none('No delay or revision is charged to anyone yet.');
     const max = Math.max(1, ...o.map((x) => x.own));
-    return `<table class="an-t"><thead><tr><th>Owner</th><th class="n">Tasks</th><th>Own delay <span class="mut">(started at their tasks)</span></th><th class="n">Inherited</th><th class="n">Revisions</th><th class="n">Unclassified</th></tr></thead><tbody>${o.map((x) => `<tr><td><strong>${esc(x.owner)}</strong></td><td class="n">${x.tasks}</td><td><span class="dly-ownbar" style="width:${Math.round((x.own / max) * 90)}px;background:#f43f5e"></span> ${x.own ? sign(x.own) : '0'}</td><td class="n">${x.inherited ? sign(x.inherited) : '0'}</td><td class="n">${x.revisions ? sign(x.revisions) : '0'}</td><td class="n">${x.unclassified ? sign(x.unclassified) : '0'}</td></tr>`).join('')}</tbody></table>`;
+    return `<table class="an-t"><thead><tr><th>Owner</th><th class="n">Tasks</th><th>Own delay <span class="mut">(started at their tasks)</span></th><th class="n" title="Delay received from earlier tasks, summed per task: the same delay is counted on every task it reaches, so do not add it to Own">Inherited <span class="mut">(received, per task)</span></th><th class="n" title="Revisions recorded at this owner's own tasks">Revisions <span class="mut">(own tasks)</span></th><th class="n" title="Part of Own delay with no cause chosen">Unclassified <span class="mut">(of Own)</span></th></tr></thead><tbody>${o.map((x) => `<tr><td><strong>${esc(x.owner)}</strong></td><td class="n">${x.tasks}</td><td><span class="dly-ownbar" style="width:${Math.round((x.own / max) * 90)}px;background:#f43f5e"></span> ${x.own ? sign(x.own) : '0'}</td><td class="n">${x.inherited ? sign(x.inherited) : '0'}</td><td class="n">${x.revisions ? sign(x.revisions) : '0'}</td><td class="n">${x.unclassified ? sign(x.unclassified) : '0'}</td></tr>`).join('')}</tbody></table>`;
   }
 
   function log() {
@@ -130,7 +121,7 @@ export function createDelayAnalysis(ctx) {
   // The sections describe the compared plan `cur`. plans: [{ label, view, compared }] oldest first, for the trend.
   // h: { waterfallMarkup, waterfallChart, waterfallDetails, lineChart, setSVG }
   function html(cur, plans, h) {
-    ui.h = h || ui.h; ui.cur = cur; ui.sheet = store.wb.active; ui.stars = loadStars(ui.sheet);
+    ui.h = h || ui.h; ui.cur = cur; ui.sheet = store.wb.active; ui.stars = new Set(store.keyMilestones());
     ui.versions = plans.filter((p) => DL.hasAgreed(p.view)).map((p) => ({ label: p.label, compared: !!p.compared, table: DL.milestoneTable(p.view, causes(), ui.stars) }));
     return sec('dmil', 'Milestone table', milestoneTable(), 'Agreed, delay and expected for every milestone') +
       sec('dimp', 'Impact grid', impactGrid(), 'Which change moved which milestone') +
@@ -157,13 +148,13 @@ export function createDelayAnalysis(ctx) {
     const trendSection = () => sec('dtrd', 'Agreed vs expected', `<div class="dly-tools"><button class="dly-sw${ui.showTrend ? ' on' : ''}" data-dly-showtrend role="switch" aria-checked="${ui.showTrend}"><i></i>Show all milestones</button><span>${ui.showTrend ? 'All milestones' : 'Key milestones (★) and Project completion'}.</span></div><div class="dly-trend"><svg class="an-chart" role="img" aria-label="Agreed and expected dates across versions"></svg><div class="dly-legend"></div></div>`);
     root.addEventListener('click', (e) => {
       const star = e.target.closest('[data-dly-star]');
-      if (star) { const id = +star.dataset.dlyStar; if (ui.stars.has(id)) ui.stars.delete(id); else ui.stars.add(id); saveStars(ui.sheet, ui.stars); refresh(['dmil', 'dimp', 'dtrd']); root.querySelector(`[data-dly-star="${id}"]`)?.focus({ preventScroll: true }); return; }
+      if (star) { const id = +star.dataset.dlyStar; store.setKeyMilestone(id, !ui.stars.has(id)); ui.stars = new Set(store.keyMilestones()); refresh(['dmil', 'dimp', 'dtrd']); root.querySelector(`[data-dly-star="${id}"]`)?.focus({ preventScroll: true }); return; }
       if (e.target.closest('[data-dly-showtrend]')) { ui.showTrend = !ui.showTrend; refresh(['dtrd']); root.querySelector('[data-dly-showtrend]')?.focus({ preventScroll: true }); return; }
       if (e.target.closest('[data-dly-showall]')) { ui.showAll = !ui.showAll; refresh(['dimp']); root.querySelector('[data-dly-showall]')?.focus({ preventScroll: true }); return; }
       const step = e.target.closest('[data-dwf-step],[data-dwf-select]');
       if (step) { ui.step = +(step.dataset.dwfStep ?? step.dataset.dwfSelect); renderExplain(); return; }
       const nav = e.target.closest('[data-dwf-prev],[data-dwf-next]');
-      if (nav) ui.step = Math.max(0, Math.min(ui.w.steps.length - 1, ui.step + (nav.hasAttribute('data-dwf-next') ? 1 : -1))), renderExplain();
+      if (nav) { ui.step = Math.max(0, Math.min(ui.w.steps.length - 1, ui.step + (nav.hasAttribute('data-dwf-next') ? 1 : -1))); renderExplain(); }
     });
     root.addEventListener('keydown', (e) => {
       const step = e.target.closest?.('[data-dwf-step]');
@@ -179,6 +170,6 @@ export function createDelayAnalysis(ctx) {
     });
   }
   // Plain data for the PDF and Excel exports: the same numbers as the sections on screen.
-  const data = (view) => { const stars = loadStars(store.wb.active), c = causes(); return { table: DL.milestoneTable(view, c, stars), grid: DL.impactGrid(view, c, stars), log: DL.delayLog(view, c) }; };
+  const data = (view) => { const stars = store.keyMilestones(), c = causes(); return { table: DL.milestoneTable(view, c, stars), grid: DL.impactGrid(view, c, stars), log: DL.delayLog(view, c) }; };
   return { html, mount, data, has: (view) => DL.hasAgreed(view), resize: () => { renderExplain(); renderTrend(); }, stars: () => ui.stars, table };
 }

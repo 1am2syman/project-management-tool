@@ -344,7 +344,7 @@ export async function buildAnalysisXlsx(d, meta) {
   if (meta.delay) {
     const dl = meta.delay, nd = (n) => (n ? n : 0);
     table('Delay milestones', 'F43F5E', [34, 16, 12, 16, 12, 16, 22, 50], ['Milestone', 'Agreed', 'Revisions', 'Current agreed', 'Delay', 'Expected', 'Status', 'Main causes'],
-      dl.table.map((m) => [[m.name, bold], [serial(m.orig), date], [nd(m.rev), deltaStyle(m.rev)], [serial(m.cur), date], [nd(m.delay), deltaStyle(m.delay)], [serial(m.exp), date], [m.status], [m.causes.map((c) => `${c.name} ${signed(c.days)}`).join('; ')]]));
+      dl.table.map((m) => [[m.name, bold], [serial(m.orig), date], [nd(m.rev), flat], [serial(m.cur), date], [nd(m.delay), deltaStyle(m.delay)], [serial(m.exp), date], [m.status], [m.causes.map((c) => `${c.name} ${signed(c.days)}`).join('; ')]]));
     const cols = dl.grid.cols;
     table('Impact grid', 'F43F5E', [46, ...cols.map(() => 16)], ['What changed', ...cols.map((c) => c.name)], [
       ...dl.grid.rows.map((r) => [[r.label], ...cols.map((c) => [r.effects[c.id] || 0, deltaStyle(r.effects[c.id] || 0)])]),

@@ -278,7 +278,6 @@ export const changeEffects = (s) => memo(s, 'fx', () => {
   const agreed = (s.log || []).filter((e) => e.type !== 'delay').map((entry) => ({ entry, effects: Object.fromEntries(targets(s).map((tg) => [tg.id, entry.eff?.[tg.id] ?? 0])) }));
   return { list: [...agreed, ...out.reverse()], pend: ps?.steps ?? [], base: cur };
 });
-const TYPE_LABEL = { revision: 'Revision', inclusion: 'Inclusion', omission: 'Omission' };
 export function milestoneTable(s, causes, stars = new Set(), fx = changeEffects(s)) {
   const rows = [];
   if (!hasAgreed(s)) return rows;
@@ -291,16 +290,25 @@ export function milestoneTable(s, causes, stars = new Set(), fx = changeEffects(
     const by = new Map();
     for (const { entry, effects } of fx.list) {
       const n = effects[tg.id]; if (!n) continue;
-      const label = entry.type === 'delay' ? causeName(causes, entry.cause) : TYPE_LABEL[entry.type];
+      if (entry.type !== 'delay') continue; // causes explain the Delay column; agreed changes are in Revisions
+      const label = causeName(causes, entry.cause);
       by.set(label, (by.get(label) || 0) + n);
     }
-    if (pend) by.set('Pending inclusion', pend);
+    const explained = [...by.values()].reduce((n, d) => n + d, 0);
+    if (delay !== explained) by.set('Other / unexplained', delay - explained);
     rows.push({ id: tg.id, name: tg.name, orig: ag.o, cur: ag.f, exp, delay, pend, rev, total, status, causes: [...by].map(([name, days]) => ({ name, days })).sort((a, b) => b.days - a.days), starred: tg.id === 'end' || stars.has(tg.id), ms: tg.ms });
   }
   return rows;
 }
 export const nameOf = (s, id) => s.byId.get(id)?.name ?? (s.log || []).find((e) => e.taskId === id)?.taskName ?? `#${id}`;
-const entryLabel = (s, e) => (e.type === 'revision' ? `Revision: ${e.reason || 'agreed change'}` : e.type === 'inclusion' ? `Inclusion: ${nameOf(s, e.taskId)}` : e.type === 'omission' ? `Omission: ${e.taskName || nameOf(s, e.taskId)}` : `${nameOf(s, e.taskId)} · own ${sign(e.days)}`);
+// Names the task as well as the change, so a grid row and a waterfall step say where it happened.
+const entryLabel = (s, e) => {
+  const task = e.taskName || nameOf(s, e.taskId);
+  if (e.type === 'revision') return `Revision · ${task}: ${e.reason || 'agreed change'}`;
+  if (e.type === 'inclusion') return `Inclusion · ${task}${e.reason ? `: ${e.reason}` : ''}`;
+  if (e.type === 'omission') return `Omission · ${task}${e.reason ? `: ${e.reason}` : ''}`;
+  return `${nameOf(s, e.taskId)} · own ${sign(e.days)}`;
+};
 // Task × milestone: each column sums exactly to that milestone's total; the last row is whatever the log cannot explain.
 export function impactGrid(s, causes, stars = new Set()) {
   const fx = changeEffects(s), cols = milestoneTable(s, causes, stars, fx);
@@ -330,14 +338,16 @@ export function explainSteps(s, causes, id, stars = new Set()) {
   for (const p of fx.pend) if (p.effects[id]) add('pending', `Pending inclusion: ${p.name}`, p.effects[id], { task: p.name });
   return { id, name: m.name, orig: m.orig, agreed: agreedAt, exp: m.exp, total: m.total, steps, status: m.status };
 }
-// Owners are charged only with the delay that started at their own tasks.
+// Owners are charged only with the delay that started at their own tasks. Unclassified is part of Own; Inherited is summed per task, so it is not additive with Own.
 export function ownerTable(s) {
   const owners = new Map();
   for (const t of leaves(s)) {
     const name = t.owner || 'Unassigned', r = row(s, t.id);
     if (!owners.has(name)) owners.set(name, { owner: name, tasks: 0, own: 0, inherited: 0, unclassified: 0, revisions: 0 });
     const x = owners.get(name); x.tasks++;
-    if (r) { x.own += Math.max(0, r.own); x.inherited += r.inherited; x.revisions += Math.max(0, r.rev); }
+    if (r) { x.own += Math.max(0, r.own); x.inherited += r.inherited; }
+    // Revisions are counted where they were recorded: a revision that only pushed a later task is not that task owner's.
+    for (const e of entriesOf(s, t.id, 'revision')) x.revisions += e.days;
     for (const e of entriesOf(s, t.id)) if (!e.cause) x.unclassified += Math.max(0, e.days);
   }
   return [...owners.values()].filter((o) => o.own || o.inherited || o.revisions || o.unclassified).sort((a, b) => b.own - a.own || b.inherited - a.inherited);
