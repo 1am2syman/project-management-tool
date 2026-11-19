@@ -494,6 +494,18 @@ try {
   assert(/Test · own \+3/.test(await an.locator('#an-dimp').innerText()), 'the impact grid has a row for the lag delay');
   await an.locator('[data-an=close]').click(); await settle();
 
+  // F4: a duplicate keeps the agreed dates and the log but no versions; the delay analysis must still be reachable.
+  await page.locator('.tab.on').first().click({ button: 'right' });
+  await page.locator('button[data-a=dup]').click(); await settle();
+  await page.locator('#analysisbtn').click(); await an.locator('.an-empty').waitFor(); await settle();
+  assert(/No versions yet/.test(await an.locator('.an-empty').innerText()), 'the duplicate has no versions');
+  for (const id of ['dmil', 'dimp', 'dexp', 'down', 'dlog']) assert(await an.locator(`#an-${id}`).count(), `the duplicate's analysis has ${id}`);
+  assert(/Launch/.test(await an.locator('#an-dmil').innerText()), 'the milestone table lists the milestones of the duplicate');
+  assert(/Client \/ approver/.test(await an.locator('#an-dlog').innerText()), 'the delay log is kept in the duplicate');
+  assert(await an.locator('.an-nav [data-go=dmil]').isVisible(), 'the section navigation lists the delay sections');
+  await page.screenshot({ path: join(evidence, 'duplicate-analysis.png') });
+  await an.locator('[data-an=close]').click(); await settle();
+
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');
 } catch (error) {

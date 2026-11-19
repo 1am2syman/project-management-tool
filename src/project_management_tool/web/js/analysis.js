@@ -178,11 +178,16 @@ export function createAnalysis(ctx) {
     setHTML(root.querySelector('#an-a'), options(state.a)); setHTML(root.querySelector('#an-b'), options(state.b));
     const exportable = list.length > 1 && state.a !== state.b;
     for (const b of root.querySelectorAll('[data-an=pdf],[data-an=xlsx]')) b.disabled = !exportable;
-    root.querySelector('.an-nav').hidden = list.length < 2;
-    root.classList.toggle('an-is-empty', list.length < 2);
-    if (list.length < 2) {
-      state.d = null;
-      setHTML(body, `<div class="an-empty"><b>No versions yet</b><p>Save a snapshot to start comparing plans.</p><button class="primary" data-an="snap">Take snapshot…</button></div>`);
+    // A plan with agreed dates (for example a duplicate) has delay analysis of its own, so it does not need a saved version first.
+    const now = list.at(-1), alone = list.length < 2, aloneDelay = alone && delay.has(now.view);
+    root.querySelector('.an-nav').hidden = alone && !aloneDelay;
+    root.classList.toggle('an-is-empty', alone);
+    if (alone) {
+      state.d = null; state.hasDelay = aloneDelay;
+      const empty = `<div class="an-empty${aloneDelay ? " with-delay" : ""}"><b>No versions yet</b><p>Save a snapshot to start comparing plans.${aloneDelay ? ' The delay analysis of the current plan is below.' : ''}</p><button class="primary" data-an="snap">Take snapshot…</button></div>`;
+      if (aloneDelay) setHTML(root.querySelector('.an-nav'), DELAY_SECTIONS.map(([id, label]) => `<button data-go="${id}">${label}</button>`).join(''));
+      setHTML(body, empty + (aloneDelay ? delay.html(now.view, [{ label: now.short, view: now.view, compared: true, live: true }], HELPERS) : ''));
+      if (aloneDelay) delay.mount(root);
       return;
     }
     const A = list.find((p) => p.id === state.a), B = list.find((p) => p.id === state.b);
