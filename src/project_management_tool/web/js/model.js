@@ -434,6 +434,22 @@ export class Store {
   livePlan() { if (!this.preview) this.save(); return planText(this.sheet().data); }
   // True when the live plan matches the newest version, so another snapshot would record no change.
   unchangedSinceLatest() { const latest = this.versions().at(-1); return !!latest && planText(JSON.parse(latest.data)) === this.livePlan(); }
+  // Why another version cannot be saved right now, or null.
+  snapshotError() {
+    const error = this.versionError(); if (error) return error;
+    return (this.sheet().versions || []).length >= MAX_VERSIONS ? `A project keeps at most ${MAX_VERSIONS} versions; delete an older version first` : null;
+  }
+  // An Agreed baseline: the agreement and the version are one operation. Nothing is agreed unless the version can be saved,
+  // and the agreement cannot be undone on its own (a snapshot taken before it would drop the agreed dates the version holds),
+  // so the undo history starts at the baseline.
+  snapshotAgreed(agree, opts) {
+    const error = this.snapshotError(); if (error) return { error };
+    const fail = agree(); if (fail) return { error: fail };
+    const r = this.snapshotVersion(opts);
+    if (r.error) { this.undo(); this.redoStack.pop(); return r; }
+    this.undoStack = []; this.redoStack = []; this.emit();
+    return r;
+  }
   snapshotVersion({ name = '', note = '', by = '', type = null } = {}) {
     const error = this.versionError(); if (error) return { error };
     const sheet = this.sheet(), list = sheet.versions || [];
@@ -1000,7 +1016,9 @@ export class Store {
       const saved = this.links; this.links = keep;
       for (const n of next) if (this.reaches(id, n.from)) { this.links = saved; return 'That would create a cycle'; }
       this.links = saved;
+      const pre = this.hook?.before() ?? null;
       this.tx(() => { this.links = keep.concat(next.map((n) => ({ id: 'l' + this.nextLink++, from: n.from, to: id, type: n.type, lag: n.lag }))); });
+      this.hook?.after({ id, kind: 'link', pre });
       return null;
     }
     return null;

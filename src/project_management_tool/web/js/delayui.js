@@ -112,6 +112,8 @@ export function createDelayUI(ctx) {
   function closePop(undo = false) { if (!pop) return; const p = pop; pop = null; p.el.remove(); if (undo && p.o.undo) p.o.undo(); }
   api.closePop = closePop;
   api.popOpen = () => !!pop;
+  // Cancel and Escape take back only the edit that opened the popover: if the user has changed anything since, just dismiss it.
+  const ownUndo = () => { const n = store.undoStack.length, top = store.undoStack.at(-1); return () => { if (store.undoStack.length === n && store.undoStack.at(-1) === top) store.undo(); }; };
   function afterEdit({ id, kind, pre }) {
     if (!pre || !editable()) return;
     let target = id;
@@ -127,7 +129,7 @@ export function createDelayUI(ctx) {
     let pushed = 0;
     for (const k of DL.leaves(store)) if (k.id !== target && k.agr && pre.fins.has(k.id) && DL.fin(store, k.id) > pre.fins.get(k.id)) pushed++;
     const op = kind === 'start' || kind === 'move' || kind === 'link' || t.ms ? 'start' : 'finish';
-    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && kind !== 'link', undo: () => store.undo() });
+    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && kind !== 'link', undo: ownUndo() });
   }
   api.openOverdue = (id) => {
     if (!editable()) return;
@@ -203,11 +205,17 @@ export function createDelayUI(ctx) {
     el.querySelector('[data-skip]').addEventListener('click', () => finish({ type: 'delay', kind: f('kind').value, cause: null, party: '', note: '' }));
     for (const b of el.querySelectorAll('[data-cancel]')) b.addEventListener('click', () => closePop(!o.overdue));
     if (ctx.people) { const inp = f('party'); let stop = null; inp.addEventListener('focus', () => { stop?.(); stop = ctx.people.attach(inp, (p) => { inp.value = p.name; }); }); }
-    // place next to the edited row
-    const row = $(`.bar[data-id="${o.id}"]`) || $(`#gbody .r[data-id="${o.id}"]`), rr = row?.getBoundingClientRect(), vw = innerWidth, vh = innerHeight, width = 540;
-    const left = rr ? Math.min(Math.max(8, rr.left + (t.ms ? 40 : -20)), vw - width - 8) : (vw - width) / 2, h = el.offsetHeight;
-    let topPx = rr ? rr.bottom + 12 : 80; if (topPx + h > vh - 40) topPx = Math.max(60, (rr?.top ?? vh) - h - 12);
-    el.style.left = `${left}px`; el.style.top = `${topPx}px`;
+    // Place it beside the edited bar without covering it: below, above, to the right, to the left, then over the sheet.
+    const row = $(`.bar[data-id="${o.id}"]`) || $(`#gbody .r[data-id="${o.id}"]`), rr = row?.getBoundingClientRect(), vw = innerWidth, vh = innerHeight, width = 540, h = el.offsetHeight;
+    const clampX = (x) => Math.min(Math.max(8, x), vw - width - 8), clampY = (y) => Math.min(Math.max(60, y), vh - h - 8);
+    let spot = { left: (vw - width) / 2, top: 80 };
+    if (rr) {
+      const left = clampX(rr.left + (t.ms ? 40 : -20)), mid = clampY(rr.top + rr.height / 2 - h / 2);
+      const options = [{ left, top: rr.bottom + 12 }, { left, top: rr.top - h - 12 }, { left: rr.right + 12, top: mid }, { left: rr.left - width - 12, top: mid }, { left: 8, top: mid }];
+      const clear = (c) => c.left >= 8 && c.left + width <= vw - 8 && c.top >= 60 && c.top + h <= vh - 8 && (c.left + width < rr.left - 4 || c.left > rr.right + 4 || c.top + h < rr.top - 4 || c.top > rr.bottom + 4);
+      spot = options.find(clear) || options.at(-1);
+    }
+    el.style.left = `${spot.left}px`; el.style.top = `${spot.top}px`;
     (f('cause') || el).focus();
   }
   const effectText = (pushed, finish) => `${pushed ? `Pushes ${pl(pushed, 'later task')}` : 'Pushes no later tasks'} · ${finish > 0 ? `project finish ${sign(finish)}d` : 'project finish not affected'}`;
@@ -349,10 +357,16 @@ export function createDelayUI(ctx) {
   };
 
   // ---------------------------------------------------------------- Settings -> Delay causes
-  const allLogs = () => {
-    const logs = [store.log || []];
-    for (const s of store.wb.sheets) { if (s.id !== store.wb.active) logs.push(s.data?.log || []); for (const v of s.versions || []) { try { logs.push(JSON.parse(v.data).log || []); } catch { /* unreadable version */ } } }
-    return logs.flat();
+  // Every delay entry of every project and saved version, once per project and entry id (a version holds copies of the
+  // live log's entries). The live entry wins, so a cause changed since a version was saved counts for its new cause; a cause
+  // that only an older version still uses is found as well, so removing it retires it instead.
+  const allEntries = () => {
+    const seen = new Map(), raw = new Set(), add = (sheetId, list) => { for (const e of list || []) { const k = `${sheetId}:${e.id}`; if (e.cause) raw.add(e.cause); if (!seen.has(k)) seen.set(k, e); } };
+    for (const s of store.wb.sheets) {
+      add(s.id, s.id === store.wb.active && !store.preview ? store.log : s.data?.log);
+      for (const v of s.versions || []) { try { add(s.id, JSON.parse(v.data).log); } catch { /* unreadable version */ } }
+    }
+    return { entries: [...seen.values()], used: raw };
   };
   api.openSettings = () => {
     refreshCauses();
@@ -361,10 +375,10 @@ export function createDelayUI(ctx) {
       <div class="dly-addrow"><input id="dly-new" placeholder="Add a cause, e.g. Weather" maxlength="60" autocomplete="off"><button class="primary" id="dly-add">Add cause</button></div>
       <p class="set-err" role="alert"></p><p class="mut">Party is free text; it suggests people already in this workbook, like Owner.</p></div>`);
     const body = m.body, list = body.querySelector('#dly-causes'), err = body.querySelector('.set-err');
-    const logs = allLogs(), uses = (id) => logs.filter((e) => e.cause === id).length;
+    const { entries, used } = allEntries(), uses = (id) => entries.filter((e) => e.cause === id).length;
     const save = () => { saveCauses(causes); ctx.requestRender(); };
     const paint = () => {
-      setHTML(list, causes.list.map((c) => `<div class="dly-cause-row${c.retired ? ' retired' : ''}" data-id="${esc(c.id)}"><span class="dly-grip" role="button" tabindex="0" title="Drag to reorder (or use Alt+↑ / Alt+↓)" aria-label="Reorder ${esc(c.name)}">⠿</span><span class="dly-cname" data-rename="${esc(c.id)}" tabindex="0" role="button" title="Click to rename">${esc(c.name)}</span>${c.retired ? '<span class="dly-chip ret">Retired</span>' : ''}<span class="dly-use">${uses(c.id) ? `Used by ${pl(uses(c.id), 'delay')}` : 'Not used'}</span><span class="grow"></span>${c.retired ? `<button data-restore="${esc(c.id)}">Restore</button>` : `<button data-remove="${esc(c.id)}" aria-label="${uses(c.id) ? 'Retire' : 'Remove'} ${esc(c.name)}">${uses(c.id) ? 'Retire' : 'Remove'}</button>`}</div>`).join(''));
+      setHTML(list, causes.list.map((c) => `<div class="dly-cause-row${c.retired ? ' retired' : ''}" data-id="${esc(c.id)}"><span class="dly-grip" role="button" tabindex="0" title="Drag to reorder (or use Alt+↑ / Alt+↓)" aria-label="Reorder ${esc(c.name)}">⠿</span><span class="dly-cname" data-rename="${esc(c.id)}" tabindex="0" role="button" title="Click to rename">${esc(c.name)}</span>${c.retired ? '<span class="dly-chip ret">Retired</span>' : ''}<span class="dly-use">${uses(c.id) ? `Used by ${pl(uses(c.id), 'delay')}` : used.has(c.id) ? 'Only in saved versions' : 'Not used'}</span><span class="grow"></span>${c.retired ? `<button data-restore="${esc(c.id)}">Restore</button>` : `<button data-remove="${esc(c.id)}" aria-label="${used.has(c.id) ? 'Retire' : 'Remove'} ${esc(c.name)}">${used.has(c.id) ? 'Retire' : 'Remove'}</button>`}</div>`).join(''));
     };
     paint();
     const add = () => {
@@ -383,7 +397,7 @@ export function createDelayUI(ctx) {
     };
     list.addEventListener('click', (e) => {
       const rn = e.target.closest('[data-rename]'), rm = e.target.closest('[data-remove]'), rs = e.target.closest('[data-restore]');
-      if (rm) { DL.removeCause(causes, rm.dataset.remove, uses(rm.dataset.remove) > 0); paint(); save(); }
+      if (rm) { DL.removeCause(causes, rm.dataset.remove, used.has(rm.dataset.remove)); paint(); save(); }
       else if (rs) { causes.list.find((x) => x.id === rs.dataset.restore).retired = false; paint(); save(); }
       else if (rn) rename(rn.dataset.rename);
     });

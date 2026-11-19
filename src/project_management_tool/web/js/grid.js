@@ -10,6 +10,12 @@ export const COLS = [
   { id: 'start', letter: 'B', label: 'Start', w: 72, group: 'sched', ctr: true },
   { id: 'end', letter: 'C', label: 'End', w: 72, group: 'sched', ctr: true },
   { id: 'dur', letter: 'D', label: 'Days', w: 58, group: 'sched', num: true },
+  // Delay accounting: shown once the project has agreed dates (see delayui.js colVisible)
+  { id: 'agreedO', letter: 'L', label: 'Original agreed', w: 104, group: 'dly', ctr: true, dly: true },
+  { id: 'agreed', letter: 'M', label: 'Agreed', w: 78, group: 'dly', ctr: true, dly: true },
+  { id: 'var', letter: 'N', label: '± days', w: 70, group: 'dly', num: true, dly: true },
+  { id: 'origin', letter: 'O', label: 'Own / Inherited', w: 132, group: 'dly', dly: true },
+  { id: 'cause', letter: 'P', label: 'Cause', w: 130, group: 'dly', dly: true },
   { id: 'progress', letter: 'E', label: 'Done', w: 66, group: 'prog', num: true },
   { id: 'float', letter: 'F', label: 'Total slack', w: 104, group: 'slack', num: true },
   { id: 'freeFloat', letter: 'G', label: 'Free slack', w: 100, group: 'slack', num: true },
@@ -17,21 +23,15 @@ export const COLS = [
   { id: 'pred', letter: 'I', label: 'Depends on', w: 104, group: 'dep' },
   { id: 'owner', letter: 'J', label: 'Owner', w: 112, group: 'dep' },
   { id: 'email', letter: 'K', label: 'Email', w: 190, group: 'dep' },
-  // Delay accounting: shown once the project has agreed dates (see delayui.js colVisible)
-  { id: 'agreedO', letter: 'L', label: 'Original agreed', w: 112, group: 'dly', ctr: true, dly: true },
-  { id: 'agreed', letter: 'M', label: 'Agreed', w: 84, group: 'dly', ctr: true, dly: true },
-  { id: 'var', letter: 'N', label: 'Variance', w: 82, group: 'dly', num: true, dly: true },
-  { id: 'origin', letter: 'O', label: 'Delay origin', w: 168, group: 'dly', dly: true },
-  { id: 'cause', letter: 'P', label: 'Cause', w: 220, group: 'dly', dly: true },
 ];
 const GROUPS = [
   { id: 'task', label: 'Task' },
   { id: 'sched', label: 'Schedule · days', hl: true },
+  { id: 'dly', label: 'Agreed · variance', hl: true },
   { id: 'prog', label: 'Progress' },
   { id: 'slack', label: 'Slack · working days' },
   { id: 'trend', label: 'Trend' },
   { id: 'dep', label: 'Dependencies & team' },
-  { id: 'dly', label: 'Agreed vs expected · working days', hl: true },
 ];
 const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
 const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgba(79,102,240,${(0.05 + v * 0.62).toFixed(3)});${v > 0.62 ? 'color:#fff;font-weight:600;' : ''}`; };

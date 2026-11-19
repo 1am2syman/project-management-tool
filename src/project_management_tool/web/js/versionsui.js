@@ -102,10 +102,11 @@ export function createVersionsUI(ctx) {
     ctx.delay.bindTypeField(body);
     const save = () => {
       const type = ctx.delay.readType(body);
-      if (type === 'baseline') { const e = ctx.delay.agreeOnSave(body); if (e) { err.textContent = e; return; } } // the agreed dates are part of the saved plan
-      const r = store.snapshotVersion({ name: name.value, note: body.querySelector('#vnote').value, by: '', type });
+      const opts = { name: name.value, note: body.querySelector('#vnote').value, by: '', type };
+      // An Agreed baseline agrees the dates and saves the version as one step; the agreed dates are part of the saved plan.
+      const r = type === 'baseline' ? store.snapshotAgreed(() => ctx.delay.agreeOnSave(body), opts) : store.snapshotVersion(opts);
       if (r.error) { err.textContent = r.error; return; }
-      dialog.close(); ctx.toast(`Saved ${versionLabel(r.version)}`);
+      dialog.close(); ctx.toast(type === 'baseline' ? `Saved ${versionLabel(r.version)} · undo history starts here` : `Saved ${versionLabel(r.version)}`);
     };
     body.querySelector('[data-save]').addEventListener('click', save);
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());

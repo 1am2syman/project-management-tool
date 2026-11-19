@@ -482,3 +482,33 @@ test('templates carry no agreed data, including templates saved earlier', () => 
   const sheet = s.instantiate(old, D('2027-03-01'), 'From template');
   assert.ok(s.tasks.every((t) => !t.agr && !t.inc)); assert.equal(s.baselined, false); void sheet;
 });
+
+test('an Agreed baseline is one operation: nothing is agreed when the version cannot be saved, and undo cannot split it', () => {
+  const s = demo();
+  s.stale = true; // another tab changed the project: versions cannot be saved
+  const failed = s.snapshotAgreed(() => dl.agreeBaseline(s), { name: 'Baseline', type: 'baseline' });
+  assert.ok(failed.error);
+  assert.equal(dl.hasAgreed(s), false);
+  assert.equal(s.versions().length, 0);
+  assert.equal(s.undoStack.length, 0);
+  s.stale = false;
+  const bad = s.snapshotAgreed(() => 'Agreeing needs a reason', { name: 'Baseline', type: 'baseline' });
+  assert.equal(bad.error, 'Agreeing needs a reason');
+  assert.equal(s.versions().length, 0);
+  const ok = s.snapshotAgreed(() => dl.agreeBaseline(s), { name: 'Baseline', type: 'baseline' });
+  assert.ok(ok.version);
+  assert.equal(ok.version.type, 'baseline');
+  assert.equal(dl.hasAgreed(s), true);
+  assert.equal(s.undoStack.length, 0, 'the undo history starts at the baseline');
+  s.undo();
+  assert.equal(dl.hasAgreed(s), true, 'undo does not remove the dates the saved baseline holds');
+});
+
+test('typing a predecessor with a lag is a link edit the delay hook sees', () => {
+  const s = demo();
+  dl.agreeBaseline(s);
+  const seen = [];
+  s.hook = { before: () => dl.snapshotBefore(s), after: (e) => seen.push(e.kind) };
+  assert.equal(s.setCell(13, 'pred', '13+3'), null);
+  assert.deepEqual(seen, ['link']);
+});
