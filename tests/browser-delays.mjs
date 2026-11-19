@@ -592,6 +592,29 @@ try {
   assert.deepEqual(await unexplainedNow(), [], 'the catch-up after turning Auto-schedule on is explained');
   await setAuto(false); await setAuto(true); await settle();
   assert.deepEqual(await unexplainedNow(), [], 'and still is after turning it off and on again');
+  // F11: keyboard. Focus stays in the popover, comes back to the grid, Enter in a text field records, labels meet AA contrast.
+  const focusId = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+  await edit(2, 'dur', String(+(await text(2, 'dur')) + 1)); await open();
+  assert(await pop.evaluate((el) => el.contains(document.activeElement)), 'focus starts inside the popover');
+  const reach = async (key, n = 40) => { for (let i = 0; i < n; i++) { await page.keyboard.press(key); if (!(await pop.evaluate((el) => el.contains(document.activeElement)))) return false; } return true; };
+  assert(await reach('Tab'), 'Tab wraps inside the popover');
+  assert(await reach('Shift+Tab', 12), 'Shift+Tab wraps inside the popover');
+  const label = await pop.locator('.fld > span').first().evaluate((e) => getComputedStyle(e).color);
+  assert.equal(label, 'rgb(91, 103, 121)', 'popover labels use the AA colour');
+  assert.equal(await pop.locator('.dly-opt:not(.on) .dly-fields').first().evaluate((e) => getComputedStyle(e).opacity), '1', 'the inactive card is dimmed by its background, not by opacity');
+  await page.keyboard.press('Escape'); await pop.waitFor({ state: 'detached' }); await settle();
+  assert.equal(await focusId(), 'gx', `Escape returns focus to the grid, not the page: ${await focusId()}`);
+  await edit(2, 'dur', String(+(await text(2, 'dur')) + 1)); await open();
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-f=party]').fill('Neighbour'); await pop.locator('[data-f=party]').press('Enter');
+  await pop.waitFor({ state: 'detached' }); await settle();
+  assert.equal(await focusId(), 'gx', 'Enter in the Party field records and focus returns to the grid');
+  assert.match(await text(2, 'cause'), /Client \/ approver/, 'the delay was recorded by Enter');
+  await page.locator('#analysisbtn').click(); await an.locator('#an-dexp').waitFor(); await settle();
+  const next = an.locator('#an-dexp [data-dwf-next]');
+  if (await next.count()) { await next.focus(); await page.keyboard.press('Enter'); await settle(); assert(await page.evaluate(() => document.activeElement?.hasAttribute('data-dwf-next')), 'focus stays on Next after the stepper redraws'); }
+  await an.locator('[data-an=close]').click(); await settle();
+
   // F10: the short Delay log columns never break inside a word, however long the text beside them is.
   await page.locator('#analysisbtn').click(); await an.locator('#an-dlog').waitFor(); await settle();
   const white = await an.locator('#an-dlog tbody tr').first().locator('td').evaluateAll((tds) => tds.map((td) => getComputedStyle(td).whiteSpace));

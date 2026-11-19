@@ -154,9 +154,11 @@ export function createDelayAnalysis(ctx, { onEdited } = {}) {
       if (e.target.closest('[data-dly-showtrend]')) { ui.showTrend = !ui.showTrend; refresh(['dtrd']); root.querySelector('[data-dly-showtrend]')?.focus({ preventScroll: true }); return; }
       if (e.target.closest('[data-dly-showall]')) { ui.showAll = !ui.showAll; refresh(['dimp']); root.querySelector('[data-dly-showall]')?.focus({ preventScroll: true }); return; }
       const step = e.target.closest('[data-dwf-step],[data-dwf-select]');
-      if (step) { ui.step = +(step.dataset.dwfStep ?? step.dataset.dwfSelect); renderExplain(); return; }
+      // The chart and the step details are redrawn on every step; focus stays on the control that was used.
+      const keep = (el) => { const sel = ['data-dwf-prev', 'data-dwf-next', 'data-dwf-step', 'data-dwf-select'].map((a) => (el.hasAttribute(a) ? `[${a}${el.getAttribute(a) ? `="${el.getAttribute(a)}"` : ''}]` : null)).find(Boolean); return sel ? () => root.querySelector(`#an-dexp ${sel}`)?.focus({ preventScroll: true }) : () => {}; };
+      if (step) { const back = keep(step); ui.step = +(step.dataset.dwfStep ?? step.dataset.dwfSelect); renderExplain(); back(); return; }
       const nav = e.target.closest('[data-dwf-prev],[data-dwf-next]');
-      if (nav) { ui.step = Math.max(0, Math.min(ui.w.steps.length - 1, ui.step + (nav.hasAttribute('data-dwf-next') ? 1 : -1))); renderExplain(); }
+      if (nav) { const back = keep(nav); ui.step = Math.max(0, Math.min(ui.w.steps.length - 1, ui.step + (nav.hasAttribute('data-dwf-next') ? 1 : -1))); renderExplain(); back(); }
     });
     root.addEventListener('keydown', (e) => {
       const step = e.target.closest?.('[data-dwf-step]');

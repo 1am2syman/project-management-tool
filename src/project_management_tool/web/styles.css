@@ -680,11 +680,11 @@ body.analysis-open .tip{display:none}
 .dly-opt{border:1px solid var(--line);border-radius:10px;padding:9px 11px;display:flex;flex-direction:column;gap:8px;cursor:pointer}
 .dly-opt.on{border-color:var(--blue);background:#f6f8ff}
 .dly-opt>label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}.dly-opt input[type=radio]{accent-color:var(--blue);margin:2px 0 0}
-.dly-opt i{font-style:normal;color:#64748b}
+.dly-opt i{font-style:normal;color:#5b6779}
 .dly-fields{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.5fr) minmax(0,1fr);gap:8px;padding-left:22px}.dly-fields .fld{min-width:0}.dly-fields select,.dly-fields input{width:100%;max-width:100%;text-overflow:ellipsis}
 .dly-opt[data-mode=revision] .dly-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
-.dly-opt:not(.on) .dly-fields{opacity:.5}
-.dly-pop .fld>span{font-size:11px}
+.dly-opt:not(.on){background:#fafbfd;border-color:#eef1f6}.dly-opt:not(.on) .dly-fields input,.dly-opt:not(.on) .dly-fields select{background-color:#f4f6fa;border-color:#e8ecf2}
+.dly-pop .fld>span{font-size:11px;color:#5b6779}
 .dly-pop .fld input,.dly-pop .fld select{padding:6px 8px;font-size:12.5px;min-width:0;height:30px}
 .dly-pop select{appearance:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5' fill='none' stroke='%2364748b' stroke-width='1.6'/%3E%3C/svg%3E") no-repeat right 6px center/14px;padding-right:24px}
 .dly-note{margin-top:0}
@@ -702,7 +702,7 @@ body.analysis-open .tip{display:none}
 .mut{color:var(--muted);font-size:12px;margin:0}
 /* omission dialog */
 .dly-choice{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}.dly-choice.on{border-color:var(--blue);background:#f6f8ff}
-.dly-choice span{display:flex;flex-direction:column;gap:2px}.dly-choice em{font-style:normal;color:#64748b;font-size:12px}.dly-choice i{font-style:normal;color:#64748b;font-weight:400}.dly-choice input{accent-color:var(--blue);margin-top:3px}
+.dly-choice span{display:flex;flex-direction:column;gap:2px}.dly-choice em{font-style:normal;color:#5b6779;font-size:12px}.dly-choice i{font-style:normal;color:#5b6779;font-weight:400}.dly-choice input{accent-color:var(--blue);margin-top:3px}
 .dly-omit{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 0 0 26px}.dly-omit[hidden]{display:none}
 /* settings */
 .dly-set h3{margin:0 0 6px;font-size:15px}

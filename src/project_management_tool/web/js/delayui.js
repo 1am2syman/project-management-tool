@@ -115,7 +115,12 @@ export function createDelayUI(ctx) {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && pop) { e.stopPropagation(); closePop(true); } }, true);
 
   // ---------------------------------------------------------------- the record popover
-  function closePop(undo = false) { if (!pop) return; const p = pop; pop = null; p.el.remove(); if (undo && p.o.undo) p.o.undo(); }
+  function closePop(undo = false) {
+    if (!pop) return; const p = pop; pop = null; p.el.remove(); if (undo && p.o.undo) p.o.undo();
+    // Focus goes back to where it was (the grid, with the edited cell selected), never to the page body.
+    const back = p.opener?.isConnected && p.opener !== document.body ? p.opener : document.querySelector('#gx');
+    if (back && (!document.activeElement || document.activeElement === document.body || p.el.contains(document.activeElement))) back.focus({ preventScroll: true });
+  }
   api.closePop = closePop;
   api.popOpen = () => !!pop;
   // Cancel and Escape take back only the edit that opened the popover: if the user has changed anything since, just dismiss it.
@@ -174,11 +179,22 @@ export function createDelayUI(ctx) {
       <div class="dly-effect" data-effect>${o.overdue ? 'Nothing moves until you record.' : effectText(o.pushed, o.finish)}</div>
       <p class="set-err" role="alert"></p>
       <div class="dly-actions"><button data-skip title="Record the delay without a cause">Skip reason</button><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-record>Record</button></div>`);
+    const opener = document.activeElement;
     document.body.appendChild(el);
-    pop = { el, o };
+    pop = { el, o, opener };
     if (o.unrecorded) { el.querySelector('[data-mode=revision]').style.display = 'none'; el.querySelector('[data-effect]').textContent = 'Recorded against this task; nothing else moves.'; }
     const mode = () => el.querySelector('input[name=dlymode]:checked').value, f = (k) => el.querySelector(`[data-f=${k}]`);
     const err = (m) => { el.querySelector('.set-err').textContent = m; };
+    // role=dialog: Tab stays inside it, and Enter in a text field records, as Enter saves in the Edit delay record dialog.
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        const items = [...el.querySelectorAll('button, input, select, [tabindex]:not([tabindex="-1"])')].filter((x) => !x.disabled && x.offsetParent !== null);
+        if (!items.length) return;
+        const first = items[0], last = items.at(-1);
+        if (e.shiftKey && (document.activeElement === first || !el.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && (document.activeElement === last || !el.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+      } else if (e.key === 'Enter' && !e.defaultPrevented && e.target.matches('input:not([type=radio]):not([type=checkbox])')) { e.preventDefault(); el.querySelector('[data-record]').click(); }
+    });
     el.addEventListener('change', (e) => { if (e.target.name === 'dlymode') for (const b of el.querySelectorAll('.dly-opt')) b.classList.toggle('on', b.dataset.mode === e.target.value); });
     el.addEventListener('pointerdown', (e) => { const opt = e.target.closest('.dly-opt'); if (opt && !e.target.closest('label')) { const r = opt.querySelector('input[type=radio]'); r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); } });
     const typed = () => { const v = f('newfin')?.value.trim(); return v ? parseDate(v, o.old) : null; };
