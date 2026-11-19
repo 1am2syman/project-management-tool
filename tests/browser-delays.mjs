@@ -170,8 +170,54 @@ try {
   assert.equal(await text(2, 'dur'), '14'); assert.equal(await text(2, 'var'), '+4');
 
   await edit(7, 'dur', '7'); await open();                                     // Docs: Skip reason
-  await pop.locator('[data-skip]').click(); await pop.waitFor({ state: 'detached' }); await toast('Unclassified delay recorded'); await settle();
+  await pop.locator('[data-skip]').click(); await pop.waitFor({ state: 'detached' }); await toast('Delay recorded without a cause · classify it from the task menu'); await settle();
   assert((await text(7, 'cause')).includes('Unclassified'));
+
+  // ---------- classify later: task menu, Cause cell (double-click, F2), then Ctrl+Z restores Unclassified ----------
+  const editDelay = dialogOf('Edit delay record');
+  const pickCause = async (name) => { await editDelay.locator('#dly-cause').selectOption({ label: name }); await editDelay.getByRole('button', { name: 'Save', exact: true }).click(); await editDelay.waitFor({ state: 'detached' }); await settle(); };
+  await cell(7, 'name').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Edit delay record…', exact: true }).click(); await editDelay.waitFor();
+  assert.equal(await editDelay.locator('#dly-cause').inputValue(), '', 'the dialog opens on Unclassified');
+  assert.equal(await editDelay.locator('#dly-entry').count(), 0, 'one delay: no entry picker');
+  await page.screenshot({ path: join(evidence, 'edit-delay-1920.png') });
+  await pickCause('Supplier / subcontractor');
+  assert((await text(7, 'cause')).includes('Supplier / subcontractor'), 'the Cause cell shows the new cause');
+  assert.equal((await data()).log.filter((e) => e.type === 'delay' && e.taskId === 7)[0].cause != null, true);
+  await undo();
+  assert((await text(7, 'cause')).includes('Unclassified'), 'one Ctrl+Z restores Unclassified (menu)');
+  await cell(7, 'cause').dblclick(); await editDelay.waitFor();
+  await pickCause('Client / approver');
+  assert((await text(7, 'cause')).includes('Client / approver'), 'double-clicking the Cause cell opens the dialog');
+  await undo();
+  assert((await text(7, 'cause')).includes('Unclassified'), 'one Ctrl+Z restores Unclassified (Cause cell)');
+  await cell(7, 'cause').click(); await page.screenshot({ path: join(evidence, 'cause-cell-1920.png') });
+  await page.setViewportSize({ width: 1366, height: 768 }); await settle(); await page.screenshot({ path: join(evidence, 'cause-cell-1366.png') });
+  await page.setViewportSize({ width: 1920, height: 1000 }); await settle();
+  await page.keyboard.press('F2'); await editDelay.waitFor();
+  await page.keyboard.press('Escape'); await editDelay.waitFor({ state: 'detached' });
+  await cell(7, 'cause').click(); await page.keyboard.press('Enter'); await editDelay.waitFor();
+  await pickCause('Unknown');
+  assert((await text(7, 'cause')).includes('Unknown'), 'Enter on the Cause cell opens the dialog too');
+  await undo();
+  assert((await text(7, 'cause')).includes('Unclassified'));
+  await cell(3, 'cause').dblclick(); await settle();
+  assert.equal(await editDelay.count(), 0, 'an inherited cause points at its source instead of opening a dialog');
+  await toast('set its cause there');
+  // a second delay at the same task: the dialog lists both and edits the one picked
+  await edit(7, 'dur', '9'); await open();
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' }); await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle(); await saved();
+  await cell(7, 'name').click({ button: 'right' }); // the Cause cell is still selected: scrolling back to Task must not close the menu
+  await page.getByRole('menuitem', { name: 'Edit delay record…', exact: true }).click(); await editDelay.waitFor();
+  const entries = await editDelay.locator('#dly-entry option').allInnerTexts();
+  assert.equal(entries.length, 2, `the dialog lists both delays: ${entries}`);
+  assert(/Unclassified/.test(entries[0]) && /Client \/ approver/.test(entries[1]), `date, kind, days and cause are listed: ${entries}`);
+  await editDelay.locator('#dly-entry').selectOption({ index: 0 }); await pickCause('Supplier / subcontractor');
+  const two = (await data()).log.filter((e) => e.type === 'delay' && e.taskId === 7);
+  assert.equal(two.length, 2); assert.notEqual(two[0].cause, null); assert.notEqual(two[1].cause, null);
+  assert.notEqual(two[0].cause, two[1].cause, 'the earlier entry was edited, the later one kept its cause');
+  await undo(); await undo();
+  assert.equal(await text(7, 'dur'), '7'); assert((await text(7, 'cause')).includes('Unclassified'));
 
   const launchAgreed = await text(4, 'agreed');
   await edit(3, 'dur', '7'); await open();                                     // Test: Revision
@@ -296,6 +342,34 @@ try {
     assert.notEqual(await an.locator('#an-dexp .wf-bar').first().getAttribute('fill'), '#f43f5e', 'an agreed change is not red');
   }
   assert(/Own delay/.test(await an.locator('#an-down').innerText()) && /summed per task|per task/.test(await an.locator('#an-down thead').innerText()), 'Inherited says it is summed per task');
+  {
+    // Delay log rows edit the delay when the right-hand side is the current plan; a saved version is read-only
+    const rowEdit = an.locator('#an-dlog [data-dly-edit]');
+    assert((await rowEdit.count()) >= 1, 'Delay log rows offer Edit when comparing with the current plan');
+    const unclassifiedOf = async () => +(((await an.locator('#an-down tbody tr').first().innerText()).trim().split('\t').at(-1)).replace('+', ''));
+    const unBefore = await unclassifiedOf(); assert(unBefore > 0, `the owner table has Unclassified delay before classifying: ${unBefore}`);
+    const docsRow = an.locator('#an-dlog tbody tr', { hasText: 'Docs' }).first();
+    await docsRow.locator('[data-dly-edit]').click(); await editDelay.waitFor();
+    await page.screenshot({ path: join(evidence, 'edit-delay-from-log.png') });
+    await pickCause('Supplier / subcontractor');
+    assert((await docsRow.textContent()).includes('Supplier / subcontractor') || (await an.locator('#an-dlog tbody tr', { hasText: 'Docs' }).first().textContent()).includes('Supplier / subcontractor'), 'the Delay log section refreshes after Save');
+    assert((await unclassifiedOf()) < unBefore, 'the owner table Unclassified drops after classifying');
+    const buildRow = () => an.locator('#an-dlog tbody tr', { hasText: 'Build' }).first();
+    assert(/Resource availability/.test(await an.locator('#an-dmil').innerText()));
+    await buildRow().locator('[data-dly-edit]').click(); await editDelay.waitFor(); await pickCause('Client / approver');
+    assert(/Client \/ approver \+4/.test(await an.locator('#an-dmil').innerText()), 'Main causes follow the cause set from the Delay log');
+    await an.locator('#an-b').selectOption({ label: await an.locator('#an-b option', { hasText: 'Second' }).first().innerText() }); await settle();
+    assert.equal(await an.locator('#an-dlog [data-dly-edit]').count(), 0, 'a saved version is read-only: no Edit in the Delay log');
+    await an.locator('#an-b').selectOption({ index: 0 }); await settle();
+    assert((await an.locator('#an-dlog [data-dly-edit]').count()) >= 1);
+    await an.locator('[data-an=close]').click(); await settle();
+    assert.equal(await an.isHidden(), true);
+    await undo(); await undo();
+    assert((await text(7, 'cause')).includes('Unclassified'), 'Ctrl+Z restores Unclassified (Delay log)');
+    assert((await text(2, 'cause')).includes('Resource availability'), 'the second Delay log edit was undone too');
+    await page.locator('#analysisbtn').click(); await an.locator('.an-kpis').waitFor(); await settle();
+    assert.equal(await an.locator('#an-dimp').count(), 1);
+  }
   const dl = async (button) => { const wait = page.waitForEvent('download'); await an.locator(button).click(); const file = await wait; const target = join(temp, file.suggestedFilename()); await file.saveAs(target); return target; };
   const { execFileSync } = await import('node:child_process'), { readFileSync } = await import('node:fs');
   const pdf = readFileSync(await dl('[data-an=pdf]')).toString('latin1');
@@ -334,8 +408,50 @@ try {
   assert.equal(await pop.count(), 0, 'a read-only preview never opens the record popover');
   await cell(1, 'name').click({ button: 'right' });
   assert.equal(await page.getByRole('menuitem', { name: /agreed deadline/ }).count(), 0, 'no agreeing in a read-only preview');
+  assert.equal(await page.getByRole('menuitem', { name: 'Edit delay record…' }).count(), 0, 'no editing a delay record in a read-only preview');
   await page.keyboard.press('Escape');
+  await cell(7, 'cause').dblclick({ force: true }); await settle();
+  assert.equal(await dialogOf('Edit delay record').count(), 0, 'the Cause cell opens nothing in a read-only preview');
   await page.screenshot({ path: join(evidence, 'preview.png') });
+
+  // ---------- Agreed baseline: a soft notice for delays without a cause, never a block ----------
+  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  assert((await text(7, 'cause')).includes('Unclassified'));
+  const openSave = async (type) => { await page.locator('#snapshotbtn').click(); const d = page.getByRole('dialog', { name: 'Save version' }); await d.waitFor(); if (type) await d.locator('#vtype').selectOption(type); return d; };
+  const notice = (d) => d.locator('.dly-nocause:visible');
+  let sv = await openSave('status');
+  assert.equal(await notice(sv).count(), 0, 'no notice when the type is not Agreed baseline');
+  await sv.locator('#vtype').selectOption('baseline');
+  assert.equal(await notice(sv).count(), 1, 'the notice shows for an Agreed baseline');
+  assert(/no cause/.test(await notice(sv).innerText()) && /Docs \+\d/.test(await notice(sv).innerText()), `the notice lists the unclassified delays: ${await notice(sv).innerText()}`);
+  const unclassifiedNow = (await data()).log.filter((e) => e.type === 'delay' && !e.cause).length;
+  assert.equal(await notice(sv).locator('select[data-dly-classify]').count(), unclassifiedNow);
+  await sv.locator('#vname').fill('Keep this name'); await sv.locator('#vnote').fill('Keep this note');
+  await page.screenshot({ path: join(evidence, 'baseline-notice-1920.png') });
+  await page.setViewportSize({ width: 1366, height: 768 }); await settle();
+  await page.screenshot({ path: join(evidence, 'baseline-notice-1366.png') });
+  await page.setViewportSize({ width: 1920, height: 1000 }); await settle();
+  while (await sv.locator('select[data-dly-classify]').count()) { const before = await sv.locator('select[data-dly-classify]').count(); await sv.locator('select[data-dly-classify]').first().selectOption({ index: 1 }); await page.waitForFunction((n) => document.querySelectorAll('select[data-dly-classify]').length < n, before); }
+  assert.equal(await sv.count(), 1, 'classifying inside the notice keeps the dialog open');
+  assert.equal(await sv.locator('#vname').inputValue(), 'Keep this name'); assert.equal(await sv.locator('#vnote').inputValue(), 'Keep this note'); assert.equal(await sv.locator('#vtype').inputValue(), 'baseline');
+  assert.equal(await notice(sv).count(), 0, 'the notice goes away once every delay has a cause');
+  assert((await data()).log.filter((e) => e.type === 'delay' && !e.cause).length === 0, 'the causes were stored');
+  await sv.getByRole('button', { name: 'Cancel' }).click(); await sv.waitFor({ state: 'detached' });
+  await undo(); // classifying inside the dialog is undoable like any other edit
+  sv = await openSave('baseline');
+  assert.equal(await notice(sv).count(), 1, 'the notice is back after undoing the classification');
+  await sv.locator('#vname').fill('Baseline with open causes');
+  if (await sv.locator('#dly-reason').count()) { await sv.locator('#dly-reason').fill('Re-baselined'); await sv.locator('#dly-appr').fill('Sam'); }
+  await sv.getByRole('button', { name: 'Save version' }).click(); await sv.waitFor({ state: 'detached' }); await settle();
+  await toast('undo history starts here');
+  assert.equal((await data()).log.filter((e) => e.type === 'delay' && !e.cause).length, unclassifiedNow, 'saving is allowed with delays still unclassified, and nothing was classified for the user');
+  await cell(7, 'cause').dblclick(); await editDelay.waitFor(); await pickCause('Supplier / subcontractor');
+  assert(!(await text(7, 'cause')).includes('Unclassified'));
+  const remaining = (await data()).log.filter((e) => e.type === 'delay' && !e.cause);
+  for (const e of remaining) { await cell(e.taskId, 'cause').dblclick(); await editDelay.waitFor(); await pickCause('Supplier / subcontractor'); }
+  sv = await openSave('baseline');
+  assert.equal(await notice(sv).count(), 0, 'no notice when everything is classified');
+  await page.keyboard.press('Escape');
 
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');

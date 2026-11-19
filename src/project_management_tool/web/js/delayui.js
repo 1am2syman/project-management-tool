@@ -47,7 +47,7 @@ export function createDelayUI(ctx) {
     }
     if (col === 'cause') {
       const e = DL.lastDelay(store, t.id);
-      if (r.own > 0) return { cls: ' dly-c', html: e?.cause ? `<span class="dly-cause">${esc(DL.causeName(causes, e.cause))}${causes.list.find((c) => c.id === e.cause)?.retired ? ' <em>(retired)</em>' : ''}${e.party ? `<i> · ${esc(e.party)}</i>` : ''}</span>` : '<span class="dly-unc">Unclassified delay</span>' };
+      if (r.own > 0) return { cls: ' dly-c', html: e?.cause ? `<span class="dly-cause">${esc(DL.causeName(causes, e.cause))}${causes.list.find((c) => c.id === e.cause)?.retired ? ' <em>(retired)</em>' : ''}${e.party ? `<i> · ${esc(e.party)}</i>` : ''}</span>` : '<span class="dly-nocause">Unclassified delay</span>' };
       if (r.inherited && r.source != null) { const o = DL.originOf(store, r.source), src = DL.lastDelay(store, o); return { cls: ' dly-c', html: `<span class="dly-cause inh">↳ ${esc(DL.nameOf(store, o))}${src?.cause ? ` · ${esc(DL.causeName(causes, src.cause))}` : ''}</span>` }; }
       if (r.pend) return { cls: ' dly-c', html: `<span class="dly-cause inh">↳ ${esc(DL.nameOf(store, r.pendSource))} (pending)</span>` };
     }
@@ -178,7 +178,7 @@ export function createDelayUI(ctx) {
       const e = DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor });
       if (e) return err(e);
       closePop();
-      ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d ${DL.causeName(causes, entry.cause)}` : `Unclassified delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d`);
+      ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d ${DL.causeName(causes, entry.cause)}` : `Delay recorded without a cause · classify it from the task menu`);
       ctx.requestRender();
     };
     if (o.overdue) {
@@ -220,37 +220,61 @@ export function createDelayUI(ctx) {
   }
   const effectText = (pushed, finish) => `${pushed ? `Pushes ${pl(pushed, 'later task')}` : 'Pushes no later tasks'} · ${finish > 0 ? `project finish ${sign(finish)}d` : 'project finish not affected'}`;
 
-  // Re-classify an existing delay (cause, party, kind, note): one undo step.
-  api.editRecord = (id) => {
-    const e = DL.lastDelay(store, id);
-    if (!e) { ctx.toast('No recorded delay to edit at this task'); return; }
+  // Re-classify a recorded delay (cause, party, kind, note): one undo step per Save. Works on any entry of the task; with several, the
+  // dialog lists them (date, kind, days, cause) and the fields follow the chosen one.
+  const entryText = (e) => `${new Date(e.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} · ${e.kind || 'Delay'} ${sign(e.days)}d · ${e.cause ? DL.causeName(causes, e.cause) : 'Unclassified'}`;
+  api.editRecord = (id, entryId = null, after = null) => {
     if (!editable()) { store.emit('denied'); return; }
-    const opts = causes.list.filter((c) => !c.retired || c.id === e.cause);
-    const m = openModal('Edit delay record', `<p class="help"><b>${esc(store.byId.get(id).name)}</b> · ${esc(e.kind || 'Delay')} ${sign(e.days)} working days</p>
-      <label class="fld"><span>Kind</span><select id="dly-kind">${DL.KINDS.map((k) => `<option${k === e.kind ? ' selected' : ''}>${k}</option>`).join('')}</select></label>
-      <label class="fld"><span>Cause</span><select id="dly-cause"><option value="">Unclassified</option>${opts.map((c) => `<option value="${esc(c.id)}"${c.id === e.cause ? ' selected' : ''}>${esc(c.name)}${c.retired ? ' (retired)' : ''}</option>`).join('')}</select></label>
-      <label class="fld"><span>Party</span><input id="dly-party" value="${esc(e.party || '')}" maxlength="80" autocomplete="off"></label>
-      <label class="fld"><span>Note</span><input id="dly-note" value="${esc(e.note || '')}" maxlength="500" autocomplete="off"></label>
+    if (document.querySelector('.modal[aria-label="Edit delay record"]')) return; // a double-click arrives as a click and a dblclick
+    const list = entryId != null ? DL.delaysOf(store, store.log.find((x) => x.id === entryId)?.taskId ?? id) : DL.delaysOf(store, id);
+    if (!list.length) { ctx.toast('No recorded delay to edit at this task'); return; }
+    let e = list.find((x) => x.id === entryId) || list.at(-1);
+    const taskName = (x) => esc(store.byId.get(x.taskId)?.name ?? x.taskName ?? '');
+    const m = openModal('Edit delay record', `<p class="help"></p>
+      ${list.length > 1 ? `<label class="fld"><span>Delay</span><select id="dly-entry">${list.map((x) => `<option value="${x.id}">${esc(entryText(x))}</option>`).join('')}</select></label>` : ''}
+      <label class="fld"><span>Kind</span><select id="dly-kind"></select></label>
+      <label class="fld"><span>Cause</span><select id="dly-cause"></select></label>
+      <label class="fld"><span>Party</span><input id="dly-party" maxlength="80" autocomplete="off"></label>
+      <label class="fld"><span>Note</span><input id="dly-note" maxlength="500" autocomplete="off"></label>
       <p class="set-err" role="alert"></p><div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-ok>Save</button></div>`);
-    const b = m.body;
-    if (ctx.people) b.querySelector('#dly-party').addEventListener('focus', (ev) => ctx.people.attach(ev.target, (p) => { ev.target.value = p.name; }));
-    b.querySelector('[data-cancel]').addEventListener('click', () => m.close());
-    b.querySelector('[data-ok]').addEventListener('click', () => {
-      const err = DL.reclassify(store, e.id, { kind: b.querySelector('#dly-kind').value, cause: b.querySelector('#dly-cause').value, party: b.querySelector('#dly-party').value, note: b.querySelector('#dly-note').value });
-      if (err) b.querySelector('.set-err').textContent = err; else { m.close(); ctx.requestRender(); }
+    const b = m.body, q = (sel) => b.querySelector(sel);
+    const fill = () => {
+      setHTML(q('.help'), `<b>${taskName(e)}</b> · ${esc(e.kind || 'Delay')} ${sign(e.days)} working days`);
+      setHTML(q('#dly-kind'), DL.KINDS.map((k) => `<option${k === e.kind ? ' selected' : ''}>${k}</option>`).join(''));
+      // Retired causes stay selectable only for an entry that already uses them.
+      setHTML(q('#dly-cause'), `<option value="">Unclassified</option>${causes.list.filter((c) => !c.retired || c.id === e.cause).map((c) => `<option value="${esc(c.id)}"${c.id === e.cause ? ' selected' : ''}>${esc(c.name)}${c.retired ? ' (retired)' : ''}</option>`).join('')}`);
+      q('#dly-party').value = e.party || ''; q('#dly-note').value = e.note || ''; q('.set-err').textContent = '';
+    };
+    fill();
+    q('#dly-entry')?.addEventListener('change', (ev) => { e = list.find((x) => x.id === +ev.target.value) || e; fill(); });
+    if (ctx.people) q('#dly-party').addEventListener('focus', (ev) => ctx.people.attach(ev.target, (p) => { ev.target.value = p.name; }));
+    q('[data-cancel]').addEventListener('click', () => m.close());
+    q('[data-ok]').addEventListener('click', () => {
+      const err = DL.reclassify(store, e.id, { kind: q('#dly-kind').value, cause: q('#dly-cause').value, party: q('#dly-party').value, note: q('#dly-note').value });
+      if (err) q('.set-err').textContent = err; else { m.close(); ctx.requestRender(); after?.(); }
     });
+    setTimeout(() => q('#dly-cause')?.focus(), 0);
+  };
+  // The Cause cell of a task (double-click, Enter or F2). A task without recorded delays of its own points at the task it inherits from.
+  api.editCause = (id) => {
+    if (!editable()) { store.emit('denied'); return; }
+    if (DL.delaysOf(store, id).length) { api.editRecord(id); return; }
+    const r = DL.row(store, id);
+    ctx.toast(r?.inherited && r.source != null ? `This delay started at “${DL.nameOf(store, DL.originOf(store, r.source))}”: set its cause there` : 'No recorded delay at this task');
   };
 
   // ---------------------------------------------------------------- agreed dates, inclusion, omission
   api.menuHtml = (id, item) => {
     const t = store.byId.get(id), f = store.info.get(id); if (!t || f.summary || store.readOnly) return '';
     let h = '<div role="separator"></div>';
+    if (DL.delaysOf(store, id).length) h += item('Edit delay record…', 'dly-edit-record', null);
     if (t.inc) h += item('Agree inclusion…', 'dly-agree-inclusion', null);
     h += item(t.agr ? 'Change agreed deadline…' : 'Set agreed deadline…', 'dly-agree-deadline', t.inc ? 'Agree the inclusion first' : store.structureError());
     return h;
   };
   api.menuAction = (action, id) => {
-    if (action === 'agree-deadline') agreedDialog(id, 'deadline');
+    if (action === 'edit-record') api.editRecord(id);
+    else if (action === 'agree-deadline') agreedDialog(id, 'deadline');
     else if (action === 'agree-inclusion') agreedDialog(id, 'inclusion');
   };
   // One dialog for agreeing a single task's date: the expected date in one click, or another date from the picker.
@@ -338,6 +362,7 @@ export function createDelayUI(ctx) {
       const changes = DL.baselineChanges(store), pend = DL.pendingInclusions(store);
       extra = `<div class="dly-base" hidden>
         <p class="mut">${changes.length ? `${pl(changes.length, 'agreed date')} differ from the current plan and will be replaced (recorded as revisions).` : 'Every task without an agreed date gets its current expected date.'}${DL.hasAgreed(store) ? '' : ' Nothing is agreed yet.'}</p>
+        <div class="dly-nocause" role="group" aria-label="Delays without a cause"></div>
         ${pend.length ? `<label class="vcheck"><input type="checkbox" id="dly-incl" checked> Agree ${pl(pend.length, 'pending inclusion')} with this baseline</label>` : ''}
         ${changes.length || pend.length ? '<div class="dly-omit"><label class="fld"><span>Reason</span><input id="dly-reason" placeholder="Why the agreed plan changes" autocomplete="off" maxlength="500"></label><label class="fld"><span>Approved by</span><input id="dly-appr" placeholder="Name" autocomplete="off" maxlength="120"></label></div>' : ''}
       </div>`;
@@ -348,7 +373,25 @@ export function createDelayUI(ctx) {
     const sel = body.querySelector('#vtype'), box = body.querySelector('.dly-base'); if (!box) return;
     const upd = () => { box.hidden = sel.value !== 'baseline'; };
     sel.addEventListener('change', upd); upd();
+    renderUnclassified(box.querySelector('.dly-nocause'));
   };
+  // A soft check, never a block: delays recorded with Skip reason are listed, each with its own cause select, so they can be
+  // classified here without leaving (or losing the fields of) the Save version dialog. The list shrinks as causes are chosen.
+  function renderUnclassified(host) {
+    if (!host) return;
+    const list = DL.unclassifiedDelays(store);
+    if (!list.length) { setHTML(host, ''); host.hidden = true; return; }
+    host.hidden = false;
+    const name = (e) => esc(store.byId.get(e.taskId)?.name ?? e.taskName ?? '');
+    setHTML(host, `<p class="vwarn">${pl(list.length, 'delay')} ${list.length === 1 ? 'has' : 'have'} no cause: ${list.map((e) => `${name(e)} ${sign(e.days)}`).join(', ')}. You can still save; classify them now or later.</p>
+      ${list.map((e) => `<label class="fld dly-nocause-row"><span>${name(e)} ${sign(e.days)}d${e.kind ? ` · ${esc(e.kind)}` : ''}</span><select data-dly-classify="${e.id}" aria-label="Cause of ${name(e)} ${sign(e.days)}"><option value="">Classify…</option>${causes.list.filter((c) => !c.retired).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></label>`).join('')}`);
+    for (const sel of host.querySelectorAll('[data-dly-classify]')) sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      const err = DL.reclassify(store, +sel.dataset.dlyClassify, { cause: sel.value });
+      if (err) ctx.toast(err);
+      renderUnclassified(host);
+    });
+  }
   api.readType = (body) => body.querySelector('#vtype')?.value || null;
   // Before an Agreed baseline is saved: agree the dates. Returns an error message, or null.
   api.agreeOnSave = (body) => {

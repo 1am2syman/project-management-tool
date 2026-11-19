@@ -30,9 +30,9 @@ export function toWaterfall(x) {
   };
 }
 
-export function createDelayAnalysis(ctx) {
+export function createDelayAnalysis(ctx, { onEdited } = {}) {
   const { store } = ctx;
-  const ui = { showAll: false, showTrend: false, explain: null, step: 0, root: null, h: null, w: null, cur: null, versions: [], stars: new Set(), sheet: null };
+  const ui = { showAll: false, showTrend: false, explain: null, step: 0, root: null, h: null, w: null, cur: null, versions: [], stars: new Set(), sheet: null, live: false };
   const sec = (id, title, inner, sub = '') => `<section class="an-sec dly-an" id="an-${id}" aria-labelledby="an-h-${id}"><h2 id="an-h-${id}">${title}${sub ? `<small>${esc(sub)}</small>` : ''}</h2>${inner}</section>`;
   const none = (t) => `<p class="an-none">${esc(t)}</p>`;
   const stCls = (s) => (s.startsWith('Late') ? 'dlyl' : s === 'Early' ? 'dlye' : 'dlyo');
@@ -115,13 +115,13 @@ export function createDelayAnalysis(ctx) {
   function log() {
     const rows = DL.delayLog(ui.cur, causes());
     if (!rows.length) return none('No delays, revisions, inclusions or omissions recorded yet.');
-    return `<table class="an-t"><thead><tr><th>Date</th><th>Task</th><th>Type</th><th>Kind</th><th class="n">Days</th><th>Cause</th><th>Party / approved by</th><th>Reason / note</th></tr></thead><tbody>${rows.map((e) => `<tr><td>${esc(new Date(e.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${e.type === 'omission' ? `<s>${esc(e.taskName || '')}</s>` : esc(e.taskName || '')}</td><td>${esc(e.typeLabel)}</td><td>${esc(e.kind || '')}</td><td class="n">${e.days ? sign(e.days) : ''}</td><td>${esc(e.causeLabel || '')}</td><td>${esc(e.type === 'delay' ? e.party || '' : e.approvedBy || '')}</td><td>${esc([e.reason, e.note].filter(Boolean).join(' · '))}</td></tr>`).join('')}</tbody></table>`;
+    return `<table class="an-t"><thead><tr><th>Date</th><th>Task</th><th>Type</th><th>Kind</th><th class="n">Days</th><th>Cause</th><th>Party / approved by</th><th>Reason / note</th>${ui.live ? '<th><span class="sr-only">Edit</span></th>' : ''}</tr></thead><tbody>${rows.map((e) => `<tr><td>${esc(new Date(e.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))}</td><td>${e.type === 'omission' ? `<s>${esc(e.taskName || '')}</s>` : esc(e.taskName || '')}</td><td>${esc(e.typeLabel)}</td><td>${esc(e.kind || '')}</td><td class="n">${e.days ? sign(e.days) : ''}</td><td>${esc(e.causeLabel || '')}</td><td>${esc(e.type === 'delay' ? e.party || '' : e.approvedBy || '')}</td><td>${esc([e.reason, e.note].filter(Boolean).join(' · '))}</td>${ui.live ? `<td>${e.type === 'delay' ? `<button class="dly-logedit" data-dly-edit="${e.id}" aria-label="Edit delay record: ${esc(e.taskName || '')} ${sign(e.days)}">Edit…</button>` : ''}</td>` : ''}</tr>`).join('')}</tbody></table>`;
   }
 
   // The sections describe the compared plan `cur`. plans: [{ label, view, compared }] oldest first, for the trend.
   // h: { waterfallMarkup, waterfallChart, waterfallDetails, lineChart, setSVG }
   function html(cur, plans, h) {
-    ui.h = h || ui.h; ui.cur = cur; ui.sheet = store.wb.active; ui.stars = new Set(store.keyMilestones());
+    ui.h = h || ui.h; ui.cur = cur; ui.live = plans.some((p) => p.compared && p.live) && !store.preview; ui.sheet = store.wb.active; ui.stars = new Set(store.keyMilestones());
     ui.versions = plans.filter((p) => DL.hasAgreed(p.view)).map((p) => ({ label: p.label, compared: !!p.compared, table: DL.milestoneTable(p.view, causes(), ui.stars) }));
     return sec('dmil', 'Milestone table', milestoneTable(), 'Agreed, delay and expected for every milestone') +
       sec('dimp', 'Impact grid', impactGrid(), 'Which change moved which milestone') +
@@ -147,6 +147,8 @@ export function createDelayAnalysis(ctx) {
     const impactSection = () => sec('dimp', 'Impact grid', impactGrid(), 'Which change moved which milestone');
     const trendSection = () => sec('dtrd', 'Agreed vs expected', `<div class="dly-tools"><button class="dly-sw${ui.showTrend ? ' on' : ''}" data-dly-showtrend role="switch" aria-checked="${ui.showTrend}"><i></i>Show all milestones</button><span>${ui.showTrend ? 'All milestones' : 'Key milestones (★) and Project completion'}.</span></div><div class="dly-trend"><svg class="an-chart" role="img" aria-label="Agreed and expected dates across versions"></svg><div class="dly-legend"></div></div>`);
     root.addEventListener('click', (e) => {
+      const edit = e.target.closest('[data-dly-edit]');
+      if (edit) { ctx.delay.editRecord(null, +edit.dataset.dlyEdit, onEdited); return; }
       const star = e.target.closest('[data-dly-star]');
       if (star) { const id = +star.dataset.dlyStar; store.setKeyMilestone(id, !ui.stars.has(id)); ui.stars = new Set(store.keyMilestones()); refresh(['dmil', 'dimp', 'dtrd']); root.querySelector(`[data-dly-star="${id}"]`)?.focus({ preventScroll: true }); return; }
       if (e.target.closest('[data-dly-showtrend]')) { ui.showTrend = !ui.showTrend; refresh(['dtrd']); root.querySelector('[data-dly-showtrend]')?.focus({ preventScroll: true }); return; }

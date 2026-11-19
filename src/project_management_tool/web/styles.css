@@ -739,3 +739,8 @@ body.analysis-open .tip{display:none}
 .dly-od-g{pointer-events:all;cursor:pointer}.dly-od-g text{stroke:none;paint-order:normal}.dly-od-g:hover rect{fill:#ffedd5}
 #dly-date{width:100%;box-sizing:border-box;font:13px var(--sans);padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:#fff}
 .dly-why,.dly-omit{margin-top:8px}.dly-omit{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;margin:8px 0 10px 12px}.dly-omit .vcheck{grid-column:1 / -1}
+
+/* Delay accounting follow-up: classify later */
+.dly-nocause{display:flex;flex-direction:column;gap:6px;margin:8px 0}.dly-nocause[hidden]{display:none}
+.dly-nocause .vwarn{margin:0}.dly-nocause-row{display:flex;flex-direction:row;align-items:center;gap:10px;margin:0}.dly-nocause-row>span{flex:1;min-width:0;font-size:12.5px;color:#334155}.dly-nocause-row select{flex:0 0 200px;height:32px;resize:none}
+.dly-logedit{font:600 11px var(--sans);padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;color:#334155;cursor:pointer}.dly-logedit:hover{border-color:#2b59e6;color:#2b59e6}

@@ -496,6 +496,9 @@ export function reclassify(store, entryId, patch) {
   });
   return null;
 }
+// Recorded delays (not recoveries) that still have no cause: the soft check when an Agreed baseline is saved.
+export const unclassifiedDelays = (s) => (s.log || []).filter((e) => e.type === 'delay' && !e.cause && e.days > 0);
+export const delaysOf = (s, taskId) => (s.log || []).filter((e) => e.type === 'delay' && e.taskId === taskId);
 export function agreeInclusion(store, id, { finishDay = null, reason = '', approvedBy = '' } = {}) {
   const err = store.structureError(); if (err) return err;
   const t = store.byId.get(id); if (!t?.inc) return 'This task is not a pending inclusion';

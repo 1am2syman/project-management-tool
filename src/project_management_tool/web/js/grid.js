@@ -204,6 +204,7 @@ export function createGrid(ctx) {
   function startEdit(id, col, initial) {
     if (editing) return;
     if (col === 'float' || col === 'freeFloat') { if (initial == null) ctx.slack.open(id); return; }
+    if (col === 'cause' && ctx.delay?.hasAgreed()) { if (initial == null) ctx.delay.editCause(id); return; }
     if (store.readOnly) { store.emit('denied'); return; }
     const c = COLS.find((x) => x.id === col); if (!c || c.spark || c.dly) return;
     const f = store.info.get(id);

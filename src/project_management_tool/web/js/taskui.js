@@ -11,6 +11,11 @@ export function createTaskUI(ctx, grid) {
   document.body.append(menu, marker, announcement);
   let menuId = null, drag = null, frame = 0, suppressClick = false;
   const editable = () => !store.structureError();
+  // A scroll event queued by the click that opened the menu (selecting a far column scrolls the sheet) must not close it:
+  // only a real change of position does.
+  let openPos = '';
+  const scrollPos = () => `${gx.scrollLeft}/${gx.scrollTop}/${document.querySelector('#gb').scrollTop}`;
+  const scrolled = () => { if (!menu.hidden && scrollPos() !== openPos) closeMenu(); };
   function closeMenu(focus = false) { menu.hidden = true; if (focus) gx.focus({ preventScroll: true }); }
   function openMenu(id, x, y) {
     if (drag) return;
@@ -40,7 +45,7 @@ export function createTaskUI(ctx, grid) {
       html += `<div role="separator"></div>${item('Indent cascade', 'indent', indentError(1), 'Alt+→')}${item('Outdent cascade', 'outdent', indentError(-1), 'Alt+←')}`;
       html += ctx.delay.menuHtml(id, item);
     }
-    setHTML(menu, html); menu.hidden = false;
+    setHTML(menu, html); menu.hidden = false; openPos = scrollPos();
     menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`;
     (menu.querySelector('button:not(:disabled)') || menu).focus({ preventScroll: true });
@@ -55,7 +60,7 @@ export function createTaskUI(ctx, grid) {
     const bar = e.target.closest('.bar[data-id]'); if (!bar) return;
     e.preventDefault(); openMenu(+bar.dataset.id, e.clientX, e.clientY);
   });
-  document.querySelector('#gb').addEventListener('scroll', () => closeMenu(), { passive: true });
+  document.querySelector('#gb').addEventListener('scroll', scrolled, { passive: true });
   menu.addEventListener('click', (e) => {
     const button = e.target.closest('button[data-task-action]'); if (!button || button.disabled) return;
     const action = button.dataset.taskAction; closeMenu(true);
@@ -78,7 +83,7 @@ export function createTaskUI(ctx, grid) {
     }
   });
   document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); }, true);
-  gx.addEventListener('scroll', () => closeMenu(), { passive: true });
+  gx.addEventListener('scroll', scrolled, { passive: true });
   window.addEventListener('resize', () => { closeMenu(); cancelDrag(); });
   document.addEventListener('keydown', (e) => {
     if (!menu.hidden) {

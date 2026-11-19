@@ -565,3 +565,37 @@ test('key milestones are saved with the project, survive the file round trip and
   assert.throws(() => parseProjectFile(JSON.stringify(bad)), /version 6/);
   s.setKeyMilestone(14, false); assert.deepEqual([...s.keyMilestones()], [5]);
 });
+
+test('any recorded delay can be classified later, including an earlier one at a task with two; each is one undo step', () => {
+  const s = demo(); dl.agreeBaseline(s);
+  const rec = (days, cause) => { const pre = dl.snapshotBefore(s); s.setCell(12, 'dur', String(s.byId.get(12).dur + days)); assert.equal(dl.record(s, 12, pre, { type: 'delay', cause }), null); };
+  rec(2, null); rec(1, null);
+  const both = dl.delaysOf(s, 12);
+  assert.equal(both.length, 2);
+  assert.deepEqual(dl.unclassifiedDelays(s).map((e) => e.days), [2, 1]);
+  const owner = () => dl.ownerTable(s).find((r) => r.owner === 'Sana');
+  assert.equal(owner().unclassified, 3);
+  const depth = s.undoStack.length;
+  assert.equal(dl.reclassify(s, both[0].id, { cause: C('Supplier / subcontractor'), party: 'Acme' }), null);
+  assert.equal(s.undoStack.length, depth + 1, 'one undo step');
+  assert.deepEqual(dl.unclassifiedDelays(s).map((e) => e.days), [1], 'the earlier entry is classified, the later is untouched');
+  assert.equal(dl.lastDelay(s, 12).cause, null);
+  assert.equal(owner().unclassified, 1, 'the owner table Unclassified drops');
+  const cause = dl.milestoneTable(s, loadCauses()).find((r) => r.id === 'end').causes.map((c) => c.name);
+  assert.ok(cause.includes('Supplier / subcontractor') && cause.includes('Unclassified'));
+  s.undo();
+  assert.equal(dl.unclassifiedDelays(s).length, 2); assert.equal(owner().unclassified, 3);
+  s.redo();
+  assert.equal(dl.unclassifiedDelays(s).length, 1); assert.equal(dl.delaysOf(s, 12)[0].party, 'Acme');
+  assert.equal(dl.reclassify(s, 99999, { cause: null }), 'That entry no longer exists');
+});
+
+test('recoveries are not unclassified delays, and a baseline saves while delays are still unclassified', () => {
+  const s = demo(); dl.agreeBaseline(s);
+  const pre = dl.snapshotBefore(s); s.setCell(12, 'dur', String(s.byId.get(12).dur + 2));
+  assert.equal(dl.record(s, 12, pre, { type: 'delay', cause: null }), null);
+  assert.equal(dl.unclassifiedDelays(s).length, 1);
+  const r = s.snapshotAgreed(() => dl.agreeBaseline(s), { name: 'Baseline 2', type: 'baseline' });
+  assert.ok(r.version && !r.error, 'unclassified delays never block an Agreed baseline');
+  assert.equal(dl.unclassifiedDelays(s).length, 1);
+});

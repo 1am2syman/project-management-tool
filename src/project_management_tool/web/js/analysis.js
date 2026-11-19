@@ -116,7 +116,12 @@ export function createAnalysis(ctx) {
   const { store } = ctx;
   const root = document.querySelector('#analysis');
   const cache = new Map();
-  const delay = createDelayAnalysis(ctx);
+  const delay = createDelayAnalysis(ctx, { onEdited: () => {
+    // A cause was set from the Delay log: rebuild the sections from the current plan, keeping the scroll position.
+    if (!isOpen()) return;
+    const body = root.querySelector('.an-body'), top = body.scrollTop;
+    state.current = null; update(); body.scrollTop = top;
+  } });
   let state = null, prevFocus = null;
 
   const viewOf = (v) => {
@@ -198,7 +203,7 @@ export function createAnalysis(ctx) {
       section('changes', 'Change log', `<div class="an-filters" role="group" aria-label="Filter changes"></div><div class="an-logwrap"></div>`) +
       section('slips', 'Biggest slips', slips(d)) +
       section('critical', 'Critical path', critical(d)) +
-      section('owners', 'By owner', owners(d)) + (hasDelay ? delay.html(B.view, list.map((p) => ({ label: p.short, view: p.view, compared: p.id === B.id })), HELPERS) : ''));
+      section('owners', 'By owner', owners(d)) + (hasDelay ? delay.html(B.view, list.map((p) => ({ label: p.short, view: p.view, compared: p.id === B.id, live: p.id === '' })), HELPERS) : ''));
     if (hasDelay) delay.mount(root);
     renderCharts(); renderLog(); syncSection();
   }
