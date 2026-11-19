@@ -451,7 +451,20 @@ try {
   for (const e of remaining) { await cell(e.taskId, 'cause').dblclick(); await editDelay.waitFor(); await pickCause('Supplier / subcontractor'); }
   sv = await openSave('baseline');
   assert.equal(await notice(sv).count(), 0, 'no notice when everything is classified');
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape'); await sv.waitFor({ state: 'detached' });
+
+  // many delays without a cause: the list scrolls and Save version stays inside the dialog and the viewport at 1366x768
+  for (let n = 0; n < 6; n++) { await edit(7, 'dur', String(20 + n)); await open(); await pop.locator('[data-skip]').click(); await pop.waitFor({ state: 'detached' }); await settle(); }
+  await page.setViewportSize({ width: 1366, height: 768 }); await settle();
+  sv = await openSave('baseline');
+  const rows = await sv.locator('select[data-dly-classify]').count(); assert(rows >= 5, `at least 5 delays without a cause: ${rows}`);
+  const fitsSave = await sv.evaluate((d) => { const b = d.querySelector('[data-save]').getBoundingClientRect(), m = d.getBoundingClientRect(), l = d.querySelector('.dly-nocause-list'); return { inView: b.top >= 0 && b.bottom <= innerHeight, inDialog: b.top >= m.top && b.bottom <= m.bottom + 1, listScrolls: l.scrollHeight > l.clientHeight, listH: l.clientHeight, sel: [...d.querySelectorAll('.dly-nocause-row select')].every((s) => s.scrollHeight <= s.clientHeight) }; });
+  assert(fitsSave.inView && fitsSave.inDialog, `Save version is visible without scrolling at 1366x768 with ${rows} unclassified delays: ${JSON.stringify(fitsSave)}`);
+  assert(fitsSave.listScrolls && fitsSave.listH <= 130, `the notice list is capped and scrolls: ${JSON.stringify(fitsSave)}`);
+  assert(fitsSave.sel, 'the Classify select does not clip its text');
+  await page.screenshot({ path: join(evidence, 'baseline-notice-many-1366.png') });
+  await page.keyboard.press('Escape'); await sv.waitFor({ state: 'detached' });
+  await page.setViewportSize({ width: 1920, height: 1000 }); await settle();
 
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');

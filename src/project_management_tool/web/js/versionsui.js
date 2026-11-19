@@ -96,7 +96,7 @@ export function createVersionsUI(ctx) {
       ${ctx.delay.typeFieldHtml('status', { baseline: true })}
       <label class="fld"><span>Note (optional)</span><textarea id="vnote" rows="3" maxlength="1000" placeholder="e.g. Baseline approved by the steering committee"></textarea></label>
       <p class="set-err" role="alert"></p>
-      <div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-save>Save version</button></div>`);
+      <div class="rem-actions sticky-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-save>Save version</button></div>`);
     const body = dialog.body, name = body.querySelector('#vname'), err = body.querySelector('.set-err');
     setTimeout(() => { name.focus(); name.select(); }, 0);
     ctx.delay.bindTypeField(body);

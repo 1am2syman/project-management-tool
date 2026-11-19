@@ -384,7 +384,7 @@ export function createDelayUI(ctx) {
     host.hidden = false;
     const name = (e) => esc(store.byId.get(e.taskId)?.name ?? e.taskName ?? '');
     setHTML(host, `<p class="vwarn">${pl(list.length, 'delay')} ${list.length === 1 ? 'has' : 'have'} no cause: ${list.map((e) => `${name(e)} ${sign(e.days)}`).join(', ')}. You can still save; classify them now or later.</p>
-      ${list.map((e) => `<label class="fld dly-nocause-row"><span>${name(e)} ${sign(e.days)}d${e.kind ? ` · ${esc(e.kind)}` : ''}</span><select data-dly-classify="${e.id}" aria-label="Cause of ${name(e)} ${sign(e.days)}"><option value="">Classify…</option>${causes.list.filter((c) => !c.retired).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></label>`).join('')}`);
+      <div class="dly-nocause-list">${list.map((e) => `<label class="fld dly-nocause-row"><span>${name(e)} ${sign(e.days)}d${e.kind ? ` · ${esc(e.kind)}` : ''}</span><select data-dly-classify="${e.id}" aria-label="Cause of ${name(e)} ${sign(e.days)}"><option value="">Classify…</option>${causes.list.filter((c) => !c.retired).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></label>`).join('')}</div>`);
     for (const sel of host.querySelectorAll('[data-dly-classify]')) sel.addEventListener('change', () => {
       if (!sel.value) return;
       const err = DL.reclassify(store, +sel.dataset.dlyClassify, { cause: sel.value });
