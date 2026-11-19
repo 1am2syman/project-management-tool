@@ -117,10 +117,15 @@ export function createDelayUI(ctx) {
   function afterEdit({ id, kind, pre }) {
     if (!pre || !editable()) return;
     let target = id;
-    if (kind === 'link') { // the first agreed task the link pushed past its agreed date
+    // A link, calendar or scheduling-mode change pushes tasks without the user typing a date: offer the first agreed task it pushed past its
+    // agreed date (the task whose mode was changed first), and count the move as that task's own.
+    const linkLike = kind === 'link' || kind === 'calendar' || kind === 'mode';
+    if (linkLike) {
       target = null;
-      for (const t of DL.leaves(store)) { if (t.agr && pre.fins.has(t.id) && DL.fin(store, t.id) > pre.fins.get(t.id) && DL.fin(store, t.id) > t.agr.f) { target = t.id; break; } }
-      if (target == null) return;
+      const pushed = (t) => t.agr && pre.fins.has(t.id) && DL.fin(store, t.id) > pre.fins.get(t.id) && DL.fin(store, t.id) > t.agr.f;
+      if (kind === 'mode' && store.byId.get(id) && pushed(store.byId.get(id))) target = id;
+      else for (const t of DL.leaves(store)) { if (pushed(t)) { target = t.id; break; } }
+      if (target == null) { if (kind !== 'calendar') DL.recover(store, id, pre); return; }
     }
     const t = store.byId.get(target), a = t?.agr;
     if (!t || !a || store.info.get(target).summary) return;
@@ -128,8 +133,8 @@ export function createDelayUI(ctx) {
     if (old == null || !(now > a.f) || !(now > old)) { DL.recover(store, target, pre); return; }
     let pushed = 0;
     for (const k of DL.leaves(store)) if (k.id !== target && k.agr && pre.fins.has(k.id) && DL.fin(store, k.id) > pre.fins.get(k.id)) pushed++;
-    const op = kind === 'start' || kind === 'move' || kind === 'link' || t.ms ? 'start' : 'finish';
-    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && kind !== 'link', link: kind === 'link', undo: ownUndo() });
+    const op = kind === 'start' || kind === 'move' || linkLike || t.ms ? 'start' : 'finish';
+    openPopover({ id: target, op, old, now, pushed, finish: Math.max(0, DL.wd(store, pre.end, DL.endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start, pre, anchor: op === 'start' && !linkLike, link: linkLike, undo: ownUndo() });
   }
   api.openOverdue = (id) => {
     if (!editable()) return;

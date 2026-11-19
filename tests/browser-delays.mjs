@@ -506,6 +506,28 @@ try {
   await page.screenshot({ path: join(evidence, 'duplicate-analysis.png') });
   await an.locator('[data-an=close]').click(); await settle();
 
+  // F6: a holiday inside an agreed task pushes it; the record popover opens, Cancel undoes the calendar change, Record keeps it as own.
+  const buildStart = (await data()).tasks.find((t) => t.id === 2).start;
+  const addHoliday = async () => {
+    await page.locator('#calendarbtn').click(); await page.getByRole('dialog', { name: /Project calendar/ }).waitFor();
+    await page.locator('[data-holiday-date]').fill(iso(buildStart)); await page.locator('[data-holiday-add]').click();
+    await page.locator('[data-calendar-apply]').click(); await settle();
+  };
+  const holidays = async () => (await data()).calendar?.holidays?.length ?? 0;
+  const holidaysBefore = await holidays();
+  await addHoliday(); await open();
+  assert(/Finish .* → /.test(await pop.locator('[data-head]').innerText()), 'a holiday that pushes an agreed task opens the record popover');
+  await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
+  assert.equal(await holidays(), holidaysBefore, 'Cancel undoes the calendar change');
+  await addHoliday(); await open();
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
+  assert.equal(await holidays(), holidaysBefore + 1, 'Record keeps the holiday');
+  assert(!(await text(2, 'origin')).includes('Inherited') || (await text(2, 'origin')).includes('Own'), `the pushed task shows the move as its own: ${await text(2, 'origin')}`);
+  await page.locator('#analysisbtn').click(); await an.locator('#an-dmil').waitFor(); await settle();
+  assert(!(await an.locator('#an-dmil tbody tr').evaluateAll((rows) => rows.map((r) => r.textContent))).some((t) => /Other \/ unexplained/.test(t)), 'the holiday delay is explained');
+  await an.locator('[data-an=close]').click(); await settle();
+
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');
 } catch (error) {

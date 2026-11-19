@@ -741,3 +741,25 @@ test('a shortened task, an early finish and an earlier predecessor are attribute
   assert.deepEqual(unexplained(s), []);
   s.undo(); assert.deepEqual(unexplained(s), []);
 });
+
+// ---- F6: calendar and scheduling-mode changes tell the hook, and the move can be recorded as that task's own delay ----
+test('a holiday or a Manual → Auto change that pushes an agreed task reaches the hook and is recorded as own, explained delay (F6)', () => {
+  const s = chainPlan(), calls = []; dl.agreeBaseline(s);
+  s.hook = { before: () => dl.snapshotBefore(s), after: (e) => calls.push(e) };
+  let pre = dl.snapshotBefore(s);
+  assert.equal(s.setCalendar({ workdays: [1, 2, 3, 4, 5], holidays: [{ date: '2026-11-10', name: 'Holiday' }] }), null);
+  assert.deepEqual(calls.map((c) => c.kind), ['calendar'], 'the calendar change tells the hook');
+  assert.ok(dl.fin(s, 2) > pre.fins.get(2), 'the holiday pushed A2');
+  assert.equal(dl.record(s, 2, calls[0].pre, { type: 'delay', cause: C('Unknown'), op: 'start' }, { link: true }), null);
+  assert.equal(dl.row(s, 2).own, 1); assert.equal(dl.row(s, 2).inherited, 0);
+  assert.deepEqual(unexplained(s), []);
+  // A task that was manual (starting before its predecessor ends) and is switched to Auto is pushed by its own mode change.
+  const m = chainPlan(); m.byId.get(3).scheduling = 'manual'; m.byId.get(3).start = m.byId.get(2).start; m.settle(); dl.agreeBaseline(m);
+  const mc = []; m.hook = { before: () => dl.snapshotBefore(m), after: (e) => mc.push(e) };
+  assert.equal(m.setScheduling(3, 'auto'), null);
+  assert.deepEqual(mc.map((c) => [c.kind, c.id]), [['mode', 3]]);
+  assert.ok(dl.fin(m, 3) > m.byId.get(3).agr.f, 'the mode change pushed A3 past its agreed date');
+  assert.equal(dl.record(m, 3, mc[0].pre, { type: 'delay', cause: C('Unknown'), op: 'start' }, { link: true }), null);
+  assert.ok(dl.row(m, 3).own > 0 && dl.row(m, 3).inherited === 0, `own, not inherited: ${JSON.stringify(dl.row(m, 3))}`);
+  assert.deepEqual(unexplained(m), []);
+});

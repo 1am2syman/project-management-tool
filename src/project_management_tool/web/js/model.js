@@ -645,7 +645,9 @@ export class Store {
   }
   setCalendar(value, taskId = null) {
     const preview = this.previewCalendar(value, taskId); if (preview.error) return preview.error;
+    const pre = this.hook?.before() ?? null;
     this.tx(() => { this.calendar = preview.view.calendar; this.work = preview.view.work; this.tasks = preview.view.tasks; });
+    this.hook?.after({ id: taskId, kind: 'calendar', pre });
     return null;
   }
 
@@ -676,10 +678,12 @@ export class Store {
     if (!['auto', 'manual', 'anchor'].includes(mode)) return 'Unknown scheduling mode';
     const work = this.workFor(t), lb = this.lowerBound(id), linked = this.incoming(id).length > 0;
     if (mode === 'auto' && linked && (!Number.isSafeInteger(lb) || Math.abs(work.finish(lb, t.dur)) > 99999999)) return 'Calculated dates are outside the supported range';
+    const pre = this.hook?.before() ?? null;
     this.tx(() => {
       t.scheduling = mode;
       if (mode === 'auto' && linked) t.start = work.next(lb);
     });
+    this.hook?.after({ id, kind: 'mode', pre });
     return null;
   }
   propagate() {
