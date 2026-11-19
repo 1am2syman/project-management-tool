@@ -7,6 +7,8 @@ import { compareViews, trends, changeLog, changeCategory, summaryCards, fmtDay, 
 import { buildAnalysisPdf, buildAnalysisXlsx } from './analysisexport.js';
 import { finishWaterfall } from './finishwaterfall.js';
 import { waterfallChart, waterfallMarkup, waterfallDetails, nameLines } from './waterfallui.js';
+import * as DL from './delays.js';
+import { createDelayAnalysis, DELAY_SECTIONS } from './delayanalysis.js';
 
 const PALETTE = ['#2b59e6', '#f59e0b', '#0d9488', '#7c3aed', '#e11d48', '#15803d', '#0891b2', '#c2410c', '#64748b', '#db2777'];
 const MAX_TREND_MILESTONES = 10;
@@ -47,7 +49,7 @@ export function lineChart({ width, height = 250, labels, series, highlight = [],
     s += `<g class="ch-series" opacity="${se.muted ? .16 : 1}">`;
     let d = '', pen = false;
     se.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`; pen = true; });
-    s += `<path class="ch-line" d="${d}" stroke="${se.color}" stroke-width="${se.width || 2}"/>`;
+    s += `<path class="ch-line" d="${d}" stroke="${se.color}" stroke-width="${se.width || 2}"${se.dash ? ` stroke-dasharray="${se.dash}"` : ''}/>`;
     se.values.forEach((v, i) => {
       if (v == null) return;
       const on = highlight.includes(i);
@@ -108,10 +110,13 @@ export function ganttChart(d, width, rows, fullNames = false) {
   return { svg: s, height };
 }
 
+const HELPERS = { waterfallMarkup, waterfallChart, waterfallDetails, lineChart, setSVG };
+
 export function createAnalysis(ctx) {
   const { store } = ctx;
   const root = document.querySelector('#analysis');
   const cache = new Map();
+  const delay = createDelayAnalysis(ctx);
   let state = null, prevFocus = null;
 
   const viewOf = (v) => {
@@ -129,7 +134,7 @@ export function createAnalysis(ctx) {
 
   function open(from, to = '') {
     const versions = store.versions();
-    state = { a: from ?? versions.at(-1)?.id ?? '', b: to, filter: 'all', search: '', onlyChanged: false, fullNames: false, trendSelected: null, waterfallSelected: 0, current: null, sheet: store.wb.active };
+    state = { a: from ?? DL.latestBaseline(versions)?.id ?? versions.at(-1)?.id ?? '', b: to, filter: 'all', search: '', onlyChanged: false, fullNames: false, trendSelected: null, waterfallSelected: 0, current: null, sheet: store.wb.active };
     if (state.a === state.b && versions.length > 1 && !from) state.a = versions.at(-2).id;
     prevFocus = document.activeElement;
     ctx.versions?.closeMenu();
@@ -153,7 +158,7 @@ export function createAnalysis(ctx) {
         <div class="an-actions"><button data-an="pdf" title="Download this analysis as PDF">PDF</button><button data-an="xlsx" title="Download this analysis as an Excel workbook">Excel</button>
         <button class="an-x" data-an="close" aria-label="Close version analysis" title="Close (Esc)">×</button></div>
       </div>
-      <nav class="an-nav" aria-label="Analysis sections">${SECTIONS.map(([id, label]) => `<button data-go="${id}">${label}</button>`).join('')}</nav>
+      <nav class="an-nav" aria-label="Analysis sections"></nav>
       <div class="an-body" tabindex="-1"></div>`);
     root.querySelector('.an-body').addEventListener('scroll', queueSection, { passive: true });
     root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-labelledby', 'an-title');
@@ -182,6 +187,9 @@ export function createAnalysis(ctx) {
     root.querySelector('#an-a').title = `${A.label} · ${when(A.at)}`;
     root.querySelector('#an-b').title = B.id ? `${B.label} · ${when(B.at)}` : B.label;
     state.d = d; state.log = log; state.trend = trend; state.A = A; state.B = B;
+    const hasDelay = delay.has(B.view);
+    state.hasDelay = hasDelay;
+    setHTML(root.querySelector('.an-nav'), [...SECTIONS, ...(hasDelay ? DELAY_SECTIONS : [])].map(([id, label]) => `<button data-go="${id}">${label}</button>`).join(''));
     setHTML(body, (state.a === state.b ? '<p class="an-same">Same plan selected.</p>' : '') +
       section('summary', 'Summary', summary(d)) +
       section('trends', 'Trends', `<div class="an-charts"><figure><figcaption>Finish history</figcaption><svg class="an-chart" data-chart="finish" role="img" aria-label="Forecast finish date for each version"></svg></figure><figure><figcaption>Milestone history</figcaption><svg class="an-chart" data-chart="ms" role="img" aria-label="Forecast date of each milestone for each version"></svg><div class="an-legend" data-legend="ms"></div></figure></div>`) +
@@ -190,7 +198,8 @@ export function createAnalysis(ctx) {
       section('changes', 'Change log', `<div class="an-filters" role="group" aria-label="Filter changes"></div><div class="an-logwrap"></div>`) +
       section('slips', 'Biggest slips', slips(d)) +
       section('critical', 'Critical path', critical(d)) +
-      section('owners', 'By owner', owners(d)));
+      section('owners', 'By owner', owners(d)) + (hasDelay ? delay.html(B.view, list.map((p) => ({ label: p.short, view: p.view, compared: p.id === B.id })), HELPERS) : ''));
+    if (hasDelay) delay.mount(root);
     renderCharts(); renderLog(); syncSection();
   }
   const section = (id, title, inner) => `<section class="an-sec" id="an-${id}" aria-labelledby="an-h-${id}"><h2 id="an-h-${id}">${title}</h2>${inner}</section>`;
@@ -201,7 +210,7 @@ export function createAnalysis(ctx) {
     return `<div class="an-outcome ${finish.tone}" data-kpi="finish"><div><span class="k-l">Project finish</span><b class="k-v">${esc(finish.value)}</b><span class="k-b">Baseline ${esc(finish.before)}</span></div><span class="k-d">${esc(finish.delta)}</span></div>
       <div class="an-kpis">${supporting.map((c) => {
         const value = c.key === 'duration' ? `${d.b.workDays}d` : c.value;
-        const sub = c.key === 'milestones' ? (d.milestones.some((m) => m.status === 'slipped') ? c.sub : 'None slipped') : c.key === 'changes' ? `${d.counts.changed} items revised` : c.delta === 'No change' ? 'Unchanged' : c.key === 'duration' ? signed(d.b.workDays - d.a.workDays) : c.delta;
+        const sub = c.key === 'milestones' ? (d.milestones.some((m) => m.status === 'slipped') ? c.sub : 'None slipped') : c.key === 'changes' ? `${d.counts.changed} items changed` : c.delta === 'No change' ? 'Unchanged' : c.key === 'duration' ? signed(d.b.workDays - d.a.workDays) : c.delta;
         return `<div class="kpi ${c.tone}" data-kpi="${c.key}"><span class="k-l">${esc(c.label)}</span><b class="k-v">${esc(value)}</b><span class="k-d">${esc(sub)}</span></div>`;
       }).join('')}</div><details class="an-more an-metrics"><summary>All metrics</summary><table class="an-t"><thead><tr><th>Metric</th><th>Baseline</th><th>Compared</th><th>Change</th></tr></thead><tbody>${cards.map((c) => `<tr><td>${esc(c.label)}</td><td>${esc(c.before || '—')}</td><td>${esc(c.value)}</td><td>${esc(c.delta)}${c.sub ? `<span class="an-sub">${esc(c.sub)}</span>` : ''}</td></tr>`).join('')}</tbody></table><p>Dates follow each saved plan. Working-day shifts use the compared calendar.</p></details>`;
   }
@@ -262,7 +271,7 @@ export function createAnalysis(ctx) {
     ms.setAttribute('viewBox', `0 0 ${w2} 250`); ms.setAttribute('width', w2); ms.setAttribute('height', 250);
     setSVG(ms, series.length ? lineChart({ width: w2, labels, highlight: hl, series }) : `<text class="ch-ax" x="${w2 / 2}" y="125" text-anchor="middle">No milestones in any version</text>`);
     setHTML(root.querySelector('[data-legend=ms]'), series.map((s, i) => `<button data-series="${i}" aria-pressed="${state.trendSelected === i}" title="${esc(s.name)}"><i style="background:${s.color}"></i><span>${esc(s.name)}</span></button>`).join('') + (state.trend.milestones.length > series.length ? `<span class="mut">${series.length} of ${state.trend.milestones.length} milestones</span>` : ''));
-    renderWaterfall();
+    renderWaterfall(); if (state.hasDelay) delay.resize();
     const g = root.querySelector('.an-gantt'), rows = state.onlyChanged ? state.d.rows.filter((r) => r.status !== 'same' || r.startDelta || r.finishDelta) : state.d.rows;
     const gw = Math.max(720, Math.round(g.parentElement.clientWidth || 900)), chart = ganttChart(state.d, gw, rows, state.fullNames);
     g.setAttribute('viewBox', `0 0 ${gw} ${chart.height}`); g.setAttribute('width', gw); g.setAttribute('height', chart.height);
@@ -320,7 +329,7 @@ export function createAnalysis(ctx) {
   }
   async function exportAs(kind) {
     if (!state?.d || state.a === state.b) return;
-    const meta = { project: store.sheet().name, a: state.A, b: state.B, trend: state.trend, milestones: trendSeries(state.trend), log: state.log };
+    const meta = { project: store.sheet().name, a: state.A, b: state.B, trend: state.trend, milestones: trendSeries(state.trend), log: state.log, delay: state.hasDelay ? delay.data(state.B.view) : null };
     const base = `${fname(meta.project)}-analysis-${state.A.short}-vs-${state.B.short}-${new Date().toISOString().slice(0, 10)}`;
     try {
       if (kind === 'pdf') download(buildAnalysisPdf(state.d, meta), `${base}.pdf`);

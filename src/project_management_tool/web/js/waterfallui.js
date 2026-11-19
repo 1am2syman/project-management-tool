@@ -36,7 +36,7 @@ export function waterfallChart(w, width, selected = 0) {
   for (const t of ticks) svg += `<line class="wf-grid" x1="${left}" x2="${width - right}" y1="${Y(t)}" y2="${Y(t)}"/><text class="wf-axis" x="${left - 8}" y="${Y(t) + 4}" text-anchor="end">${esc(fmtDate(t))}</text>`;
   svg += `<line class="wf-base" x1="${left}" x2="${width - right}" y1="${Y(w.baseline)}" y2="${Y(w.baseline)}"/>`;
   const endpoint = (i, date, label) => `<rect class="wf-end" x="${X(i) - bar / 2}" y="${Y(date)}" width="${bar}" height="${Math.max(2, bottom - Y(date))}" rx="4"/><text class="wf-value" x="${X(i)}" y="${Y(date) - 10}" text-anchor="middle">${esc(fmtDate(date))}</text><text class="wf-name" x="${X(i)}" y="${bottom + 24}" text-anchor="middle">${label}</text>`;
-  svg += endpoint(0, w.baseline, 'Baseline');
+  svg += endpoint(0, w.baseline, w.startLabel || 'Baseline');
   let prevX = X(0) + bar / 2, previous = w.baseline;
   w.steps.forEach((step, i) => {
     const x = X(i + 1), top = Y(Math.max(step.from, step.to)), h = Math.abs(Y(step.from) - Y(step.to));
@@ -49,13 +49,13 @@ export function waterfallChart(w, width, selected = 0) {
     svg += '</g>';
     prevX = x + bar / 2; previous = step.to;
   });
-  svg += `<line class="wf-connector" x1="${prevX}" x2="${X(w.steps.length + 1) - bar / 2}" y1="${Y(previous)}" y2="${Y(previous)}"/>` + endpoint(w.steps.length + 1, w.compared, 'Compared');
+  svg += `<line class="wf-connector" x1="${prevX}" x2="${X(w.steps.length + 1) - bar / 2}" y1="${Y(previous)}" y2="${Y(previous)}"/>` + endpoint(w.steps.length + 1, w.compared, w.endLabel || 'Compared');
   return { svg, height };
 }
 export function waterfallMarkup(w) {
   if (!w.available) return `<div class="wf-unavailable"><h3>Finish movement</h3><p>${esc(w.note)}</p></div>`;
-  return `<div class="wf"><div class="wf-heading"><h3>Why the finish moved</h3><div class="wf-legend"><span><i class="late"></i>Delay</span><span><i class="early"></i>Recovered</span>${w.steps.some((s) => s.type === 'residual') ? '<span><i class="residual"></i>Unexplained</span>' : ''}</div></div>
-    <div class="wf-kpis"><div><span>Baseline</span><b>${esc(fmtDay(w.baseline))}</b></div><span class="wf-arrow" aria-hidden="true">→</span><div><span>Compared</span><b>${esc(fmtDay(w.compared))}</b></div><div class="wf-net"><span>Finish shift</span><b class="${stepTone(w)}">${esc(w.days ? contribution(w) : 'No change')}</b></div></div>
+  return `<div class="wf"><div class="wf-heading"><h3>${esc(w.title || 'Why the finish moved')}</h3><div class="wf-legend"><span><i class="late"></i>Delay</span><span><i class="early"></i>Recovered</span>${w.steps.some((s) => s.type === 'residual') ? '<span><i class="residual"></i>Unexplained</span>' : ''}</div></div>
+    <div class="wf-kpis"><div><span>${esc(w.startLabel || 'Baseline')}</span><b>${esc(fmtDay(w.baseline))}</b></div><span class="wf-arrow" aria-hidden="true">→</span><div><span>${esc(w.endLabel || 'Compared')}</span><b>${esc(fmtDay(w.compared))}</b></div><div class="wf-net"><span>${esc(w.shiftLabel || 'Finish shift')}</span><b class="${stepTone(w)}">${esc(w.days ? contribution(w) : 'No change')}</b></div></div>
     ${w.steps.length ? `<div class="wf-layout"><div class="wf-scroll"><svg class="wf-chart" role="group" aria-label="Contributions to project finish"></svg></div><aside class="wf-detail" aria-label="Selected contribution"></aside></div>` : '<p class="wf-empty">No scheduling changes.</p>'}
     <div class="wf-footer">${w.steps.length ? `<details class="wf-breakdown"><summary>All contributions <span>${w.steps.length}</span></summary><div class="wf-table"><table class="an-t"><thead><tr><th>Item / change group</th><th>Change</th><th>Revision</th><th>Resulting finish</th><th class="n">Project impact</th></tr></thead><tbody>${w.steps.map((s, i) => `<tr data-wf-row="${i}"><td><button data-wf-select="${i}">${esc(s.title)}</button></td><td>${esc(WATERFALL_TYPES[s.type])}</td><td>${s.items.map((item) => `${s.items.length > 1 ? `${esc(item.name)}${item.kind ? ` (${esc(item.kind)})` : ''}: ` : ''}${esc(item.before)} → ${esc(item.after)}`).join('<br>') || `${s.relationships.length} dependency edits`}</td><td>${esc(fmtDay(s.to))}</td><td class="n ${stepTone(s)}">${esc(contribution(s))}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     <details class="wf-note"><summary>Calculation notes</summary><p>${esc(w.note)}</p><p>${esc(w.method)}</p><p>Zero-effect changes stay visible. Contributions use the compared calendar; * marks a calendar-day shift with no working-day shift.</p></details></div></div>`;

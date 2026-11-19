@@ -6,7 +6,7 @@ import { WorkingCalendar } from './calendar.js';
 import { workDelta, fmtDay, signed } from './versiondiff.js';
 
 export const WATERFALL_METHOD = 'Calendar first, then task additions/removals and dependencies, then revisions in dependency order. Independent revisions are grouped. Contributions depend on this order; snapshots do not contain edit history.';
-export const WATERFALL_TYPES = { calendar: 'Calendar revised', added: 'Item added', removed: 'Item removed', revised: 'Item revised', scope: 'Items added / removed', links: 'Dependencies revised', parallel: 'Parallel revisions', scheduling: 'Scheduling revised', residual: 'Unexplained difference' };
+export const WATERFALL_TYPES = { calendar: 'Calendar revised', added: 'Item added', removed: 'Item removed', revised: 'Item revised', scope: 'Items added / removed', links: 'Dependencies revised', parallel: 'Parallel revisions', scheduling: 'Scheduling revised', residual: 'Unexplained difference', delay: 'Recorded delay', revision: 'Agreed revision', inclusion: 'Agreed inclusion', omission: 'Agreed omission', pending: 'Pending inclusion' };
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const pair = (l) => `${l.from}>${l.to}`;
 const mode = (t) => t.scheduling || 'auto';

@@ -238,7 +238,7 @@ export function createImport(ctx) {
       const raw = await readSpreadsheet(file);
       const calendars = spreadsheetCalendars(raw);
       state.sheets = raw.filter((s) => s.rows.some((r) => r && r.length) && s.rows[0]?.[0] !== 'Plan calendars').map((s, i) => {
-        const res = mapSheet(s, calendars.get(s.name)), skip = /\bgantt$/i.test(s.name) || /^instructions?$/i.test(s.name) || s.hidden;
+        const res = mapSheet(s, calendars.get(s.name)), skip = /\b(gantt|delay log)$/i.test(s.name) || /^instructions?$/i.test(s.name) || s.hidden;
         return { ...res, src: s.name, title: raw.length === 1 || /^(csv|tasks?|sheet\d*|import|plan)$/i.test(s.name) ? baseName(file) : s.name, on: res.ok && !skip, i };
       });
       if (!state.sheets.length) state.error = 'The file is empty.';

@@ -1,7 +1,7 @@
 // Version analysis exports: an A4-landscape PDF and an Excel workbook built from the same
 // comparison the overlay shows, using the dependency-free PDF and XLSX writers.
 import { Page, PW, PH, M, fit, tw, pdfDocument } from './pdf.js';
-import { Styles, Sheet, pack } from './xlsx.js';
+import { Styles, Sheet, pack, delayLogSheet } from './xlsx.js';
 import { MONTHS, ymd, today } from './model.js';
 import { waterfallLayout, nameLines, contribution, stepColor } from './waterfallui.js';
 import { WATERFALL_TYPES } from './finishwaterfall.js';
@@ -170,6 +170,26 @@ function waterfallPages(flow, w) {
   else { flow.heading('Finish contributions'); flow.table([['Item / change group', 170, 'l'], ['Change', 108, 'l'], ['Revision / explanation', 330, 'l'], ['Resulting finish', 90, 'l'], ['Project impact', 88, 'r']], waterfallRows(w)); }
 }
 
+// Delay accounting: milestone table, impact grid (key milestones) and the delay log.
+const dsign = (n) => (n > 0 ? `+${n}` : n < 0 ? `-${-n}` : '0');
+function delayPages(flow, dl) {
+  flow.add();
+  flow.heading('Delay accounting - milestones', 'Agreed, delay (working days) and expected');
+  flow.table([['Milestone', 190, 'l'], ['Agreed', 80, 'l'], ['Revisions', 60, 'r'], ['Current agreed', 84, 'l'], ['Delay', 50, 'r'], ['Expected', 80, 'l'], ['Status', 100, 'l'], ['Main causes', 142, 'l']],
+    dl.table.map((m) => ({ cells: [m.name, fmtDay(m.orig), m.rev ? dsign(m.rev) : '0', fmtDay(m.cur), m.delay ? dsign(m.delay) : '0', fmtDay(m.exp), m.status, m.causes.slice(0, 3).map((c) => `${c.name} ${dsign(c.days)}`).join('; ') || '-'], colors: [null, null, null, null, m.delay > 0 ? 'BE123C' : m.delay < 0 ? '15803D' : null, null, m.status.startsWith('Late') ? 'BE123C' : m.status === 'Early' ? '15803D' : null] })));
+  const cols = dl.grid.cols.filter((c) => c.starred), first = Math.max(180, 786 - cols.length * 88);
+  flow.heading('Impact grid', 'Each column adds up to its total against the original agreed date');
+  if (cols.length) flow.table([['What changed', first, 'l'], ...cols.map((c) => [c.name, 88, 'r'])], [
+    ...dl.grid.rows.filter((r) => cols.some((c) => r.effects[c.id])).map((r) => ({ cells: [r.label, ...cols.map((c) => (r.effects[c.id] ? dsign(r.effects[c.id]) : '-'))] })),
+    ...(cols.some((c) => dl.grid.unexplained[c.id]) ? [{ cells: ['Other / unexplained', ...cols.map((c) => (dl.grid.unexplained[c.id] ? dsign(dl.grid.unexplained[c.id]) : '-'))] }] : []),
+    { cells: ['Total vs original agreed', ...cols.map((c) => dsign(c.total))], bold: true },
+  ]);
+  flow.heading('Delay log', `${dl.log.length} entries`);
+  if (dl.log.length) flow.table([['Date', 64, 'l'], ['Task', 150, 'l'], ['Type', 60, 'l'], ['Days', 40, 'r'], ['Cause', 110, 'l'], ['Party / approved by', 110, 'l'], ['Reason / note', 252, 'l']],
+    dl.log.map((e) => ({ cells: [new Date(e.at).toISOString().slice(0, 10), e.taskName || '', e.typeLabel, e.days ? dsign(e.days) : '', e.causeLabel || '', (e.type === 'delay' ? e.party : e.approvedBy) || '', [e.reason, e.note].filter(Boolean).join(' - ')] })));
+  else flow.note('No delays, revisions, inclusions or omissions recorded.');
+}
+
 export function buildAnalysisPdf(d, meta) {
   const aName = meta.a.label, bName = meta.b.label;
   const flow = new Flow(`Version analysis - ${meta.project}`, `Baseline ${label(meta.a)}  >  compared ${label(meta.b)}. Working days use the compared plan's calendar.`);
@@ -203,6 +223,7 @@ export function buildAnalysisPdf(d, meta) {
     d.slips.slice(0, 10).map((s) => ({ cells: [s.name, s.owner || '-', fmtDay(s.a), fmtDay(s.b), signed(s.work), s.causes.join('; ') || '-'], colors: [null, null, null, null, 'BE123C'] })));
   else flow.note('No task finishes later.');
 
+  if (meta.delay) delayPages(flow, meta.delay);
   waterfallPages(flow, d.waterfall);
   flow.add();
   ganttPages(flow, d, aName, bName);
@@ -320,6 +341,18 @@ export async function buildAnalysisXlsx(d, meta) {
 
   table('By owner', '0D9488', [28, 10, 10, 10, 10, 10, 12, 12], ['Owner', 'Tasks', 'Slipped', 'Earlier', 'Added', 'Removed', 'Task-days Δ', 'Worst slip'],
     d.owners.map((o) => [[o.owner], [o.tasks, num], [o.slipped, num], [o.earlier, num], [o.added, num], [o.removed, num], [o.workDelta, deltaStyle(o.workDelta)], [o.maxSlip || '', o.maxSlip ? bad : txt]]));
+  if (meta.delay) {
+    const dl = meta.delay, nd = (n) => (n ? n : 0);
+    table('Delay milestones', 'F43F5E', [34, 16, 12, 16, 12, 16, 22, 50], ['Milestone', 'Agreed', 'Revisions', 'Current agreed', 'Delay', 'Expected', 'Status', 'Main causes'],
+      dl.table.map((m) => [[m.name, bold], [serial(m.orig), date], [nd(m.rev), deltaStyle(m.rev)], [serial(m.cur), date], [nd(m.delay), deltaStyle(m.delay)], [serial(m.exp), date], [m.status], [m.causes.map((c) => `${c.name} ${signed(c.days)}`).join('; ')]]));
+    const cols = dl.grid.cols;
+    table('Impact grid', 'F43F5E', [46, ...cols.map(() => 16)], ['What changed', ...cols.map((c) => c.name)], [
+      ...dl.grid.rows.map((r) => [[r.label], ...cols.map((c) => [r.effects[c.id] || 0, deltaStyle(r.effects[c.id] || 0)])]),
+      [['Other / unexplained'], ...cols.map((c) => [dl.grid.unexplained[c.id] || 0, deltaStyle(dl.grid.unexplained[c.id] || 0)])],
+      [['Total vs original agreed', bold], ...cols.map((c) => [c.total, deltaStyle(c.total)])],
+    ]);
+    sheets.push(delayLogSheet(S, dl.log, 'Delay log', 'F43F5E'));
+  }
   if (d.waterfall) {
     const w = d.waterfall;
     const wrap = S.get({ wrap: 1, v: 'top' });

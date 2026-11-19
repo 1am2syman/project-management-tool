@@ -208,7 +208,7 @@ try {
   await pick('v2 · Frontend slip');
   await page.locator('#saveprojectbtn').click(); await toast('Saved');
   const doc = await page.evaluate(async () => JSON.parse(await (await (await (await navigator.storage.getDirectory()).getFileHandle('versions.plan')).getFile()).text()));
-  assert.equal(doc.version, 4);
+  assert.equal(doc.version, 6);
   assert.deepEqual(doc.project.versions.map((v) => [v.n, v.name]), [[1, 'Baseline'], [2, 'Frontend slip']]);
   assert.equal(doc.project.nextVersion, 4);
   assert.equal(doc.project.data.tasks.find((t) => t.id === 13).dur, 22, 'Save writes the live plan, not the version on screen');

@@ -1,6 +1,8 @@
 // Dependency-free .xlsx writer: styled Tasks sheet (outline groups, freeze panes, filters) and a
 // cell-painted Gantt sheet per project. Zip container is written by hand (deflate when available).
 import { ymd, dow, MONTHS, today } from './model.js';
+import * as DL from './delays.js';
+import { loadCauses } from './causes.js';
 
 const enc = new TextEncoder();
 const esc = (s) => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -81,7 +83,18 @@ export class Sheet {
 // ---------- sheet builders ----------
 const WK = { n: '5B7CFA', d: '3A5BDC', cn: 'F43F5E', cd: 'E11D48', sum: '334155', ms: 'F59E0B', done: '94A3B8', wknd: 'EEF0F5' };
 
-function tasksSheet(S, st, name, tab) {
+// Delay accounting columns of the task sheet (after the critical-path target cells), present once something is agreed.
+const AGREED_HEADS = ['Agreed finish', 'Variance (workdays)', 'Own delay', 'Inherited delay', 'Cause'];
+function agreedCells(S, st, sh, causes, r, t, fl) {
+  const row = DL.row(st, t.id); if (!row) { if (t.inc) sh.set(r, 15, 'Pending inclusion', fl({ color: '0E7490' })); return; }
+  const e = DL.lastDelay(st, t.id), num = (v, o = {}) => fl({ fmt: '+0;-0;0', h: 'center', ...o });
+  sh.set(r, 15, serial(row.agreed), fl({ fmt: 'mmm d, yyyy', h: 'center' }));
+  sh.set(r, 16, row.v, num(row.v, { color: row.v > 0 ? 'BE123C' : row.v < 0 ? '15803D' : '64748B', b: row.v ? 1 : 0 }));
+  if (row.rollup) return;
+  sh.set(r, 17, row.own, num(row.own)); sh.set(r, 18, row.inherited, num(row.inherited));
+  sh.set(r, 19, row.own > 0 && e ? DL.causeName(causes, e.cause) : row.own > 0 ? 'Unclassified' : '', fl({}));
+}
+function tasksSheet(S, st, name, tab, causes) {
   const sh = new Sheet(name, tab); sh.freeze = [2, 1];
   const head = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', h: 'center', wrap: 1, bb: '0F172A' });
   const heads = ['#', 'Task', 'Type', 'Start', 'End', 'Days', '% done', 'Total slack (workdays)', 'Free slack (workdays)', 'Critical', 'Depends on', 'Owner', 'Email'];
@@ -89,6 +102,8 @@ function tasksSheet(S, st, name, tab) {
   sh.widths = [5, 38, 10, 13, 13, 7, 9, 16, 16, 9, 16, 18, 30, 23, 38];
   const target = st.criticalTarget();
   sh.set(0, 13, 'Critical-path target', head); sh.set(0, 14, target?.name || 'Project completion', head);
+  const agreed = DL.hasAgreed(st) || DL.hasInclusions(st);
+  if (agreed) { AGREED_HEADS.forEach((h, c) => sh.set(0, 15 + c, h, head)); sh.widths.push(14, 12, 10, 12, 26); }
   st.tasks.forEach((t, i) => {
     const f = st.info.get(t.id), r = i + 1, sum = f.summary, ms = t.ms && !sum, crit = f.critical && st.critical;
     const base = { b: sum ? 1 : 0, fill: sum ? 'F1F5F9' : null, bb: 'E2E8F0', color: crit && !sum ? 'BE123C' : '0F172A' };
@@ -106,9 +121,26 @@ function tasksSheet(S, st, name, tab) {
     sh.set(r, 10, st.predText(t.id), fl({ color: '475569' }));
     sh.set(r, 11, t.owner, fl({}));
     sh.set(r, 12, t.email || '', fl({ color: '475569' }));
+    if (agreed) agreedCells(S, st, sh, causes, r, t, fl);
     if (t.level > 0) sh.outline.set(r, Math.min(7, t.level));
   });
   sh.filter = `A1:${colL(heads.length - 1)}${st.tasks.length + 1}`;
+  return sh;
+}
+
+// One row per recorded delay, revision, inclusion and omission: the Delay log sheet of the workbook and of the analysis export.
+export function delayLogSheet(S, rows, name, tab) {
+  const sh = new Sheet(name, tab), head = S.get({ b: 1, color: 'FFFFFF', fill: '1E293B', h: 'center', v: 'center', wrap: 1, bb: '0F172A' });
+  const wrap = S.get({ wrap: 1, v: 'top' }), txt = S.get({ v: 'top' }), day = S.get({ fmt: 'mmm d, yyyy', h: 'center', v: 'top' }), n = S.get({ fmt: '+0;-0;0', h: 'center', v: 'top' });
+  sh.widths = [14, 32, 12, 12, 10, 24, 24, 50]; sh.freeze = [0, 1];
+  ['Date', 'Task', 'Type', 'Kind', 'Days', 'Cause', 'Party / approved by', 'Reason / note'].forEach((h, c) => sh.set(0, c, h, head));
+  sh.heights.set(0, 22);
+  rows.forEach((e, i) => {
+    const r = i + 1;
+    sh.set(r, 0, serial(Math.floor(e.at / 86400000)), day); sh.set(r, 1, e.taskName || '', txt); sh.set(r, 2, e.typeLabel, txt); sh.set(r, 3, e.kind || '', txt);
+    sh.set(r, 4, e.days ?? '', n); sh.set(r, 5, e.causeLabel || '', txt); sh.set(r, 6, e.type === 'delay' ? e.party || '' : e.approvedBy || '', txt); sh.set(r, 7, [e.reason, e.note].filter(Boolean).join(' · '), wrap);
+  });
+  if (rows.length) sh.filter = `A1:H${rows.length + 1}`;
   return sh;
 }
 
@@ -196,7 +228,7 @@ const PAL = ['5B7CFA', '10B981', 'F59E0B', 'EC4899', '8B5CF6', '06B6D4', 'EF4444
 export async function buildXlsx(projects) {
   const taskCalendars = projects.some((p) => p.store.tasks.some((t) => t.calendar));
   const withCalendars = taskCalendars || projects.some((p) => p.store.calendar.workdays.length !== 7 || p.store.calendar.holidays.length);
-  const S = new Styles(), sheets = [], used = new Set(withCalendars ? ['plan calendars'] : []);
+  const S = new Styles(), sheets = [], used = new Set(withCalendars ? ['plan calendars'] : []), causes = loadCauses();
   const calendars = new Sheet('Plan calendars', '64748B');
   calendars.widths = [32, 22, 14, 40, 16];
   calendars.set(0, 0, 'Plan calendars', 0); calendars.set(0, 1, taskCalendars ? 2 : 1, 0);
@@ -204,7 +236,7 @@ export async function buildXlsx(projects) {
   let calendarRow = 2;
   projects.forEach((p, i) => {
     const tab = PAL[i % PAL.length], name = safeName(p.name, used);
-    sheets.push(tasksSheet(S, p.store, name, tab));
+    sheets.push(tasksSheet(S, p.store, name, tab, causes));
     const addCalendar = (calendar, taskNumber = '') => {
     const holidays = calendar.holidays.length ? calendar.holidays : [{ date: '', name: '' }];
     for (const holiday of holidays) {
@@ -215,6 +247,7 @@ export async function buildXlsx(projects) {
     addCalendar(p.store.calendar);
     p.store.tasks.forEach((t, index) => { if (t.calendar && !p.store.info.get(t.id).summary) addCalendar(t.calendar, index + 2); });
     sheets.push(ganttSheet(S, p.store, safeName(`${p.name.slice(0, 24)} Gantt`, used), tab));
+    if (DL.hasAgreed(p.store) || (p.store.log || []).length) sheets.push(delayLogSheet(S, DL.delayLog(p.store, causes), safeName(`${p.name.slice(0, 20)} Delay log`, used), tab));
   });
   if (withCalendars) sheets.push(calendars);
   return pack(S, sheets);
