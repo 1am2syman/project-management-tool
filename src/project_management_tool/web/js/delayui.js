@@ -5,6 +5,7 @@ import { esc, setHTML, setSVG, openModal } from './dom.js';
 import { dims } from './dims.js';
 import * as DL from './delays.js';
 import { loadCauses, saveCauses } from './causes.js';
+import { appState } from './appstate.js';
 
 const { sign } = DL;
 const pl = (n, w) => `${n} ${w}${Math.abs(n) === 1 ? '' : 's'}`;
@@ -18,10 +19,15 @@ export function createDelayUI(ctx) {
   let causes = loadCauses(), pop = null, layer = null, layerMarkup = '', vis = { any: false, rev: false };
   const editable = () => !store.readOnly && !store.stale;
   const refreshCauses = () => { causes = loadCauses(); };
+  const denial = () => (store.readOnly ? 'This project is read-only.' : store.stale ? 'This project changed in another tab; reload before recording.' : '');
 
   // Anything that moves an agreed task past its agreed date is watched: the record popover opens after it.
   store.hook = { before: () => (editable() && DL.hasAgreed(store) ? DL.snapshotBefore(store) : null), after: (e) => afterEdit(e) };
-  store.on((kind) => { if (kind === 'sheet' || kind === 'version') closePop(); });
+  store.on((kind) => { if (kind === 'sheet' || kind === 'version') { closePop(); refreshCauses(); } }); // a file opened elsewhere may bring causes
+  window.addEventListener('storage', (e) => { // causes added or renamed in another tab
+    if (e.key !== 'pm-delay-causes' || e.newValue == null) return;
+    appState.setItem(e.key, e.newValue); refreshCauses(); ctx.requestRender();
+  });
 
   // ---------------------------------------------------------------- sheet columns
   api.refresh = () => { vis = { any: DL.hasAgreed(store), rev: DL.hasAgreed(store) && DL.hasRevision(store) }; };
@@ -47,7 +53,7 @@ export function createDelayUI(ctx) {
     }
     if (col === 'cause') {
       const e = DL.lastDelay(store, t.id);
-      if (r.own > 0) return { cls: ' dly-c', html: e?.cause ? `<span class="dly-cause">${esc(DL.causeName(causes, e.cause))}${causes.list.find((c) => c.id === e.cause)?.retired ? ' <em>(retired)</em>' : ''}${e.party ? `<i> · ${esc(e.party)}</i>` : ''}</span>` : '<span class="dly-nocause">Unclassified delay</span>' };
+      if (r.own > 0) return { cls: ' dly-c', html: e?.cause ? `<span class="dly-cause">${esc(DL.causeName(causes, e.cause))}${causes.list.find((c) => c.id === e.cause)?.retired ? ' <em>(retired)</em>' : ''}${e.party ? `<i> · ${esc(e.party)}</i>` : ''}</span>` : (e ? '<span class="dly-nocause">Unclassified delay</span>' : '<span class="dly-nocause">Not recorded</span>') };
       if (r.inherited && r.source != null) { const o = DL.originOf(store, r.source), src = DL.lastDelay(store, o); return { cls: ' dly-c', html: `<span class="dly-cause inh">↳ ${esc(DL.nameOf(store, o))}${src?.cause ? ` · ${esc(DL.causeName(causes, src.cause))}` : ''}</span>` }; }
       if (r.pend) return { cls: ' dly-c', html: `<span class="dly-cause inh">↳ ${esc(DL.nameOf(store, r.pendSource))} (pending)</span>` };
     }
@@ -168,12 +174,19 @@ export function createDelayUI(ctx) {
       <div class="dly-actions"><button data-skip title="Record the delay without a cause">Skip reason</button><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-record>Record</button></div>`);
     document.body.appendChild(el);
     pop = { el, o };
+    if (o.unrecorded) { el.querySelector('[data-mode=revision]').style.display = 'none'; el.querySelector('[data-effect]').textContent = 'Recorded against this task; nothing else moves.'; }
     const mode = () => el.querySelector('input[name=dlymode]:checked').value, f = (k) => el.querySelector(`[data-f=${k}]`);
     const err = (m) => { el.querySelector('.set-err').textContent = m; };
     el.addEventListener('change', (e) => { if (e.target.name === 'dlymode') for (const b of el.querySelectorAll('.dly-opt')) b.classList.toggle('on', b.dataset.mode === e.target.value); });
     el.addEventListener('pointerdown', (e) => { const opt = e.target.closest('.dly-opt'); if (opt && !e.target.closest('label')) { const r = opt.querySelector('input[type=radio]'); r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); } });
     const typed = () => { const v = f('newfin')?.value.trim(); return v ? parseDate(v, o.old) : null; };
     const finish = (entry) => {
+      if (!editable()) return err(denial()); // a stale or read-only tab saves nothing: say so instead of reporting success
+      if (o.unrecorded) {
+        const x = DL.recordUnrecorded(store, o.id, { ...entry, kind: entry.kind });
+        if (x) return err(x);
+        closePop(); ctx.toast(entry.cause ? `Delay recorded · ${DL.causeName(causes, entry.cause)}` : 'Delay recorded without a cause · classify it from the task menu'); ctx.requestRender(); return;
+      }
       if (o.overdue) { // apply the typed date now, then record why; the task keeps its scheduling mode
         const d = typed(); if (d == null || d <= Math.max(o.old, a.f)) return err(`Type a finish date after ${fmtDate(Math.max(o.old, a.f))}.`);
         o.pre = DL.snapshotBefore(store);
@@ -255,15 +268,25 @@ export function createDelayUI(ctx) {
     if (ctx.people) q('#dly-party').addEventListener('focus', (ev) => ctx.people.attach(ev.target, (p) => { ev.target.value = p.name; }));
     q('[data-cancel]').addEventListener('click', () => m.close());
     q('[data-ok]').addEventListener('click', () => {
+      if (!editable()) { q('.set-err').textContent = denial(); return; }
       const err = DL.reclassify(store, e.id, { kind: q('#dly-kind').value, cause: q('#dly-cause').value, party: q('#dly-party').value, note: q('#dly-note').value });
       if (err) q('.set-err').textContent = err; else { m.close(); ctx.requestRender(); after?.(); }
     });
     setTimeout(() => q('#dly-cause')?.focus(), 0);
   };
+  // A variance that no entry accounts for: the record dialog without a revision choice.
+  api.recordMissing = (id) => {
+    if (!editable()) { store.emit('denied'); return; }
+    const a = store.byId.get(id)?.agr; if (!a || !DL.unrecordedDays(store, id)) { ctx.toast('No unrecorded delay at this task'); return; }
+    const f = store.info.get(id);
+    ctx.select(id, 'name', true);
+    openPopover({ id, op: 'finish', old: a.f, now: DL.fin(store, id), pushed: 0, finish: 0, oldStart: a.s, newStart: f.start, unrecorded: true });
+  };
   // The Cause cell of a task (double-click, Enter or F2). A task without recorded delays of its own points at the task it inherits from.
   api.editCause = (id) => {
     if (!editable()) { store.emit('denied'); return; }
     if (DL.delaysOf(store, id).length) { api.editRecord(id); return; }
+    if (DL.unrecordedDays(store, id)) { api.recordMissing(id); return; }
     const r = DL.row(store, id);
     ctx.toast(r?.inherited && r.source != null ? `This delay started at “${DL.nameOf(store, DL.originOf(store, r.source))}”: set its cause there` : 'No recorded delay at this task');
   };
@@ -273,12 +296,14 @@ export function createDelayUI(ctx) {
     const t = store.byId.get(id), f = store.info.get(id); if (!t || f.summary || store.readOnly) return '';
     let h = '<div role="separator"></div>';
     if (DL.delaysOf(store, id).length) h += item('Edit delay record…', 'dly-edit-record', null);
+    if (DL.unrecordedDays(store, id)) h += item('Record delay…', 'dly-record-missing', null);
     if (t.inc) h += item('Agree inclusion…', 'dly-agree-inclusion', null);
     h += item(t.agr ? 'Change agreed deadline…' : 'Set agreed deadline…', 'dly-agree-deadline', t.inc ? 'Agree the inclusion first' : store.structureError());
     return h;
   };
   api.menuAction = (action, id) => {
     if (action === 'edit-record') api.editRecord(id);
+    else if (action === 'record-missing') api.recordMissing(id);
     else if (action === 'agree-deadline') agreedDialog(id, 'deadline');
     else if (action === 'agree-inclusion') agreedDialog(id, 'inclusion');
   };

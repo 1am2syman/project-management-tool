@@ -310,6 +310,7 @@ export function milestoneTable(s, causes, stars = new Set(), fx = changeEffects(
       const label = causeText(causes, entry);
       by.set(label, (by.get(label) || 0) + n);
     }
+    for (const [k, v] of by) if (!v) by.delete(k); // a cause that nets out to nothing is not a cause
     const explained = [...by.values()].reduce((n, d) => n + d, 0);
     if (delay !== explained) by.set('Other / unexplained', delay - explained);
     rows.push({ id: tg.id, name: tg.name, orig: ag.o, cur: ag.f, exp, delay, pend, rev, total, status, causes: [...by].map(([name, days]) => ({ name, days })).sort((a, b) => b.days - a.days), starred: tg.id === 'end' || stars.has(tg.id), ms: tg.ms });
@@ -521,6 +522,14 @@ export function record(store, id, pre, entry, { anchor = false, link = false } =
   });
   return null;
 }
+// The own variance of a task that no delay entry accounts for (an edit made in a tab that could not record it, a moved calendar...).
+export const unrecordedDays = (s, id) => { const r = row(s, id); if (!r || r.summary || r.own <= 0) return 0; return Math.max(0, r.own - entriesOf(s, id).reduce((n, e) => n + e.days, 0)); };
+// Record that variance now. It is replayed (the task's days taken off) to find its effect on the milestones, as entries without a stored effect are.
+export function recordUnrecorded(store, id, entry) {
+  const t = store.byId.get(id), days = unrecordedDays(store, id); if (!t || !days) return 'No unrecorded delay at this task';
+  store.tx(() => push(store, { type: 'delay', taskId: id, taskName: t.name, days, op: 'finish', kind: KINDS.includes(entry.kind) ? entry.kind : 'Overrun', cause: entry.cause || null, party: String(entry.party || '').trim(), note: entry.note || '' }));
+  return null;
+}
 // An edit moved an agreed task without opening the record popover: it finished earlier (a recovery, negative days), or later but still
 // within its agreed date (0 days: it used up slack). Either way the effect on the milestones is attributed to that task and stored, so
 // it is explained instead of "unexplained". Returns the signed days, or null when nothing moved.
@@ -530,7 +539,21 @@ export function recover(store, id, pre) {
   const eff = {};
   for (const tg of targets(store)) { const d = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0; if (d) eff[tg.id] = d; }
   if (now === was && !Object.keys(eff).length) return null;
-  const days = now < was ? -Math.max(1, wd(store, now, was, id)) : 0, startMoved = store.info.get(id).start !== (pre.starts.get(id) ?? store.info.get(id).start);
+  const moved = now < was ? -Math.max(1, wd(store, now, was, id)) : now > was ? wd(store, was, now, id) : 0, days = Math.min(0, moved), startMoved = store.info.get(id).start !== (pre.starts.get(id) ?? store.info.get(id).start);
+  // Automatic entries net out: a move back toward the agreed date first changes the task's latest automatic entry, and one that adds up to
+  // nothing is removed, so a task that is back where it was agreed leaves no trace.
+  const mine = store.log.filter((e) => e.taskId === id), last = mine.at(-1);
+  if (last && last.type === 'delay' && last.days <= 0 && last.eff) {
+    const sum = { ...last.eff };
+    for (const [k, v] of Object.entries(eff)) sum[k] = (sum[k] || 0) + v;
+    for (const k of Object.keys(sum)) if (!sum[k]) delete sum[k];
+    const net = Math.min(0, last.days + moved);
+    store.amend(() => {
+      if (!net && !Object.keys(sum).length) store.log = store.log.filter((e) => e !== last);
+      else Object.assign(last, { days: net, eff: sum });
+    });
+    return net;
+  }
   store.amend(() => push(store, { type: 'delay', taskId: id, taskName: t.name, days, op: startMoved && now === was ? 'start' : 'finish', kind: 'Overrun', cause: null, party: '', note: '', eff }));
   return days;
 }

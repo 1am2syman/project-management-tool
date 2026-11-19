@@ -528,6 +528,51 @@ try {
   assert(!(await an.locator('#an-dmil tbody tr').evaluateAll((rows) => rows.map((r) => r.textContent))).some((t) => /Other \/ unexplained/.test(t)), 'the holiday delay is explained');
   await an.locator('[data-an=close]').click(); await settle();
 
+  // F8: a plan whose variance was never recorded (edited where nothing could ask) says "Not recorded" and can be recorded later.
+  await page.evaluate(async ({ B }) => {
+    const { Store } = await import('./js/model.js'), { encodeProjectFile } = await import('./js/projectfiles.js'), DL = await import('./js/delays.js');
+    const task = (id, name, dur) => ({ id, name, dur, ms: dur === 0, start: B, level: 0, progress: 0, scheduling: 'auto', owner: '' });
+    const data = { tasks: [task(1, 'First', 4), task(2, 'Second', 4), task(3, 'Done', 0)], links: [{ id: 'l1', from: 1, to: 2, type: 'FS', lag: 0 }, { id: 'l2', from: 2, to: 3, type: 'FS', lag: 0 }], nextId: 4, nextLink: 3 };
+    const st = new Store({ workbook: { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Unrecorded plan', data }] }, preferences: { auto: true } });
+    st.save = () => { st.sheet().data = JSON.parse(st.serialize()); };
+    DL.agreeBaseline(st); st.setCell(2, 'dur', '6');
+    const handle = await (await navigator.storage.getDirectory()).getFileHandle('delays.plan', { create: true });
+    const writable = await handle.createWritable(); await writable.write(encodeProjectFile(st)); await writable.close();
+  }, { B });
+  await page.locator('#openprojectbtn').click(); await page.waitForFunction(() => document.querySelector('.brand b').textContent === 'Unrecorded plan'); await settle();
+  assert.match(await text(2, 'cause'), /Not recorded/, 'a variance with no entry reads Not recorded');
+  await cell(2, 'cause').dblclick(); await open();
+  assert(await pop.locator('[data-mode=revision]').isHidden(), 'only a delay can be recorded after the fact');
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
+  assert.match(await text(2, 'cause'), /Client \/ approver/, 'the recorded cause shows in the Cause cell');
+  await page.keyboard.press('Control+z'); await settle();
+  assert.match(await text(2, 'cause'), /Not recorded/, 'Undo takes the record back');
+  await row(2).click({ button: 'right' }); await page.locator('button[data-task-action="dly-record-missing"]').click(); await open();
+  await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
+
+  // F7: causes added elsewhere (another tab, an opened file) reach the popover list without a reload.
+  const causeNames = async () => pop.locator('[data-f=cause] option').allTextContents();
+  await page.evaluate(async () => { const { loadCauses, saveCauses } = await import('./js/causes.js'), c = loadCauses(); c.list.push({ id: 'cz1', name: 'Neighbour dispute' }, { id: 'cz2', name: 'A very long cause name that keeps going and going '.repeat(3).trim() }); saveCauses(c); window.dispatchEvent(new StorageEvent('storage', { key: 'pm-delay-causes', newValue: localStorage.getItem('pm-delay-causes') })); });
+  await cell(2, 'cause').dblclick(); await open();
+  assert((await causeNames()).includes('Neighbour dispute'), `a cause added in another tab is offered at once: ${await causeNames()}`);
+  const box = await pop.boundingBox(), party = await pop.locator('[data-f=party]').boundingBox();
+  assert(party.x + party.width <= box.x + box.width + 1, 'a long cause name does not push the Party field out of the popover');
+  await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
+
+  // F8: a tab that went stale while the popover was open must not report a record it cannot save.
+  await edit(1, 'dur', '7'); await open();
+  const other = await context.newPage(); await other.goto(url); await other.locator('#gbody .r').first().waitFor();
+  await other.locator('#gbody .r').first().locator('[data-col=name]').dblclick(); await other.locator('.editor').fill('Renamed elsewhere'); await other.keyboard.press('Enter');
+  await page.locator('.robanner.stale').waitFor();
+  await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
+  await pop.locator('[data-record]').click(); await settle();
+  assert.match(await pop.locator('.set-err').innerText(), /changed in another tab/i, 'Record in a stale tab says so');
+  assert(await pop.isVisible(), 'and the popover stays open');
+  await pop.locator('[data-skip]').click(); await settle();
+  assert.match(await pop.locator('.set-err').innerText(), /changed in another tab/i, 'Skip reason too');
+  await other.close();
+
   assert.deepEqual(errors, []);
   console.log('Delay accounting browser checks passed');
 } catch (error) {

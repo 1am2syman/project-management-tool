@@ -763,3 +763,36 @@ test('a holiday or a Manual → Auto change that pushes an agreed task reaches t
   assert.ok(dl.row(m, 3).own > 0 && dl.row(m, 3).inherited === 0, `own, not inherited: ${JSON.stringify(dl.row(m, 3))}`);
   assert.deepEqual(unexplained(m), []);
 });
+
+// ---- F8: a variance no entry accounts for can be recorded later ----
+test('an own variance with no entry is recorded later, explained, and shown as not recorded (F8)', () => {
+  const s = chainPlan(); dl.agreeBaseline(s);
+  assert.equal(s.setCell(2, 'dur', String(s.byId.get(2).dur + 2)), null); // no hook: nothing recorded
+  assert.equal(dl.row(s, 2).own, 2); assert.equal(dl.unrecordedDays(s, 2), 2);
+  assert.equal(dl.lastDelay(s, 2), null);
+  assert.equal(dl.recordUnrecorded(s, 2, { cause: C('Unknown'), kind: 'Overrun' }), null);
+  assert.equal(dl.unrecordedDays(s, 2), 0); assert.equal(dl.delaysOf(s, 2).length, 1);
+  assert.deepEqual(unexplained(s), []);
+  assert.ok(dl.milestoneTable(s, loadCauses()).find((m) => m.id === 4).causes.some((c) => c.name === 'Unknown' && c.days === 2));
+  assert.equal(dl.recordUnrecorded(s, 2, { cause: null }), 'No unrecorded delay at this task');
+  s.undo(); assert.equal(dl.unrecordedDays(s, 2), 2, 'undo takes the record back');
+});
+
+// ---- F9: automatic entries net out ----
+test('a shortened task that goes back to its agreed length leaves no log row and no cause (F9)', () => {
+  const s = chainPlan(); dl.agreeBaseline(s);
+  const edit = (d) => { const pre = dl.snapshotBefore(s); assert.equal(s.setCell(2, 'dur', String(s.byId.get(2).dur + d)), null); return afterEdit(s, 2, 'dur', pre, () => 0.5); };
+  assert.equal(edit(-1), 'recovery');
+  const rows = s.log.filter((e) => e.taskId === 2 && e.type === 'delay').length; assert.equal(rows, 1);
+  edit(+1);
+  assert.equal(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').length, 0, 'back at the agreed length: no entry left');
+  const m = dl.milestoneTable(s, loadCauses()).find((x) => x.id === 4);
+  assert.equal(m.delay, 0); assert.deepEqual(m.causes, []); assert.deepEqual(unexplained(s), []);
+  // two moves in the same direction merge into one row
+  edit(-1); edit(-1);
+  assert.deepEqual(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').map((e) => e.days), [-2]);
+  edit(+1);
+  assert.deepEqual(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').map((e) => e.days), [-1]);
+  assert.deepEqual(unexplained(s), []);
+  s.undo(); assert.deepEqual(s.log.filter((e) => e.taskId === 2 && e.type === 'delay').map((e) => e.days), [-2]);
+});

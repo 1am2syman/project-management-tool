@@ -681,7 +681,7 @@ body.analysis-open .tip{display:none}
 .dly-opt.on{border-color:var(--blue);background:#f6f8ff}
 .dly-opt>label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}.dly-opt input[type=radio]{accent-color:var(--blue);margin:2px 0 0}
 .dly-opt i{font-style:normal;color:#64748b}
-.dly-fields{display:grid;grid-template-columns:.8fr 1.5fr 1fr;gap:8px;padding-left:22px}
+.dly-fields{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.5fr) minmax(0,1fr);gap:8px;padding-left:22px}.dly-fields .fld{min-width:0}.dly-fields select,.dly-fields input{width:100%;max-width:100%;text-overflow:ellipsis}
 .dly-opt[data-mode=revision] .dly-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 .dly-opt:not(.on) .dly-fields{opacity:.5}
 .dly-pop .fld>span{font-size:11px}
@@ -747,3 +747,6 @@ body.analysis-open .tip{display:none}
 .dly-nocause-list{display:flex;flex-direction:column;gap:6px;max-height:112px;overflow:auto;padding-right:2px}
 .sticky-actions{position:sticky;bottom:-18px;margin:0 -18px -18px;padding:10px 18px 14px;background:#fff;border-top:1px solid var(--line);z-index:1}
 .dly-logedit{font:600 11px var(--sans);padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;color:#334155;cursor:pointer}.dly-logedit:hover{border-color:#2b59e6;color:#2b59e6}
+
+/* Delay log: the short columns stay on one line, the long text columns wrap anywhere */
+.dly-an #an-dlog .an-t td:nth-child(1),.dly-an #an-dlog .an-t td:nth-child(3),.dly-an #an-dlog .an-t td:nth-child(4),.dly-an #an-dlog .an-t td:nth-child(5){white-space:nowrap}.dly-an #an-dlog .an-t td:last-child:has(.dly-logedit){white-space:nowrap}.dly-an #an-dlog .an-t td:nth-child(2),.dly-an #an-dlog .an-t td:nth-child(6),.dly-an #an-dlog .an-t td:nth-child(7),.dly-an #an-dlog .an-t td:nth-child(8){overflow-wrap:anywhere;min-width:7ch}
