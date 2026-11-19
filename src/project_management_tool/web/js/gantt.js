@@ -506,7 +506,7 @@ export function createGantt(ctx) {
         }
       }
       else if (commit && d.moved) { const ri = Math.floor(contentY(d.lastY) / dims.row), t = store.rows[ri]; if (t && t.id !== d.id) { const err = store.canLink(d.id, t.id); if (err) ctx.toast(err); } }
-    } else store.endDrag(commit && d.moved);
+    } else store.endDrag(commit && d.moved, { id: d.id, kind: d.kind });
     ctx.requestRender(); queueView(); flushView();
   }
   gb.addEventListener('pointerup', () => finish(true));

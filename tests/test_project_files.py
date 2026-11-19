@@ -1,7 +1,9 @@
 import contextlib
 import hashlib
+import json
 import os
 import queue
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -148,6 +150,52 @@ class FileServiceTests(unittest.TestCase):
             self.assertEqual(self.choose('large', 'open', self.source)['error'], 'too_large')
         self.service.release('client', 'invalid')
         self.assertEqual(self.service.status('client', 'invalid')['stage'], 'released')
+
+    def format6_document(self):
+        task = {'id': 1, 'name': 'Fit-out', 'level': 0, 'start': 20759, 'dur': 5, 'progress': 0, 'owner': '', 'email': '', 'noRem': False, 'ms': False,
+                'scheduling': 'auto', 'agr': {'s': 20759, 'f': 20763, 'o': 20763}}
+        entry = {'id': 1, 'type': 'delay', 'taskId': 1, 'taskName': 'Fit-out', 'at': 1, 'days': 2, 'op': 'finish', 'kind': 'Overrun', 'cause': 'c1', 'party': 'Acme'}
+        data = {'calendar': {'workdays': [0, 1, 2, 3, 4, 5, 6], 'holidays': []}, 'tasks': [task], 'links': [], 'nextId': 2, 'nextLink': 1,
+                'log': [entry], 'nextLog': 2, 'baselined': True, 'collapsed': []}
+        rem = {'on': False, 'auto': False, 'mode': 'task', 'offsets': [3, 1, 0], 'overdue': True, 'hour': 9, 'subject': 's', 'body': 'b', 'muted': []}
+        return {'format': 'plan-project', 'version': 6, 'preferences': {'auto': True, 'critical': True},
+                'project': {'name': 'Delay accounting', 'data': data, 'rem': rem, 'causes': [{'id': 'c1', 'name': 'Supplier / subcontractor'}]}}
+
+    def test_format6_project_bytes_round_trip_unchanged(self):
+        # The server only moves bytes; format 6 agreed dates, change log and causes must survive untouched.
+        document = (json.dumps(self.format6_document(), indent=2, ensure_ascii=False) + '\n').encode('utf-8')
+        self.source.write_bytes(document)
+        self.assertEqual(self.choose('open', 'open', self.source)['stage'], 'ready')
+        self.assertEqual(self.service.content('client', 'open'), document)
+        token = self.service.attach('client', 'open', 's1')
+        self.service.start('client', 'save', 'save', sheet='s1', token=token, revision='1')
+        self.assertEqual(self.service.write('client', 'save', document, authorize=authorize)['stage'], 'succeeded')
+        self.assertEqual(self.source.read_bytes(), document)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js validates the .plan format in the browser code')
+    def test_format6_validation_runs_in_the_app_and_rejects_bad_agreed_data(self):
+        good = self.format6_document()
+        cases = {'good': (good, True)}
+        for name, mutate in {
+            'agreed-date': lambda d: d['project']['data']['tasks'][0]['agr'].update(f=1.5),
+            'old-version': lambda d: d.update(version=5),
+            'unknown-cause': lambda d: d['project']['data']['log'][0].update(cause='zzz'),
+            'log-number': lambda d: d['project']['data'].update(nextLog=1),
+            'future-version': lambda d: d.update(version=7),
+        }.items():
+            document = json.loads(json.dumps(good))
+            mutate(document)
+            cases[name] = (document, False)
+        script = (
+            "import { readFileSync } from 'node:fs';"
+            f"import {{ parseProjectFile }} from {json.dumps((REPO / 'src/project_management_tool/web/js/projectfiles.js').as_uri())};"
+            "const cases = JSON.parse(readFileSync(0, 'utf8')); const out = {};"
+            "for (const [name, [doc, ok]] of Object.entries(cases)) { try { const p = parseProjectFile(JSON.stringify(doc)); out[name] = ok && p.data.log.length === 1 && p.data.tasks[0].agr.f === 20763; } catch (e) { out[name] = !ok && /Invalid Plan project|not supported/.test(e.message) || String(e); } }"
+            "console.log(JSON.stringify(out));"
+        )
+        result = subprocess.run(['node', '--input-type=module', '-e', script], input=json.dumps(cases), capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), dict.fromkeys(cases, True))
 
     def test_only_the_operation_that_opened_the_chooser_can_cancel_or_raise_it(self):
         self.chooser = ControlledChooser()

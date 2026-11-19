@@ -46,6 +46,8 @@ export function cleanShare(s) {
 // Explicit, named snapshots of one project. Each keeps its plan as an immutable JSON string
 // (like undo snapshots), so a version is never edited in place and costs one stored value.
 export const MAX_VERSIONS = 200;
+// Version types for delay accounting; versions saved before it have no type and are never treated as agreed.
+export const VERSION_TYPE_IDS = ['baseline', 'status', 'draft'];
 export const PREVIEW_LOCK = 'You are viewing a saved version. Return to Current to edit.';
 export function cleanVersions(list) {
   const out = [], ids = new Set();
@@ -53,9 +55,9 @@ export function cleanVersions(list) {
     if (!v || typeof v !== 'object' || typeof v.data !== 'string' || !Number.isSafeInteger(v.n) || v.n < 1) continue;
     const id = `v${v.n}`; if (ids.has(id)) continue;
     try { const d = JSON.parse(v.data); if (!d || !Array.isArray(d.tasks) || !Array.isArray(d.links)) continue; } catch { continue; }
-    const target = Number.isSafeInteger(v.target) && v.target > 0 ? v.target : null;
+    const target = Number.isSafeInteger(v.target) && v.target > 0 ? v.target : null, type = VERSION_TYPE_IDS.includes(v.type) ? v.type : null;
     ids.add(id);
-    out.push({ id, n: v.n, name: String(v.name ?? '').trim().slice(0, 80) || `Version ${v.n}`, note: String(v.note ?? '').slice(0, 1000), at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0, by: String(v.by ?? '').slice(0, 120), auto: v.auto !== false, target, data: v.data });
+    out.push({ id, n: v.n, name: String(v.name ?? '').trim().slice(0, 80) || `Version ${v.n}`, note: String(v.note ?? '').slice(0, 1000), at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0, by: String(v.by ?? '').slice(0, 120), auto: v.auto !== false, target, ...(type ? { type } : {}), data: v.data });
   }
   return out.sort((a, b) => a.n - b.n).slice(-MAX_VERSIONS);
 }
@@ -121,6 +123,46 @@ const KEY = 'pm-proto-v2';
 const WB = 'pm-workbook-v1', TPL = 'pm-templates-v1';
 const LINK_SET = new Set(LINK_TYPES);
 
+// Delay accounting data. Agreed dates live on the tasks (agr = agreed start, agreed finish, original agreed finish; inc = an
+// inclusion awaiting agreement) and the change log lives beside them, so undo, versions and files carry them unchanged.
+export const LOG_TYPES = ['delay', 'revision', 'inclusion', 'omission'];
+export const LOG_KINDS = ['Late start', 'Overrun', 'On hold'];
+const dayInt = (v) => (Number.isSafeInteger(v) && Math.abs(v) < 1e8 ? v : null);
+function cleanAgreed(r, ms) {
+  const a = r.agr, out = {};
+  if (a && typeof a === 'object') {
+    const f = dayInt(a.f), o = dayInt(a.o), st = dayInt(a.s);
+    if (f != null) out.agr = { s: ms ? f : st ?? f, f, o: o ?? f };
+  }
+  if (r.inc === true && !out.agr) out.inc = true;
+  return out;
+}
+const text = (v, n) => String(v ?? '').trim().slice(0, n);
+export function cleanLog(list) {
+  const out = [], ids = new Set();
+  for (const e of Array.isArray(list) ? list.slice(0, 20000) : []) {
+    if (!e || typeof e !== 'object' || !LOG_TYPES.includes(e.type) || !Number.isSafeInteger(e.id) || e.id < 1 || ids.has(e.id)) continue;
+    ids.add(e.id);
+    const x = { id: e.id, type: e.type, taskId: Number.isSafeInteger(e.taskId) ? e.taskId : 0, taskName: text(e.taskName, 200), at: Number.isFinite(Number(e.at)) ? Number(e.at) : 0, days: dayInt(e.days) ?? 0 };
+    if (e.type === 'delay' || e.type === 'revision') x.op = e.op === 'start' ? 'start' : 'finish';
+    if (e.type === 'delay') {
+      x.kind = LOG_KINDS.includes(e.kind) ? e.kind : x.op === 'start' ? 'Late start' : 'Overrun';
+      x.cause = e.cause ? text(e.cause, 20) || null : null; x.party = text(e.party, 80);
+    }
+    if (e.type !== 'delay') { x.reason = text(e.reason, 500); x.approvedBy = text(e.approvedBy, 120); }
+    if (e.note) x.note = text(e.note, 500);
+    if (e.source) x.source = text(e.source, 20);
+    for (const k of ['from', 'to']) if (dayInt(e[k]) != null) x[k] = e[k];
+    out.push(x);
+  }
+  return out;
+}
+function cleanLogFields(d) {
+  const log = cleanLog(d?.log), baselined = d?.baselined === true;
+  if (!log.length && !baselined) return {};
+  return { log, nextLog: Math.max(Number.isSafeInteger(d?.nextLog) ? d.nextLog : 1, Math.max(0, ...log.map((e) => e.id)) + 1), ...(baselined ? { baselined } : {}) };
+}
+
 // Coerce arbitrary (possibly corrupt / hand-edited) saved data into a valid project.
 function sanitize(d) {
   const src = Array.isArray(d && d.tasks) ? d.tasks : [];
@@ -135,7 +177,7 @@ function sanitize(d) {
     const rawDuration = Math.round(Number(r.dur));
     const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}) });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}), ...cleanAgreed(r, ms) });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -146,7 +188,7 @@ function sanitize(d) {
   }
   const uniq = new Set(); const clean = links.filter((l) => { if (uniq.has(l.id)) return false; uniq.add(l.id); return true; });
   const collapsed = (Array.isArray(d && d.collapsed) ? d.collapsed : []).filter((x) => ids.has(x));
-  return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
+  return { tasks, links: clean, calendar: cleanCalendar(d?.calendar), collapsed, ...cleanLogFields(d), nextId: Math.max(Number(d && d.nextId) || 1, Math.max(...ids, 0) + 1), nextLink: Math.max(Number(d && d.nextLink) || 0, ln + 1) };
 }
 
 function planText(data) { const plan = sanitize(data); delete plan.collapsed; return JSON.stringify(plan); }
@@ -244,12 +286,14 @@ export class Store {
     const c = sanitize(d);
     this.calendar = c.calendar; this.work = new WorkingCalendar(this.calendar);
     this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.nextId = c.nextId; this.nextLink = c.nextLink;
+    this.log = c.log || []; this.nextLog = c.nextLog || 1; this.baselined = !!c.baselined;
     this.settle();
   }
   // What is stored: tasks and the user-authored fields of links (slack/violated/critical are recomputed on load).
   // Undo snapshots leave out which groups are collapsed: folding a group is a view choice, not an edit to be undone.
   serialize(withView = true) {
     const o = { calendar: this.calendar, tasks: this.tasks, links: this.links.map((l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: l.lag })), nextId: this.nextId, nextLink: this.nextLink };
+    if (this.log?.length || this.baselined) { o.log = this.log; o.nextLog = this.nextLog; if (this.baselined) o.baselined = true; }
     if (withView) o.collapsed = [...this.collapsed];
     return JSON.stringify(o);
   }
@@ -349,14 +393,14 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink });
+    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined });
     v.settle(); return v;
   }
   // Computed, frozen copy of a saved version: dates exactly as they were when it was taken.
   versionView(vid, sheetId = this.wb.active) {
     const version = this.version(vid, sheetId); if (!version) return null;
     const v = Object.create(Store.prototype), c = sanitize(JSON.parse(version.data));
-    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink });
+    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined });
     v.settle(); return v;
   }
 
@@ -369,22 +413,23 @@ export class Store {
   livePlan() { if (!this.preview) this.save(); return planText(this.sheet().data); }
   // True when the live plan matches the newest version, so another snapshot would record no change.
   unchangedSinceLatest() { const latest = this.versions().at(-1); return !!latest && planText(JSON.parse(latest.data)) === this.livePlan(); }
-  snapshotVersion({ name = '', note = '', by = '' } = {}) {
+  snapshotVersion({ name = '', note = '', by = '', type = null } = {}) {
     const error = this.versionError(); if (error) return { error };
     const sheet = this.sheet(), list = sheet.versions || [];
     if (list.length >= MAX_VERSIONS) return { error: `A project keeps at most ${MAX_VERSIONS} versions; delete an older version first` };
     const data = this.livePlan(); // always the live plan, also while another version is on screen
     const n = Math.max(sheet.nextVersion || 1, (list.at(-1)?.n || 0) + 1);
-    const [version] = cleanVersions([{ n, name: String(name).trim() || `Version ${n}`, note, by, at: Date.now(), auto: this.auto, target: this.criticalTargets[sheet.id] ?? null, data }]);
+    const [version] = cleanVersions([{ n, name: String(name).trim() || `Version ${n}`, note, by, type, at: Date.now(), auto: this.auto, target: this.criticalTargets[sheet.id] ?? null, data }]);
     sheet.versions = [...list, version]; sheet.nextVersion = n + 1;
     this.save(); this.emit('versions');
     return { version };
   }
-  updateVersion(vid, { name, note } = {}) {
+  updateVersion(vid, { name, note, type } = {}) {
     const error = this.versionError(); if (error) return error;
     const v = this.version(vid); if (!v) return 'That version no longer exists';
     if (name !== undefined) { const n = String(name).trim().slice(0, 80); if (!n) return 'Give the version a name'; v.name = n; }
     if (note !== undefined) v.note = String(note).slice(0, 1000);
+    if (type !== undefined) { if (type && !VERSION_TYPE_IDS.includes(type)) return 'Unknown version type'; if (type) v.type = type; else delete v.type; }
     this.save(); this.emit('versions'); return null;
   }
   // Numbers are never reused, so a deleted version cannot be confused with a later one.
@@ -417,7 +462,8 @@ export class Store {
     const c = sanitize(JSON.parse(v.data)), ids = new Set(c.tasks.map((t) => t.id)), sheetId = this.wb.active;
     this.tx(() => {
       this.calendar = c.calendar; this.work = new WorkingCalendar(c.calendar);
-      this.tasks = c.tasks; this.links = c.links;
+      this.tasks = c.tasks; this.links = c.links; this.log = c.log || []; this.baselined = !!c.baselined;
+      this.nextLog = Math.max(this.nextLog, c.nextLog || 1);
       this.nextId = Math.max(this.nextId, c.nextId); this.nextLink = Math.max(this.nextLink, c.nextLink);
       this.collapsed = new Set([...this.collapsed].filter((id) => ids.has(id)));
     });
@@ -482,12 +528,18 @@ export class Store {
   redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed] }); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
-  beginDrag() { this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
+  beginDrag() { this._pre = this.hook?.before() ?? null; this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
   dragApply(fn) {
     for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; }
     fn(); this.settle(); this.emit('drag');
   }
-  endDrag(commit = true) {
+  // `meta` ({ id, kind }) names the dragged task so the delay-accounting hook can offer to record a late finish.
+  endDrag(commit = true, meta = null) {
+    const changed = commit && this.snap() !== this._before, pre = this._pre; this._pre = null;
+    this.endDragNow(commit);
+    if (changed && meta && this.hook) this.hook.after({ id: meta.id, kind: meta.kind, pre });
+  }
+  endDragNow(commit) {
     if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; } this.settle(); }
     else if (this.snap() !== this._before) { this.undoStack.push(this._before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
@@ -537,7 +589,7 @@ export class Store {
     const task = taskId == null ? null : this.byId.get(taskId);
     const error = this.structureError() || (taskId != null && (!task ? 'Task no longer exists' : this.info.get(taskId).summary ? 'Summary dates come from their children' : null)) || (value == null && taskId != null ? null : calendarError(value)); if (error) return { error };
     const view = Object.create(Store.prototype);
-    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(taskId == null ? value : this.calendar), work: new WorkingCalendar(taskId == null ? value : this.calendar), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed) });
+    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(taskId == null ? value : this.calendar), work: new WorkingCalendar(taskId == null ? value : this.calendar), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed), log: this.log, nextLog: this.nextLog, baselined: this.baselined });
     if (taskId != null) {
       const target = view.tasks.find((t) => t.id === taskId);
       if (value == null) delete target.calendar; else target.calendar = cleanCalendar(value);
@@ -704,7 +756,7 @@ export class Store {
   }
   dragResize(id, side, delta) {
     const t = this.byId.get(id), work = this.workFor(t), end = this.finish(t);
-    if (t.scheduling === 'auto') t.scheduling = 'manual';
+    if (t.scheduling === 'auto' && (side === 'l' || !t.agr)) t.scheduling = 'manual'; // a finish edit of an agreed task keeps its mode
     if (side === 'l') {
       let s = t.start + delta; if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.startLB(id));
       s = Math.min(work.next(s), work.next(end - 1, -1)); t.start = s; t.dur = Math.max(1, work.count(s, end));
@@ -747,7 +799,7 @@ export class Store {
   insertTask(referenceId, ms = false, position = 'after') {
     const place = this.insertion(referenceId, position); if (place.error) return { error: place.error };
     const id = this.tx(() => {
-      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level: place.level, start: this.work.next(place.start), dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms, scheduling: 'auto' };
+      const t = { id: this.nextId++, name: ms ? 'New milestone' : 'New task', level: place.level, start: this.work.next(place.start), dur: ms ? 0 : 5, progress: 0, owner: '', email: '', ms, scheduling: 'auto', ...(this.baselined ? { inc: true } : {}) }; // added after agreement: pending until agreed
       this.tasks.splice(place.index, 0, t);
       if (position === 'child') this.collapsed.delete(referenceId);
       return t.id;
@@ -782,8 +834,13 @@ export class Store {
     this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; });
     return null;
   }
-  deleteTask(id) {
-    this.tx(() => { const f = this.info.get(id); const gone = new Set(this.tasks.slice(f.i, f.sub + 1).map((t) => t.id)); this.tasks.splice(f.i, f.sub - f.i + 1, ); this.links = this.links.filter((l) => !gone.has(l.from) && !gone.has(l.to)); });
+  removeRows(id) { const f = this.info.get(id); const gone = new Set(this.tasks.slice(f.i, f.sub + 1).map((t) => t.id)); this.tasks.splice(f.i, f.sub - f.i + 1); this.links = this.links.filter((l) => !gone.has(l.from) && !gone.has(l.to)); }
+  deleteTask(id) { this.tx(() => this.removeRows(id)); }
+  // One undo step for an edit plus the record that explains it: the record joins the edit's step instead of adding its own.
+  amend(fn) {
+    const n = this.undoStack.length, r = this.tx(fn);
+    if (n > 0 && this.undoStack.length === n + 1) { this.undoStack.splice(n, 1); this.save(); }
+    return r;
   }
   indentPlan(id, dir) {
     const error = this.structureError(); if (error) return { error };
@@ -860,7 +917,14 @@ export class Store {
   setOwner(id, name, email) { this.tx(() => { const t = this.byId.get(id); if (t) { t.owner = String(name).slice(0, 80); t.email = isEmail(email) ? email : ''; } }); }
   get rem() { return this.sheet().rem || (this.sheet().rem = cleanRem()); }
   setRem(patch) { if (this.readOnly) return; this.sheet().rem = cleanRem({ ...this.rem, ...patch }); this.save(); this.emit('meta'); }
+  // Typed start / finish / duration edits tell the delay-accounting hook, which may offer to record a late finish.
   setCell(id, col, raw) {
+    const track = this.hook && (col === 'start' || col === 'end' || col === 'dur'), pre = track ? this.hook.before() : null;
+    const error = this.applyCell(id, col, raw);
+    if (track && !error) this.hook.after({ id, kind: col, pre });
+    return error;
+  }
+  applyCell(id, col, raw) {
     const t = this.byId.get(id), work = this.workFor(t), f = this.info.get(id), v = String(raw).trim();
     if (col === 'name') { if (!v) return 'Name cannot be empty'; this.tx(() => { t.name = v; }); return null; }
     if (col === 'owner') {
@@ -881,7 +945,7 @@ export class Store {
     if (col === 'end') {
       if (f.summary) return 'Summary dates come from their children';
       const d = parseDate(v, f.start); if (d == null) return 'Unrecognised date';
-      this.tx(() => { if (t.scheduling === 'auto') t.scheduling = 'manual'; if (t.ms) { t.start = work.next(d); } else { t.dur = Math.max(1, work.count(t.start, d + 1)); if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, work.count(t.start, this.endLB(id))); } });
+      this.tx(() => { if (t.scheduling === 'auto' && !t.agr) t.scheduling = 'manual'; if (t.ms) { t.start = work.next(d); } else { t.dur = Math.max(1, work.count(t.start, d + 1)); if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, work.count(t.start, this.endLB(id))); } });
       return null;
     }
     if (col === 'dur') {

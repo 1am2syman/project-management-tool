@@ -4,9 +4,9 @@ Plan's **Save** and **Save As…** commands write one project to a UTF-8 JSON fi
 
 See [the README](../README.md#project-files-save-save-as-and-open) for browser support and keyboard shortcuts.
 
-## Versions 1–5
+## Versions 1–6
 
-The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), `version: 3` (explicit task scheduling modes), `version: 4` (saved project versions) and `version: 5` (task calendar overrides). It writes version 5 when the current plan or any saved version has task calendars, version 4 when the project has saved versions and otherwise version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2–5 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or saved versions, or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
+The top-level `format` must be `"plan-project"`. This app accepts `version: 1` (everyday scheduling), `version: 2` (project working calendars), `version: 3` (explicit task scheduling modes), `version: 4` (saved project versions) `version: 5` (task calendar overrides) and `version: 6` (delay accounting: agreed dates, change log, version types and causes). It writes version 6 when the current plan or any saved version has agreed dates, a change log, a baseline flag or pending inclusions, or when any saved version has a type; otherwise it writes version 5 when the current plan or any saved version has task calendars, version 4 when the project has saved versions and otherwise version 3 for nonempty projects, storing each task’s scheduling mode explicitly. Empty projects use version 1 for an everyday calendar with no holidays or version 2 for a configured calendar. Versions 2–5 require a valid `project.data.calendar`. Older apps reject unsupported versions instead of dropping scheduling modes or saved versions, or interpreting working durations as elapsed days. Unsupported versions are rejected before the app changes any project. A UTF-8 byte-order mark is accepted when opening a file. The maximum file size is 64 MiB (67,108,864 bytes).
 
 This is a complete version 3 file containing one automatic task:
 
@@ -80,6 +80,9 @@ This is a complete version 3 file containing one automatic task:
 | `links[].id` | Unique ID such as `"l1"`: `l` followed by a positive safe integer without leading zeros. |
 | `links[].from`, `links[].to` | IDs of the predecessor and successor tasks. |
 | `links[].type`, `links[].lag` | Type: `FS`, `SS`, `FF` or `SF`. Lag is an integer number of working days in the receiving task’s effective calendar; negative lag is allowed. |
+| `tasks[].agr` | Optional agreed dates (version 6): `{ "s": start, "f": finish, "o": original finish }`, integer days with the same range as `start`. `f` is the agreed finish (the agreed date for a milestone, where `s` equals `f`); `o` is the first agreed finish and never changes. Summary rows cannot carry agreed dates (they roll up from their tasks). Expected dates stay in `start` and `dur`. |
+| `tasks[].inc` | `true` on a task added after the plan was agreed and not yet agreed itself (version 6). A task never has both `agr` and `inc`. |
+| `log`, `nextLog`, `baselined` | Version 6. `log` is the project's change log, at most 20,000 entries, each with a unique positive `id`, a `type` (`delay`, `revision`, `inclusion` or `omission`), `taskId` (the task's ID at the time; omitted tasks stay in the log), `taskName`, `at` (milliseconds), signed whole-number `days`, and optional `op` (`start` or `finish`), `kind` (`Late start`, `Overrun` or `On hold`), `cause` (an ID from `project.causes`, or absent for an unclassified delay), `party`, `reason`, `approvedBy`, `note`, `source` (`baseline` or `deadline` for revisions that moved an agreed date without moving the schedule) and `from` / `to` agreed days. `nextLog` is greater than every entry `id`. `baselined` is `true` once an Agreed baseline has been taken; only then do summaries and the project have agreed dates. |
 | `collapsed` | Array of unique existing task IDs whose groups are collapsed. |
 | `nextId`, `nextLink` | Positive safe integer counters greater than the existing task IDs and numeric relationship IDs, respectively. |
 
@@ -109,6 +112,16 @@ Version 5 also permits this object in `tasks[].calendar`, for regular tasks and 
 The master dialog has **Global** and **Task calendars** tabs; the latter lists overrides only. The task context menu opens the same editor scoped to that task. **Use global** previews a reset. Converting a leaf into a summary removes its override without passing it to children; undo restores the leaf’s calendar.
 
 Excel metadata version 1 stores global calendars only. Version 2 adds a fifth column, **Task # (blank=global)**: blank identifies a project calendar; a number matches the task sheet’s **#** value, including milestones. Each holiday occupies a row with the same task number and weekdays; a calendar without holidays still has a row. Invalid calendars and unmatched or ambiguous task entries are rejected during import. Keep the metadata sheet and task identities when editing an export.
+
+## Delay accounting (version 6)
+
+Agreed dates, the change log and `baselined` appear inside `project.data` and inside each `versions[].plan`, so a saved version keeps the agreed dates it was taken with. The causes a file uses are listed once in `project.causes`:
+
+```json
+"causes": [{ "id": "c4", "name": "Supplier / subcontractor" }]
+```
+
+`causes` has at most 200 entries with unique, nonempty `id` (at most 20 characters) and `name` (at most 60 characters). Every `cause` in a log must appear in it. Opening a file maps its causes onto the app-wide list by name (ignoring case) and rewrites the log to the list's IDs; causes the list does not have are added as retired, so they appear on old delays but not in the cause picker. Version 6 also allows an optional `versions[].type` of `baseline`, `status` or `draft`; versions without a type were saved before delay accounting and are never treated as agreed. Version 5 and older files must not contain any of these fields and open with no agreed data.
 
 ## Saved project versions
 
@@ -146,6 +159,7 @@ Both fields sit inside `project` and must appear together; version 1–3 files m
 | `versions[].at` | When the version was taken: a date-time string that JavaScript can parse. Plan writes ISO 8601 in UTC. |
 | `versions[].by` | Name of the person who took the version, at most 120 characters. Plan writes it empty; the app ignores any recorded name. |
 | `versions[].auto`, `versions[].target` | The Auto-schedule setting and critical-path milestone ID (or `null` for project completion) when the version was taken. A version is shown with the dates it was saved with. |
+| `versions[].type` | Optional `baseline`, `status` or `draft` (version 6 only): Agreed baseline, Status update or Draft. |
 | `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in the enclosing file’s version (4 or 5); collapsed groups are not saved with versions. |
 | `nextVersion` | Positive safe integer greater than every `versions[].n`. Numbers of deleted versions are not reused. |
 

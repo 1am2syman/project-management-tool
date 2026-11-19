@@ -1,19 +1,59 @@
 import { diagnostics } from './diagnosticlog.js';
-import { cleanRem, cleanVersions, isEmail, LINK_TYPES, MAX_VERSIONS } from './model.js';
+import { cleanRem, cleanVersions, isEmail, LINK_TYPES, LOG_KINDS, LOG_TYPES, MAX_VERSIONS, VERSION_TYPE_IDS } from './model.js';
+import { importCauses, usedCauses } from './delays.js';
+import { loadCauses, saveCauses } from './causes.js';
 import { createFileBindings } from './filebindings.js';
 import { openLocalFiles } from './localfiles.js';
 import { calendarError, WorkingCalendar } from './calendar.js';
 
 export const PROJECT_FILE_EXTENSION = '.plan';
 export const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
-const FORMAT = 'plan-project', VERSION = 5;
+const FORMAT = 'plan-project', VERSION = 6;
 const TYPES = [{ description: 'Plan project', accept: { 'application/json': [PROJECT_FILE_EXTENSION] } }];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const integer = (v, min, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
 const text = (v, max) => typeof v === 'string' && v.length <= max;
 const invalid = (detail) => { throw new Error(`Invalid Plan project: ${detail}`); };
 
-function validateTasks(tasks) {
+function validateAgreed(t, fileVersion, summary) {
+  if (t.agr == null && t.inc == null) return;
+  if (fileVersion < 6) invalid(`task ${t.id} has agreed dates, which require file version 6.`);
+  if (summary) invalid(`task ${t.id} is a summary and cannot have agreed dates.`);
+  if (t.agr != null && (!object(t.agr) || !['s', 'f', 'o'].every((k) => integer(t.agr[k], -99999999, 99999999)) || (t.ms && t.agr.s !== t.agr.f) || (t.inc != null))) invalid(`task ${t.id} has invalid agreed dates.`);
+  if (t.inc != null && t.inc !== true) invalid(`task ${t.id} has an invalid inclusion flag.`);
+}
+
+function validateLog(d, fileVersion, where, causeIds) {
+  if (d.log == null && d.nextLog == null && d.baselined == null) return;
+  if (fileVersion < 6) invalid(`${where}the change log requires file version 6.`);
+  if (d.baselined != null && d.baselined !== true) invalid(`${where}the baseline flag is invalid.`);
+  const log = d.log ?? [], ids = new Set();
+  if (!Array.isArray(log) || log.length > 20000) invalid(`${where}the change log must be a list of at most 20,000 entries.`);
+  for (const e of log) {
+    if (!object(e) || !integer(e.id, 1) || ids.has(e.id) || !LOG_TYPES.includes(e.type) || !integer(e.taskId, 0) || !text(e.taskName, 200) || !Number.isFinite(e.at) || !integer(e.days, -99999999, 99999999)) invalid(`${where}a change log entry is invalid.`);
+    if (e.op != null && !['start', 'finish'].includes(e.op)) invalid(`${where}a change log entry has an invalid operation.`);
+    if (e.kind != null && !LOG_KINDS.includes(e.kind)) invalid(`${where}a change log entry has an invalid kind.`);
+    for (const k of ['party', 'reason', 'approvedBy', 'note', 'source']) if (e[k] != null && !text(e[k], 500)) invalid(`${where}a change log entry has invalid text.`);
+    if (e.cause != null && (typeof e.cause !== 'string' || !causeIds.has(e.cause))) invalid(`${where}a change log entry names a cause the file does not define.`);
+    ids.add(e.id);
+  }
+  if (!integer(d.nextLog, Math.max(0, ...ids) + 1)) invalid(`${where}the next change log number is invalid.`);
+}
+
+// The delay causes a file uses, so its log reads the same on any machine.
+function validateCauses(list, fileVersion) {
+  if (list == null) return new Set();
+  if (fileVersion < 6) invalid('delay causes require file version 6.');
+  if (!Array.isArray(list) || list.length > 200) invalid('delay causes must be a list of at most 200.');
+  const ids = new Set();
+  for (const c of list) {
+    if (!object(c) || typeof c.id !== 'string' || !c.id || !text(c.id, 20) || ids.has(c.id) || !text(c.name, 60) || !c.name.trim()) invalid('a delay cause is invalid.');
+    ids.add(c.id);
+  }
+  return ids;
+}
+
+function validateTasks(tasks, fileVersion = VERSION) {
   const ids = new Set(); let previousLevel = -1, maxId = 0;
   for (const t of tasks) {
     if (!object(t) || !integer(t.id, 1) || ids.has(t.id)) invalid('task IDs must be unique positive integers.');
@@ -26,6 +66,7 @@ function validateTasks(tasks) {
     ids.add(t.id); maxId = Math.max(maxId, t.id); previousLevel = t.level;
   }
   const summaries = new Set(tasks.filter((t, i) => tasks[i + 1]?.level > t.level).map((t) => t.id));
+  for (const t of tasks) validateAgreed(t, fileVersion, summaries.has(t.id));
   return { ids, maxId, summaries };
 }
 
@@ -56,9 +97,10 @@ function validateReminders(r) {
 }
 
 // Tasks, relationships and calendar of the live plan or of a saved version.
-function validatePlan(d, fileVersion, where = '') {
+function validatePlan(d, fileVersion, where = '', causeIds = new Set()) {
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links)) invalid(`${where}tasks or relationships are missing.`);
-  const { ids, maxId, summaries } = validateTasks(d.tasks);
+  const { ids, maxId, summaries } = validateTasks(d.tasks, fileVersion);
+  validateLog(d, fileVersion, where, causeIds);
   for (const t of d.tasks) if (t.calendar != null) {
     if (fileVersion < 5) invalid(`${where}task calendars require file version 5.`);
     const reason = calendarError(t.calendar);
@@ -76,7 +118,7 @@ function validatePlan(d, fileVersion, where = '') {
   return ids;
 }
 
-function validateVersions(list, nextVersion, fileVersion) {
+function validateVersions(list, nextVersion, fileVersion, causeIds) {
   if (!Array.isArray(list) || list.length > MAX_VERSIONS) invalid(`saved versions must be a list of at most ${MAX_VERSIONS}.`);
   const numbers = new Set();
   for (const v of list) {
@@ -84,7 +126,8 @@ function validateVersions(list, nextVersion, fileVersion) {
     const where = `version ${v.n}: `;
     if (!text(v.name, 80) || !v.name.trim() || !text(v.note, 1000) || !text(v.by, 120)) invalid(`${where}name, note or author is invalid.`);
     if (typeof v.at !== 'string' || !Number.isFinite(Date.parse(v.at)) || typeof v.auto !== 'boolean' || !(v.target === null || integer(v.target, 1))) invalid(`${where}date, scheduling or critical-path target is invalid.`);
-    validatePlan(v.plan, fileVersion, where);
+    if (v.type != null && (fileVersion < 6 || !VERSION_TYPE_IDS.includes(v.type))) invalid(`${where}the version type is invalid.`);
+    validatePlan(v.plan, fileVersion, where, causeIds);
     numbers.add(v.n);
   }
   if (!integer(nextVersion, Math.max(0, ...numbers) + 1)) invalid('the next version number is invalid.');
@@ -93,18 +136,19 @@ function validateVersions(list, nextVersion, fileVersion) {
 // Validate before the model's forgiving storage sanitizer can discard or repair file contents.
 function validateDocument(doc) {
   if (!object(doc) || doc.format !== FORMAT) invalid('choose a .plan file saved by Plan.');
-  if (![1, 2, 3, 4, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
+  if (![1, 2, 3, 4, 5, VERSION].includes(doc.version)) invalid(`file version ${doc.version} is not supported. Update Plan to open this file.`);
   const p = doc.project, prefs = doc.preferences;
   if (!object(p) || !text(p.name, 60) || !p.name.trim()) invalid('the project name is missing or too long.');
   if (!object(prefs) || typeof prefs.auto !== 'boolean' || typeof prefs.critical !== 'boolean') invalid('scheduling preferences are missing.');
   const d = p.data;
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links) || !Array.isArray(d.collapsed)) invalid('tasks, relationships or collapsed groups are missing.');
-  const ids = validatePlan(d, doc.version);
+  const causeIds = validateCauses(p.causes, doc.version);
+  const ids = validatePlan(d, doc.version, '', causeIds);
   if (d.collapsed.some((id) => !ids.has(id)) || new Set(d.collapsed).size !== d.collapsed.length) invalid('collapsed groups refer to missing or repeated tasks.');
   validateReminders(p.rem);
   if (p.versions !== undefined || p.nextVersion !== undefined) {
     if (doc.version < 4) invalid('saved versions require file version 4.');
-    validateVersions(p.versions, p.nextVersion, doc.version);
+    validateVersions(p.versions, p.nextVersion, doc.version, causeIds);
   }
   return doc;
 }
@@ -126,10 +170,17 @@ export function encodeProjectFile(store) {
   let version = calendar.workdays.length === 7 && !calendar.holidays.length ? 1 : 2;
   if (data.tasks.some((t) => t.scheduling)) version = 3;
   if (versions.length) version = 4;
-  if (data.tasks.some((t) => t.calendar) || versions.some((v) => JSON.parse(v.data).tasks.some((t) => t.calendar))) version = VERSION;
+  if (data.tasks.some((t) => t.calendar) || versions.some((v) => JSON.parse(v.data).tasks.some((t) => t.calendar))) version = 5;
   const project = { name: sheet.name, data, rem: cleanRem(sheet.rem) };
+  const logs = [data.log || [], ...versions.map((v) => JSON.parse(v.data).log || [])].flat();
+  const delayData = (d) => d.log?.length || d.baselined || d.tasks.some((t) => t.agr || t.inc);
+  if (delayData(data) || versions.some((v) => v.type || delayData(JSON.parse(v.data)))) {
+    version = VERSION;
+    const used = usedCauses(loadCauses(), logs);
+    if (used.length) project.causes = used;
+  }
   if (versions.length) {
-    project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, plan: portablePlan(JSON.parse(v.data)) }));
+    project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, ...(v.type ? { type: v.type } : {}), plan: portablePlan(JSON.parse(v.data)) }));
     project.nextVersion = Math.max(sheet.nextVersion || 1, versions.at(-1).n + 1);
   }
   const doc = validateDocument({
@@ -152,8 +203,18 @@ export function parseProjectFile(contents) {
     rem: { ...cleanRem(doc.project.rem), on: false, auto: false },
     preferences: { auto: doc.preferences.auto, critical: doc.preferences.critical },
     versions: cleanVersions((doc.project.versions || []).map((v) => ({ ...v, at: Date.parse(v.at), data: JSON.stringify(v.plan) }))),
-    nextVersion: doc.project.nextVersion,
+    nextVersion: doc.project.nextVersion, causes: doc.project.causes || [],
   };
+}
+
+// Causes in a file map onto the app's list by name; unknown ones are added (retired, so they stay out of the picker) and the logs are renumbered.
+function adoptCauses(project) {
+  const file = project.causes;
+  if (!file.length) return;
+  const causes = loadCauses(), before = causes.list.length;
+  project.data.log = importCauses(causes, file, project.data.log || []);
+  project.versions = project.versions.map((v) => { const d = JSON.parse(v.data); if (d.log) d.log = importCauses(causes, file, d.log); return { ...v, data: JSON.stringify(d) }; });
+  if (causes.list.length !== before) saveCauses(causes);
 }
 
 export function openProjectFile(store, contents, options = {}) {
@@ -166,6 +227,7 @@ export function openProjectFile(store, contents, options = {}) {
   try {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
+    adoptCauses(project);
     const extra = { rem: project.rem, ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
     const id = store.addSheet(project.data, project.name, extra);
     apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
