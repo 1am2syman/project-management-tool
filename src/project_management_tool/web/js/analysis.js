@@ -238,7 +238,7 @@ export function createAnalysis(ctx) {
     const c = d.critical, slack = c.slack.slice(0, 15);
     const membership = (label, rows, cls) => `<div class="an-members"><span class="an-members-label">${label} <b>${rows.length}</b></span>${rows.map((r) => `<span class="an-task-chip ${cls}" title="${esc(r.name)}">${esc(r.name)}${r.added ? ' · new' : r.removed ? ' · removed' : ''}</span>`).join('')}</div>`;
     const target = d.a.target !== d.b.target ? `${d.a.target || 'Project completion'} → ${d.b.target || 'Project completion'}` : d.b.target || 'Project completion';
-    return `<div class="an-path-scope"><span title="Critical-path target">${esc(target)}</span><span>${d.a.critical} → ${d.b.critical} critical tasks</span></div><div class="an-membership">${membership('Joined', c.became, 'bad')}${membership('Left', c.left, 'good')}</div>` +
+    return `<div class="an-path-scope"><span title="Critical-path target">${esc(target)}</span><span>${esc(d.a.criticalMethod === d.b.criticalMethod ? d.b.criticalMethod : `${d.a.criticalMethod} → ${d.b.criticalMethod}`)}</span><span>${d.a.critical} → ${d.b.critical} critical tasks</span></div><div class="an-membership">${membership('Joined', c.became, 'bad')}${membership('Left', c.left, 'good')}</div>` +
       (slack.length ? `<h3>Slack changes${c.slack.length > slack.length ? ` · top ${slack.length}` : ''}</h3><table class="an-t"><thead><tr><th>Task</th><th class="n">Baseline</th><th class="n">Compared</th><th class="n">Change</th></tr></thead><tbody>${slack.map((s) => `<tr><td>${esc(s.name)}</td><td class="n">${s.a}d</td><td class="n">${s.b}d</td><td class="n${tone(s.delta, -1)}">${esc(signed(s.delta))}</td></tr>`).join('')}</tbody></table>` : '');
   }
   function owners(d) {

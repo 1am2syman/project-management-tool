@@ -100,7 +100,7 @@ function status() {
   const viol = store.links.filter((l) => l.violated).length;
   setHTML($('#stat'), `<span><b>${leaves.length - ms}</b> tasks · <b>${ms}</b> milestones · <b>${store.links.length}</b> links</span>` +
     `<span>Finish <b>${fmtDate(P.end - 1)}</b> · <b>${P.end - P.start}</b> days</span>` + ctx.delay.statusHtml() +
-    `<span class="cr" title="${esc(target?.name || 'Project completion')}">Critical path${target ? ` to ${esc(target.name)}` : ' to Project completion'}: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
+    `<span class="cr" title="${esc(store.criticalLabel())} · ${esc(target?.name || 'Project completion')}">${store.criticalOptions().method === 'longest' ? 'Longest path' : 'Critical path'}${target ? ` to ${esc(target.name)}` : ' to Project completion'}: <b class="cr">${store.critCount}</b> tasks</span>` + (viol ? `<span style="color:#b45309">${viol} violated link${viol > 1 ? 's' : ''} (check manual dates or Auto-schedule)</span>` : ''));
 }
 
 function renderAll() {

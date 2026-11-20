@@ -215,7 +215,7 @@ export function createGantt(ctx) {
       positionBar(el, ms, x1, x2);
       el.style.top = pixel(y) + 'px';
       if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
-      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days` : ''}${ctx.delay?.tooltip(t.id) ?? ''}`;
+      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days${f.critical ? ` · ${store.criticalLabel()}${store.criticalOptions().method === 'longest' && f.float > 0 ? ': on the driving path; calendar working periods allow positive slack' : ''}` : ''}` : ''}${ctx.delay?.tooltip(t.id) ?? ''}`;
       { // soft shading on the task where the delay started, only for its own delay days
         const sh = ms || f.summary ? null : ctx.delay?.shade(t.id);
         if (sh) {

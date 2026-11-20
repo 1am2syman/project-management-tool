@@ -57,7 +57,7 @@ function projectPages(st, name, pages, slack) {
   if (slack) cols.push(['Total', 32, 'r'], ['Free', 32, 'r']);
   const tableW = cols.reduce((a, c) => a + c[1], 0), gx0 = M + tableW + 8, gw = PW - M - gx0, sc = gw / span;
   const target = st.criticalTarget();
-  const topBlock = M + (target ? 52 : 38) + (slack ? 13 : 0), hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
+  const topBlock = M + (target ? 65 : 51) + (slack ? 13 : 0), hdrH = 24, footH = 26, avail = PH - topBlock - hdrH - footH;
   const rowH = Math.max(11, Math.min(18, avail / Math.max(n, 1))), perPage = Math.max(1, Math.floor(avail / rowH));
   const count = Math.max(1, Math.ceil(n / perPage));
   const X = (d) => gx0 + (d - t0) * sc;
@@ -69,8 +69,9 @@ function projectPages(st, name, pages, slack) {
     p.text(`${fmtDate(P.start)} \u2192 ${fmtDate(P.end - 1)}  \u00B7  ${st.work.count(P.start, P.end)} working days  \u00B7  ${leaves} tasks (${done} done)  \u00B7  critical path: ${st.critCount} tasks`.replace('\u2192', '>'), M, M + 26, 8.5, '64748B');
     p.text(`${ymd(P.start)[0]}${ymd(P.start)[0] !== ymd(P.end - 1)[0] ? `\u2013${ymd(P.end - 1)[0]}` : ''}`, PW - M, M + 12, 10, '94A3B8', true, 'r');
 
-    if (target) p.text(fit(`Critical-path target: ${target.name}`, PW - 2 * M, 8.5), M, M + 39, 8.5, 'BE123C');
-    if (slack) p.text('Total / Free slack: working days; blank = summary or outside target. Target: ' + (target ? 'see above' : 'Project completion'), M, M + (target ? 52 : 39), 8, '475569');
+    p.text(fit(`Critical-path method: ${st.criticalLabel()}`, PW - 2 * M, 8.5), M, M + 39, 8.5, '475569');
+    if (target) p.text(fit(`Critical-path target: ${target.name}`, PW - 2 * M, 8.5), M, M + 52, 8.5, 'BE123C');
+    if (slack) p.text('Total / Free slack: working days; blank = summary or outside target. Target: ' + (target ? 'see above' : 'Project completion'), M, M + (target ? 65 : 52), 8, '475569');
 
     // header band
     p.rect(M, topBlock, tableW, hdrH, '1E293B'); p.rect(gx0, topBlock, gw, hdrH, 'F6F7FA');

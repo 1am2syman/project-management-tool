@@ -4,6 +4,7 @@
 import { appState } from './appstate.js';
 import { WorkingCalendar, cleanCalendar, calendarError } from './calendar.js';
 import { latestAllowedStart } from './slack.js';
+import { cleanCriticalPath, criticalPathFields, criticalPathLabel, validCriticalPath, drivingPaths } from './criticalpath.js';
 
 export const DAY = 86400000;
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -57,7 +58,7 @@ export function cleanVersions(list) {
     try { const d = JSON.parse(v.data); if (!d || !Array.isArray(d.tasks) || !Array.isArray(d.links)) continue; } catch { continue; }
     const target = Number.isSafeInteger(v.target) && v.target > 0 ? v.target : null, type = VERSION_TYPE_IDS.includes(v.type) ? v.type : null;
     ids.add(id);
-    out.push({ id, n: v.n, name: String(v.name ?? '').trim().slice(0, 80) || `Version ${v.n}`, note: String(v.note ?? '').slice(0, 1000), at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0, by: String(v.by ?? '').slice(0, 120), auto: v.auto !== false, target, ...(type ? { type } : {}), data: v.data });
+    out.push({ id, n: v.n, name: String(v.name ?? '').trim().slice(0, 80) || `Version ${v.n}`, note: String(v.note ?? '').slice(0, 1000), at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0, by: String(v.by ?? '').slice(0, 120), auto: v.auto !== false, target, ...criticalPathFields(v.criticalPath), ...(type ? { type } : {}), data: v.data });
   }
   return out.sort((a, b) => a.n - b.n).slice(-MAX_VERSIONS);
 }
@@ -291,7 +292,7 @@ export class Store {
     try {
       const w = saved ?? JSON.parse(localStorage.getItem(WB));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
-        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source), ...versionFields(s) }));
+        const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source), ...versionFields(s), ...criticalPathFields(s.criticalPath) }));
         if (sheets.length) {
           const nextSheet = Math.max(Number(w.nextSheet) || 1, Math.max(0, ...sheets.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1);
           return { active: sheets.some((s) => s.id === w.active) ? w.active : sheets[0].id, nextSheet, sheets };
@@ -351,10 +352,16 @@ export class Store {
     const task = this.byId?.get(id);
     return task?.ms && !this.info.get(id).summary ? task : null;
   }
-  setCriticalTarget(id = null) {
+  criticalOptions() {
+    return cleanCriticalPath(this.preview ? this.preview.criticalPath : this.wb ? this.sheet().criticalPath : this.criticalPathOptions);
+  }
+  criticalLabel() { return criticalPathLabel(this.criticalOptions()); }
+  setCriticalTarget(id = null, options = this.criticalOptions()) {
     if (this.stale) return 'This project changed in another tab. Reload before changing the view.';
     if (this.preview) return PREVIEW_LOCK;
     if (id !== null && (!this.byId.get(id)?.ms || this.info.get(id).summary)) return 'Choose an existing milestone as the critical-path target';
+    if (!validCriticalPath(options)) return 'Choose Longest Path or Total Float with a whole-number threshold from 0 to 99999999 working days';
+    const sheet = this.sheet(); delete sheet.criticalPath; Object.assign(sheet, criticalPathFields(options));
     if (id === null) delete this.criticalTargets[this.wb.active];
     else this.criticalTargets[this.wb.active] = id;
     this.critical = true;
@@ -406,7 +413,7 @@ export class Store {
   duplicateSheet(id) {
     if (id === this.wb.active) this.save();
     const s = this.sheet(id); if (!s) return null;
-    return this.addSheet(JSON.parse(JSON.stringify(s.data)), `${s.name} copy`);
+    return this.addSheet(JSON.parse(JSON.stringify(s.data)), `${s.name} copy`, criticalPathFields(s.criticalPath));
   }
   deleteSheet(id) {
     const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
@@ -423,14 +430,14 @@ export class Store {
   // Computed, read-only copy of any sheet (used by exporters) without touching the active one.
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
-    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
+    Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], criticalPathOptions: this.sheet(id).criticalPath, listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
     v.settle(); return v;
   }
   // Computed, frozen copy of a saved version: dates exactly as they were when it was taken.
   versionView(vid, sheetId = this.wb.active) {
     const version = this.version(vid, sheetId); if (!version) return null;
     const v = Object.create(Store.prototype), c = sanitize(JSON.parse(version.data));
-    Object.assign(v, { criticalTargetId: version.target, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
+    Object.assign(v, { criticalTargetId: version.target, criticalPathOptions: version.criticalPath, listeners: [], frozen: true, auto: version.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
     v.settle(); return v;
   }
 
@@ -465,7 +472,7 @@ export class Store {
     if (list.length >= MAX_VERSIONS) return { error: `A project keeps at most ${MAX_VERSIONS} versions; delete an older version first` };
     const data = this.livePlan(); // always the live plan, also while another version is on screen
     const n = Math.max(sheet.nextVersion || 1, (list.at(-1)?.n || 0) + 1);
-    const [version] = cleanVersions([{ n, name: String(name).trim() || `Version ${n}`, note, by, type, at: Date.now(), auto: this.auto, target: this.criticalTargets[sheet.id] ?? null, data }]);
+    const [version] = cleanVersions([{ n, name: String(name).trim() || `Version ${n}`, note, by, type, at: Date.now(), auto: this.auto, target: this.criticalTargets[sheet.id] ?? null, ...criticalPathFields(sheet.criticalPath), data }]);
     sheet.versions = [...list, version]; sheet.nextVersion = n + 1;
     this.save(); this.emit('versions');
     return { version };
@@ -490,7 +497,7 @@ export class Store {
     if (this._orig) return 'Finish the current drag first';
     const v = this.version(vid); if (!v) return 'That version no longer exists';
     if (!this.preview) this.save();
-    this.preview = { id: v.id, target: v.target };
+    this.preview = { id: v.id, target: v.target, criticalPath: v.criticalPath };
     this.load({ ...JSON.parse(v.data), collapsed: [...this.collapsed], stars: [...(this.stars || [])] });
     this.emit('version'); return null;
   }
@@ -514,6 +521,7 @@ export class Store {
       this.collapsed = new Set([...this.collapsed].filter((id) => ids.has(id)));
       this.stars = new Set([...(this.stars || [])].filter((id) => ids.has(id)));
     });
+    delete this.sheet().criticalPath; Object.assign(this.sheet(), criticalPathFields(v.criticalPath));
     if (v.target && this.byId.get(v.target)?.ms) this.criticalTargets[sheetId] = v.target; else delete this.criticalTargets[sheetId];
     this.recalc(); this.save(); this.emit();
     return null;
@@ -521,7 +529,7 @@ export class Store {
   copyVersionAsProject(vid) {
     const v = this.version(vid); if (!v) return { error: 'That version no longer exists' };
     if (this.stale) return { error: 'This project changed in another tab; reload before copying a version' };
-    const id = this.addSheet(JSON.parse(v.data), `${this.sheet().name.slice(0, 30)} · ${v.name}`);
+    const id = this.addSheet(JSON.parse(v.data), `${this.sheet().name.slice(0, 30)} · ${v.name}`, criticalPathFields(v.criticalPath));
     if (v.target && this.byId.get(v.target)?.ms) { this.criticalTargets[id] = v.target; this.recalc(); this.save(); this.emit('critical-target'); }
     return { id };
   }
@@ -636,7 +644,7 @@ export class Store {
     const task = taskId == null ? null : this.byId.get(taskId);
     const error = this.structureError() || (taskId != null && (!task ? 'Task no longer exists' : this.info.get(taskId).summary ? 'Summary dates come from their children' : null)) || (value == null && taskId != null ? null : calendarError(value)); if (error) return { error };
     const view = Object.create(Store.prototype);
-    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, calendar: cleanCalendar(taskId == null ? value : this.calendar), work: new WorkingCalendar(taskId == null ? value : this.calendar), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed), log: this.log, nextLog: this.nextLog, baselined: this.baselined });
+    Object.assign(view, { listeners: [], frozen: false, auto: this.auto, critical: this.critical, criticalPathOptions: this.criticalOptions(), calendar: cleanCalendar(taskId == null ? value : this.calendar), work: new WorkingCalendar(taskId == null ? value : this.calendar), tasks: this.tasks.map((t) => ({ ...t })), links: this.links.map((l) => ({ ...l })), collapsed: new Set(this.collapsed), log: this.log, nextLog: this.nextLog, baselined: this.baselined });
     if (taskId != null) {
       const target = view.tasks.find((t) => t.id === taskId);
       if (value == null) delete target.calendar; else target.calendar = cleanCalendar(value);
@@ -736,7 +744,7 @@ export class Store {
       }
       f.start = s; f.end = e; f.progress = w ? pw / w : 0;
     }
-    // CPM on leaves (zero total float against the current schedule = critical)
+    // Calendar-aware CPM float remains independent of the chosen critical-path display.
     const order = this.topo(), leaves = order.map((id) => this.byId.get(id));
     let pend = -Infinity, pstart = Infinity;
     for (const t of leaves) { pend = Math.max(pend, this.finish(t)); pstart = Math.min(pstart, t.start); }
@@ -770,14 +778,20 @@ export class Store {
       f.freeStart = free.start; f.freeEnd = free.end; f.freeLimiters = free.limiters;
       f.freeFloat = work.count(t.start, free.start);
     }
-    // a summary is "critical" if any of its children is
-    for (const t of T) { const f = info.get(t.id); if (f.summary) for (let j = f.i + 1; j <= f.sub; j++) if (info.get(T[j].id).critical) { f.critical = true; break; } }
     for (const l of this.links) {
       const p = this.byId.get(l.from), s = this.byId.get(l.to), pe = this.finish(p), se = this.finish(s), work = this.workFor(s);
       l.slack = l.type === 'FS' ? s.start - work.shift(work.next(pe), l.lag) : l.type === 'SS' ? s.start - work.shift(p.start, l.lag) : l.type === 'FF' ? se - work.shiftEnd(pe, l.lag) : se - work.shiftEnd(p.start, l.lag);
       l.violated = l.slack < 0;
-      l.critical = l.slack <= 0 && info.get(l.from).critical && info.get(l.to).critical;
     }
+    const path = drivingPaths(this, leaves, pend, target), options = this.criticalOptions();
+    for (const t of leaves) {
+      const f = info.get(t.id);
+      f.longestPath = path.tasks.has(t.id);
+      f.critical = t.progress < 100 && (options.method === 'longest' ? f.longestPath : f.float != null && f.float <= options.threshold);
+    }
+    for (const l of this.links) l.critical = (options.method === 'longest' ? l.longestPath : l.slack <= 0) && info.get(l.from).critical && info.get(l.to).critical;
+    // A summary inherits highlighting from its children, without acquiring float of its own.
+    for (const t of T) { const f = info.get(t.id); if (f.summary) for (let j = f.i + 1; j <= f.sub; j++) if (info.get(T[j].id).critical) { f.critical = true; break; } }
     this.project = { start: isFinite(pstart) ? pstart : today, end: isFinite(pend) ? pend : today + 1 };
     this.critCount = leaves.filter((t) => info.get(t.id).critical).length;
     // visible rows

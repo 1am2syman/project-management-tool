@@ -104,6 +104,7 @@ function tasksSheet(S, st, name, tab, causes) {
   sh.widths = [5, 38, 10, 13, 13, 7, 9, 16, 16, 9, 16, 18, 30, 23, 38];
   const target = st.criticalTarget();
   sh.set(0, 13, 'Critical-path target', head); sh.set(0, 14, target?.name || 'Project completion', head);
+  sh.set(1, 13, 'Critical-path method', head); sh.set(1, 14, st.criticalLabel(), S.get({ color: '475569', wrap: 1 }));
   const agreed = DL.hasAgreed(st) || DL.hasInclusions(st);
   const revised = agreed && DL.hasRevision(st);
   if (agreed) { [...(revised ? ['Original agreed finish'] : []), ...AGREED_HEADS].forEach((h, c) => sh.set(0, 15 + c, h, head)); sh.widths.push(...(revised ? [14] : []), 14, 12, 10, 12, 26); }

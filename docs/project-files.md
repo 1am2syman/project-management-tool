@@ -161,6 +161,7 @@ Both fields sit inside `project` and must appear together; version 1–3 files m
 | `versions[].at` | When the version was taken: a date-time string that JavaScript can parse. Plan writes ISO 8601 in UTC. |
 | `versions[].by` | Name of the person who took the version, at most 120 characters. Plan writes it empty; the app ignores any recorded name. |
 | `versions[].auto`, `versions[].target` | The Auto-schedule setting and critical-path milestone ID (or `null` for project completion) when the version was taken. A version is shown with the dates it was saved with. |
+| `versions[].criticalPath` | Optional method and threshold, with the same rules as `preferences.criticalPath`; absent means total float ≤ 0. Preview, export, restore and copy use the saved version’s choice. |
 | `versions[].type` | Optional `baseline`, `status` or `draft` (version 6 only): Agreed baseline, Status update or Draft. |
 | `versions[].plan` | The saved plan. It follows the same task, relationship, calendar and ID-counter rules as `project.data` in the enclosing file’s version (4 or 5); collapsed groups are not saved with versions. |
 | `nextVersion` | Positive safe integer greater than every `versions[].n`. Numbers of deleted versions are not reused. |
@@ -169,7 +170,7 @@ Every saved plan is validated with the same task, relationship and calendar rule
 
 ## Preferences and legacy metadata
 
-`preferences.auto` and `preferences.critical` are booleans controlling auto-scheduling and critical-path display. Opening a project applies these settings to the editor. Saving a read-only shared project writes `auto: false` so its editable copy preserves the published dates.
+`preferences.auto` and `preferences.critical` are booleans controlling auto-scheduling and critical-path display. The optional `preferences.criticalPath` object contains `method` (`"float"` or `"longest"`) and `threshold` (a whole number from 0 to 99,999,999 working days). Missing settings mean total float ≤ 0, preserving older files. The threshold is retained but ignored by Longest Path. These are display settings and do not change task dates or calculated slack; they are an optional extension supported in all existing file versions. Opening a project applies these settings to the editor. Saving a read-only shared project writes `auto: false` so its editable copy preserves the published dates.
 
 A selected milestone critical-path target is an app view preference saved separately for each project tab. It is not included in `.plan` files; an opened project starts with **Project completion** as its target. Selecting a target changes float and highlights without moving dates or changing `tasks[].scheduling`. PDF and Excel exports use the selected analysis and identify the target, but importing those exports does not restore the target choice.
 

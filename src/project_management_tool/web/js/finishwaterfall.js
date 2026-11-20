@@ -16,7 +16,7 @@ const linkData = (l) => ({ id: l.id, from: l.from, to: l.to, type: l.type, lag: 
 const nameOf = (id, a, b) => b.byId.get(id)?.name ?? a.byId.get(id)?.name ?? `#${id}`;
 
 // Flat leaves retain the actual schedule; hierarchy contributes only through leaf conversions.
-// Critical scope is deliberately project completion, and completed tasks' float still matters.
+// Driver tracing always uses project completion and includes completed activities.
 function replayView(source, auto) {
   const v = Object.create(Store.prototype);
   Object.assign(v, { tasks: leaves(source).map((t) => ({ ...t, level: 0 })), links: source.links.map(linkData), calendar: clone(source.calendar), work: new WorkingCalendar(source.calendar), collapsed: new Set(), listeners: [], auto, frozen: false, critical: true, criticalTargetId: null });
@@ -29,7 +29,7 @@ function acyclic(view) {
   for (let i = 0; i < q.length; i++) for (const l of view.outgoing(q[i])) { indeg.set(l.to, indeg.get(l.to) - 1); if (!indeg.get(l.to)) q.push(l.to); }
   return q.length === view.tasks.length;
 }
-const isDriver = (v, id) => v.info.get(id)?.float != null && v.info.get(id).float <= 0;
+const isDriver = (v, id) => !!v.info.get(id)?.longestPath;
 
 function pathsFrom(view, ids) {
   const memo = new Map();
@@ -39,7 +39,7 @@ function pathsFrom(view, ids) {
     const t = view.byId.get(id);
     let path = view.finish(t) === view.project.end ? { next: null, length: 1 } : null;
     for (const l of view.outgoing(id)) {
-      if (l.slack > 0 || mode(view.byId.get(l.to)) === 'manual') continue;
+      if (!l.longestPath) continue;
       const next = memo.get(l.to); if (next && (!path || next.length + 1 > path.length)) path = { next: l.to, length: next.length + 1 };
     }
     if (path) memo.set(id, path);

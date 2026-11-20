@@ -1,4 +1,5 @@
 import { diagnostics } from './diagnosticlog.js';
+import { criticalPathFields, validCriticalPath } from './criticalpath.js';
 import { cleanRem, cleanVersions, isEmail, LINK_TYPES, LOG_KINDS, LOG_TYPES, MAX_VERSIONS, VERSION_TYPE_IDS } from './model.js';
 import { importCauses, usedCauses } from './delays.js';
 import { loadCauses, saveCauses } from './causes.js';
@@ -134,6 +135,7 @@ function validateVersions(list, nextVersion, fileVersion, causeIds) {
     if (!text(v.name, 80) || !v.name.trim() || !text(v.note, 1000) || !text(v.by, 120)) invalid(`${where}name, note or author is invalid.`);
     if (typeof v.at !== 'string' || !Number.isFinite(Date.parse(v.at)) || typeof v.auto !== 'boolean' || !(v.target === null || integer(v.target, 1))) invalid(`${where}date, scheduling or critical-path target is invalid.`);
     if (v.type != null && (fileVersion < 6 || !VERSION_TYPE_IDS.includes(v.type))) invalid(`${where}the version type is invalid.`);
+    if (v.criticalPath != null && !validCriticalPath(v.criticalPath)) invalid(`${where}critical-path method or threshold is invalid.`);
     validatePlan(v.plan, fileVersion, where, causeIds);
     numbers.add(v.n);
   }
@@ -147,6 +149,7 @@ function validateDocument(doc) {
   const p = doc.project, prefs = doc.preferences;
   if (!object(p) || !text(p.name, 60) || !p.name.trim()) invalid('the project name is missing or too long.');
   if (!object(prefs) || typeof prefs.auto !== 'boolean' || typeof prefs.critical !== 'boolean') invalid('scheduling preferences are missing.');
+  if (prefs.criticalPath != null && !validCriticalPath(prefs.criticalPath)) invalid('critical-path method or threshold is invalid.');
   const d = p.data;
   if (!object(d) || !Array.isArray(d.tasks) || !Array.isArray(d.links) || !Array.isArray(d.collapsed)) invalid('tasks, relationships or collapsed groups are missing.');
   const causeIds = validateCauses(p.causes, doc.version);
@@ -191,12 +194,12 @@ export function encodeProjectFile(store) {
     if (used.length) project.causes = used;
   }
   if (versions.length) {
-    project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, ...(v.type ? { type: v.type } : {}), plan: portablePlan(JSON.parse(v.data)) }));
+    project.versions = versions.map((v) => ({ n: v.n, name: v.name, note: v.note, at: new Date(v.at || 0).toISOString(), by: v.by, auto: v.auto, target: v.target, ...criticalPathFields(v.criticalPath), ...(v.type ? { type: v.type } : {}), plan: portablePlan(JSON.parse(v.data)) }));
     project.nextVersion = Math.max(sheet.nextVersion || 1, versions.at(-1).n + 1);
   }
   const doc = validateDocument({
     format: FORMAT, version, project,
-    preferences: { auto: sheet.readOnly ? false : store.auto, critical: store.critical },
+    preferences: { auto: sheet.readOnly ? false : store.auto, critical: store.critical, ...criticalPathFields(sheet.criticalPath) },
   });
   const contents = JSON.stringify(doc, null, 2) + '\n';
   if (new TextEncoder().encode(contents).length > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
@@ -212,7 +215,7 @@ export function parseProjectFile(contents) {
   return {
     name: doc.project.name, data: doc.project.data,
     rem: { ...cleanRem(doc.project.rem), on: false, auto: false },
-    preferences: { auto: doc.preferences.auto, critical: doc.preferences.critical },
+    preferences: { auto: doc.preferences.auto, critical: doc.preferences.critical, ...criticalPathFields(doc.preferences.criticalPath) },
     versions: cleanVersions((doc.project.versions || []).map((v) => ({ ...v, at: Date.parse(v.at), data: JSON.stringify(v.plan) }))),
     nextVersion: doc.project.nextVersion, causes: doc.project.causes || [],
   };
@@ -239,7 +242,7 @@ export function openProjectFile(store, contents, options = {}) {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
     adoptCauses(project);
-    const extra = { rem: project.rem, ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
+    const extra = { rem: project.rem, ...criticalPathFields(project.preferences.criticalPath), ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
     const id = store.addSheet(project.data, project.name, extra);
     apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
   } catch (error) { apply.fail(error); throw error; }

@@ -275,7 +275,8 @@ try {
     const scaled = await browser.newContext({ viewport: { width: 1366, height: 768 }, deviceScaleFactor: scale });
     const scaledPage = await scaled.newPage();
     await scaledPage.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
-    await scaledPage.goto(url); await scaledPage.locator('#analysisbtn').click(); await scaledPage.locator('#an-a').selectOption('v1');
+    await scaledPage.goto(url); await scaledPage.locator('#gbody .r[data-id]').first().waitFor();
+    await scaledPage.locator('#analysisbtn').click(); await scaledPage.locator('#an-a').selectOption('v1');
     await scaledPage.locator('[data-go=gantt]').click(); await scaledPage.waitForTimeout(450);
     await scaledPage.screenshot({ path: join(evidence, `waterfall-1366-scale-${scale}.png`) });
     await scaled.close();

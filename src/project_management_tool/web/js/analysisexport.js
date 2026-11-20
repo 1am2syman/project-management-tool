@@ -235,6 +235,7 @@ export function buildAnalysisPdf(d, meta) {
   else flow.note('No differences between these plans.');
 
   flow.heading('Critical path', d.a.target !== d.b.target ? `Target changed from ${d.a.target || 'Project completion'} to ${d.b.target || 'Project completion'}` : `Critical path to ${d.b.target || 'Project completion'}: ${d.a.critical} > ${d.b.critical} tasks`);
+  flow.note(`Method: ${d.a.criticalMethod === d.b.criticalMethod ? d.b.criticalMethod : `${d.a.criticalMethod} > ${d.b.criticalMethod}`}`);
   const c = d.critical, n = Math.max(c.became.length, c.left.length);
   if (n) flow.table([['Joined the critical path', 393, 'l'], ['Left the critical path', 393, 'l']], Array.from({ length: n }, (_, i) => ({ cells: [c.became[i]?.name ?? '', c.left[i]?.name ?? ''] })));
   else flow.note('No task joined or left the critical path.');
@@ -312,6 +313,7 @@ export async function buildAnalysisXlsx(d, meta) {
     [['Milestones', bold], [a.milestones, num], [b.milestones, num], [b.milestones - a.milestones, flat], ['']],
     [['Relationships', bold], [a.links, num], [b.links, num], [b.links - a.links, flat], [`${d.counts.links} relationship changes`]],
     [['Complete', bold], [a.progress / 100, pct], [b.progress / 100, pct], [b.progress - a.progress, deltaStyle(b.progress - a.progress, -1)], ['Percentage points, duration-weighted']],
+    [['Critical-path method', bold], [a.criticalMethod], [b.criticalMethod], [''], ['Display definition']],
     [['Critical tasks', bold], [a.critical, num], [b.critical, num], [b.critical - a.critical, flat], [`Target: ${b.target || 'Project completion'}`]],
     [['Violated links', bold], [a.violated, num], [b.violated, num], [b.violated - a.violated, deltaStyle(b.violated - a.violated)], ['']],
     [['Changes', bold], ['', txt], [meta.log.length, num], ['', txt], [`${d.counts.changed} tasks changed, ${d.counts.calendar} calendar changes`]],

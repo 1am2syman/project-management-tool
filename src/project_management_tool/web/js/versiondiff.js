@@ -39,7 +39,7 @@ export function metrics(view) {
     start: P.start, finish: P.end - 1, end: P.end, calendarDays: P.end - P.start, workDays: view.work.count(P.start, P.end),
     tasks: leaves.filter((t) => !t.ms).length, milestones: leaves.filter((t) => t.ms).length, rows: view.tasks.length,
     links: view.links.length, progress: weight ? Math.round(done / weight) : 0, critical: view.critCount,
-    violated: view.links.filter((l) => l.violated).length, target: target ? target.name : null,
+    criticalMethod: view.criticalLabel(), violated: view.links.filter((l) => l.violated).length, target: target ? target.name : null,
   };
 }
 
