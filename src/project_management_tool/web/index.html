@@ -75,7 +75,8 @@
         <button id="reviewlinks" hidden>Review relationships</button>
         <span class="grow"></span>
         <label class="switch" title="Highlight the selected task's parents, children, predecessors and successors"><input type="checkbox" id="optFocus"><i></i>Focus</label>
-        <span class="critical-controls"><label class="switch crit" title="Show critical-path highlights"><input type="checkbox" id="optCrit" aria-label="Show critical path"><i></i></label><button id="critical-target" aria-haspopup="dialog">Critical path</button></span>
+        <span class="critical-controls"><span class="tri-switch" id="critmode" role="radiogroup" aria-label="Critical path mode" data-mode="show"><button type="button" role="radio" data-crit="off" aria-checked="false" aria-label="Critical path off" title="Critical path: Off"></button><button type="button" role="radio" data-crit="show" aria-checked="true" aria-label="Show critical path" title="Critical path: Show highlights"></button><button type="button" role="radio" data-crit="only" aria-checked="false" aria-label="Critical path only focus mode" title="Critical path: Only critical items (focus mode)"></button><span class="tri-thumb" aria-hidden="true"></span></span><button id="critical-target" aria-haspopup="dialog">Critical path</button></span>
+        <label class="switch" title="Show each activity's end date (day and month)"><input type="checkbox" id="optEnd" aria-label="Show activity dates"><i></i>End dates</label>
         <label class="switch"><input type="checkbox" id="optAuto"><i></i>Auto-schedule</label>
       </div>
       <div class="ghead" id="ghd"><div class="ghead-in" id="ghdin"></div></div>
@@ -83,7 +84,6 @@
       <div class="gbody" id="gb">
         <div class="canvas" id="canvas">
           <svg class="bg" id="bg"></svg>
-          <div class="todayline" id="todayline"></div>
           <svg class="links" id="links"></svg>
           <div class="bars" id="bars"></div>
           <svg class="linkdrag" id="linkdrag"></svg>

@@ -136,9 +136,9 @@ try {
     await d.getByLabel('Total Float threshold (working days)').fill(invalid); await d.getByRole('button', { name: 'Show critical path', exact: true }).click(); assert(await d.getByRole('alert').isVisible(), `Reject threshold ${invalid}`); await page.keyboard.press('Escape');
   }
   await display('float', '3', '2'); await highlighted(fixtures[0]); await display();
-  await page.locator('label.switch').filter({ has: page.locator('#optCrit') }).click(); await settle();
+  await page.locator('#critmode [data-crit=off]').click(); await settle();
   assert.notEqual(await page.locator('.bar[data-id="1"]').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(244, 63, 94)');
-  await page.locator('label.switch').filter({ has: page.locator('#optCrit') }).click(); await settle(); await highlighted(fixtures[0]);
+  await page.locator('#critmode [data-crit=show]').click(); await settle(); await highlighted(fixtures[0]);
   assert.deepEqual(await data(), original);
   // Keyboard dialog cancellation, changing/deleting the chosen milestone, and undo/redo.
   await page.locator('#critical-target').focus(); await page.keyboard.press('Enter'); await page.keyboard.press('Escape'); assert(await page.locator('#critical-target').evaluate(el => el === document.activeElement));

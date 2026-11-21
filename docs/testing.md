@@ -57,6 +57,7 @@ node tests/browser-task-calendars.mjs
 node tests/browser-critical-path.mjs
 node tests/browser-critical-path-edges.mjs
 node tests/browser-fit.mjs
+node tests/browser-gantt-controls.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
 node tests/browser-local-only.mjs
@@ -81,6 +82,7 @@ All suites start their own server on an available local port, use a temporary SQ
 | `browser-task-calendars.mjs` | Task and Gantt context menus, summary exclusion, shared overlay draft/validation/preview/apply/cancel, receiver-calendar scheduling, task-calendar corner markers, Global/Task calendars tabs with override-only rows, holiday details, Edit and reset preview, undo/redo, global independence, real XLSX bytes and `.plan` round-trips, keyboard tabs, reload and fresh-profile SQLite restoration, read-only calendar inspection, and laptop layouts at 1366×768 and 1440×900. Layout checks measure unobstructed actions and visible preview feedback for global, new/existing task, long-preview, reset and returned-draft states, with long names and nine holidays. Holiday lists and previews have separate scroll limits; every changed row is listed and the final row is reachable. Returning from reset preserves unsaved weekdays/holidays and leaves saved data unchanged. |
 | `browser-structure.mjs` | Nested cascades, pointer reordering/nesting, invalid drops, cancellation and autoscroll, insertion/conversion menus, keyboard shortcuts, calendar draft/apply/cancel, Excel calendar round-trips, narrow menus, read-only restrictions and restoration from SQLite in a fresh browser profile. |
 | `browser-fit.mjs` | Measured Fit label bounds, start-to-start elbows and connection handles beside earliest milestones in both densities, 6px sheet/Gantt scrollbars, single-row responsive toolbar and accessible icon actions, Compact/Adaptive density selection and Auto-schedule staying on the first row in a 789px timeline pane, full switch labels at 125–200% zoom and narrow pane splits, sheet/Gantt alignment, adaptive density on resize/collapse, scheduling actions and sheet-only badges, undo/redo, saving an active edit, connected file reuse after refresh and Save As; milestone critical-path selection/clearing in the chooser and context menus, scoped bars/float with unchanged dates, selected-target toolbar layout, SQLite restoration across refresh and a fresh browser profile, target labels and calculated critical/float values in PDF/Excel exports, and Excel re-import without extra task rows. |
+| `browser-gantt-controls.mjs` | Absence of the vertical today line on the Gantt canvas while keeping the date-axis today marker; persistent auto-resizing **Fit** mode across viewport/splitter resizes, task/milestone additions, edits, deletions, reloads, and exit on manual zoom; three-way **Critical path** switch (**Off** / **Show** / **Only** critical-path focus mode with elevated critical links, receded non-critical items and persistence); and the **End dates** toggle rendering two-row `dd` / `mmm` finish stamps inside bars, beside outside labels and beside milestones in both Compact and Adaptive densities. |
 
 ### Browser and Python selection
 
@@ -94,6 +96,7 @@ $env:PLAYWRIGHT_CHROMIUM = "C:\Program Files\Google\Chrome\Application\chrome.ex
 node tests/browser-structure.mjs
 node tests/browser-task-calendars.mjs
 node tests/browser-fit.mjs
+node tests/browser-gantt-controls.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
 node tests/browser-versions.mjs
@@ -116,6 +119,7 @@ $env:PLAN_TEST_ARTIFACTS = Join-Path $env:TEMP "plan-browser-results"
 node tests/browser-structure.mjs
 node tests/browser-task-calendars.mjs
 node tests/browser-fit.mjs
+node tests/browser-gantt-controls.mjs
 node tests/browser-diagnostics.mjs
 node tests/browser-slack.mjs
 node tests/browser-versions.mjs
@@ -181,5 +185,7 @@ Slack tails were reviewed visually in Chromium on Linux at 100%, 150% and 200% d
 Longest Path checks ran with installed Chromium 151 on Linux using isolated databases and browser profiles. All 49 edge fixtures and 14 layout configurations passed, and all 43 screenshots were reviewed. The critical-path, task-calendar, slack, Fit and version browser suites also passed. This verifies the browser display and file contents in that environment; it does not establish Windows rendering, native chooser behavior or other browsers.
 
 `update.bat` was executed in Windows `cmd.exe` on Windows 10 with Git 2.49, a local bare repository as the published remote and no Git identity configured. Checks covered: repairing a copy at an older commit with removed modules missing, a stray JavaScript file, generated `__pycache__` files, a stale `index.lock` and a locally modified updater (all set aside in one stash; tracked tree and `src` clean afterwards); an update that replaces the running `update.bat` with a longer file; an up-to-date run; refusal while the bundled `python.exe` runs from the folder; a file locked during the update, reported as unfinished and completed by a rerun after release; an unreachable remote; and a detached checkout without an upstream. The refusal cases left HEAD and files unchanged. Network-share folders and real GitHub downloads were not part of that run.
+
+The Gantt canvas controls update (removing the vertical today line while keeping the date-axis marker, auto-resizing Fit view across pane/viewport resize and task/milestone edits, three-way Critical path Off/Show/Only focus switch, and the two-row `dd`/`mmm` End dates toggle) was reviewed in installed Chromium on Linux at 1630×900 in both Adaptive and Compact densities with `browser-gantt-controls.mjs`, `browser-fit.mjs`, `browser-contour.mjs`, `browser-slack.mjs`, `browser-structure.mjs`, `browser-local-only.mjs`, 241 JS unit tests, and 64 Python tests (1 Windows-only skipped). Front-end HTML/CSS/JS changes take effect on a hard browser refresh (no server restart required). Windows, other browsers, and high-DPI display scaling were not separately reviewed for these controls.
 
 Launcher and persistence tests have run on Linux, including source startup with isolated imports and bundle integrity checks. The test that executes the Windows interpreter is skipped on Linux. `start.bat` has been reviewed but not executed in Windows `cmd.exe` by the automated suites; before distributing a runtime update, also launch `start.bat` on Windows with networking disabled and confirm browser startup and SQLite saves. The PowerShell examples above document setup rather than a completed Windows test run.

@@ -30,7 +30,8 @@ storage.attach(store);
 globalThis.PlanDiagnostics?.setStoreSummary(() => ({ sheetCount: store.wb.sheets.length, taskCount: store.tasks.length, linkCount: store.links.length, readOnly: store.readOnly, stale: !!store.stale, autoSchedule: store.auto, connectedFile: !!store.sheet().fileToken, undoCount: store.undoStack.length, saveStatus: $('#save-status').dataset.state }));
 diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
-const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
+let endDatesOn = false; try { endDatesOn = appState.getItem('pm-end-dates') === '1'; } catch {}
+const ui = { selId: null, col: 'name', linkId: null, focus: focusOn, endDates: endDatesOn };
 let selections = {};
 try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) selections = value; } catch { /* no saved selection */ }
 function restoreSelection() {
@@ -47,9 +48,13 @@ let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
   store, ui, storage,
-  rel: null,
-  // css classes for a task row/bar given the current selection (focus mode)
+  rel: null, critOnly: false, critKeep: null,
+  // css classes for a task row/bar given the current selection (focus mode or critical-path-only mode)
   relClass(id) {
+    if (this.critOnly) {
+      if (!this.critKeep.has(id)) return ' dim';
+      return id === ui.selId ? ' r-self' : '';
+    }
     const r = this.rel; if (!r) return '';
     if (id === ui.selId) return ' r-self';
     return r.anc.has(id) ? ' r-anc' : r.desc.has(id) ? ' r-desc' : r.up.has(id) ? ' r-up' : r.down.has(id) ? ' r-down' : ' dim';
@@ -106,9 +111,25 @@ function status() {
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
   if (ui.linkId != null && !store.links.some((link) => link.id === ui.linkId)) ui.linkId = null;
-  ctx.rel = ui.focus && ui.selId != null ? store.related(ui.selId) : null;
-  $('#app').classList.toggle('focusing', !!ctx.rel);
-  { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
+  // Critical-only mode: focus exclusively on critical-path items (and their critical links), dimming everything else.
+  ctx.critOnly = store.critical && store.criticalOnly;
+  ctx.critKeep = ctx.critOnly ? new Set(store.tasks.filter((t) => store.info.get(t.id).critical).map((t) => t.id)) : null;
+  ctx.rel = !ctx.critOnly && ui.focus && ui.selId != null ? store.related(ui.selId) : null;
+  $('#app').classList.toggle('focusing', !!ctx.rel || ctx.critOnly);
+  $('#app').classList.toggle('crit-only', ctx.critOnly);
+  {
+    const lg = $('#focusleg');
+    if (ctx.critOnly) {
+      lg.hidden = false;
+      setHTML(lg, `<b>Critical path only</b><span class="k crit-k"><i></i>In focus <em>${store.critCount}</em></span>`);
+    } else if (ctx.rel) {
+      const n = (s) => ctx.rel[s].size;
+      lg.hidden = false;
+      setHTML(lg, `<b>Focus</b><span class="k anc"><i></i>Parents <em class="n-anc">${n('anc')}</em></span><span class="k desc"><i></i>Children <em class="n-desc">${n('desc')}</em></span><span class="k up"><i></i>Predecessors <em class="n-up">${n('up')}</em></span><span class="k down"><i></i>Successors <em class="n-down">${n('down')}</em></span>`);
+    } else {
+      lg.hidden = true;
+    }
+  }
   fitDensity($('#gb').clientHeight, store.rows.length);
   $('#density').value = dims.name;
   ctx.delay.refresh();
@@ -117,7 +138,17 @@ function renderAll() {
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
-  $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto; criticalUI.render();
+  {
+    const mode = store.criticalMode(), cm = $('#critmode');
+    cm.dataset.mode = mode;
+    cm.querySelectorAll('button[data-crit]').forEach((b) => {
+      const on = b.dataset.crit === mode;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+  }
+  $('#optEnd').checked = ui.endDates; $('#optAuto').checked = store.auto; criticalUI.render();
   // A saved version on screen is read-only: its scheduling and critical-path target are the version's own.
   $('#optAuto').disabled = !!store.preview; $('#critical-target').disabled = !!store.preview;
   ctx.versions.render();
@@ -169,7 +200,19 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-ac
 $('#density').addEventListener('change', (e) => { setDensity(e.target.value); ctx.requestRender(); });
 $('#optFocus').checked = ui.focus;
 $('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { appState.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
-$('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));
+{
+  const cm = $('#critmode'), modes = ['off', 'show', 'only'];
+  cm.addEventListener('click', (e) => { const b = e.target.closest('button[data-crit]'); if (b) store.setCriticalMode(b.dataset.crit); });
+  cm.addEventListener('keydown', (e) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const cur = modes.indexOf(store.criticalMode());
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? 2 : (cur + (e.key === 'ArrowRight' ? 1 : 2)) % 3;
+    store.setCriticalMode(modes[next]);
+    cm.querySelector(`[data-crit="${modes[next]}"]`)?.focus();
+  });
+}
+$('#optEnd').addEventListener('change', (e) => { ui.endDates = e.target.checked; try { appState.setItem('pm-end-dates', ui.endDates ? '1' : '0'); } catch {} renderAll(); });
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 
 // another tab saved the workbook: stop writing from this one (it would overwrite that tab's work) and offer a reload

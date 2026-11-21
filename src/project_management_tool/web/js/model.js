@@ -264,10 +264,10 @@ function builtins() {
 export class Store {
   constructor(saved) {
     this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map(); this.preview = null;
-    this.auto = true; this.critical = true; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
+    this.auto = true; this.critical = true; this.criticalOnly = false; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
     try {
       const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
-      if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical;
+      if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; if ('criticalOnly' in p) this.criticalOnly = !!p.criticalOnly;
       if (p.criticalTargets && typeof p.criticalTargets === 'object' && !Array.isArray(p.criticalTargets)) {
         for (const [sheet, id] of Object.entries(p.criticalTargets)) if (Number.isSafeInteger(id) && id > 0) this.criticalTargets[sheet] = id;
       }
@@ -327,7 +327,7 @@ export class Store {
   savedState() {
     const history = Object.fromEntries([...this.hist].filter(([id]) => this.sheet(id)));
     history[this.wb.active] = { u: this.undoStack, r: this.redoStack };
-    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
+    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
   }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
@@ -335,14 +335,17 @@ export class Store {
     if (!this.preview) this.sheet().data = JSON.parse(this.serialize());
     try {
       localStorage.setItem(WB, JSON.stringify(this.wb));
-      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalTargets: this.criticalTargets }));
+      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: this.criticalTargets }));
     } catch { /* disk saving can still work when browser storage is full */ }
     this.persist?.(this.savedState());
   }
   resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  criticalMode() { return !this.critical ? 'off' : this.criticalOnly ? 'only' : 'show'; }
+  setCriticalMode(mode) { this.critical = mode !== 'off'; this.criticalOnly = mode === 'only'; this.save(); this.emit(); }
   setPref(k, v) {
     const catchUp = k === 'auto' && v && !this.auto, pre = catchUp ? this.hook?.before() ?? null : null;
-    this[k] = v; if (k === 'auto' && v) this.tx(() => {});
+    this[k] = v; if (k === 'critical' && !v) this.criticalOnly = false;
+    if (k === 'auto' && v) this.tx(() => {});
     if (catchUp) this.hook?.after({ id: null, kind: 'auto', pre }); // tasks that waited while Auto-schedule was off catch up now
     this.save(); this.emit();
   }
@@ -719,10 +722,11 @@ export class Store {
     for (const d of desc) { up.delete(d); down.delete(d); }
     return { anc, desc, up, down, upL, downL };
   }
-  settle() { this.rev = (this.rev || 0) + 1; this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
+  settle() { this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
 
   // ---- derived state ----
   recalc() {
+    this.rev = (this.rev || 0) + 1;
     const T = this.tasks, n = T.length;
     this.byId = new Map(T.map((t) => [t.id, t]));
     const info = new Map();

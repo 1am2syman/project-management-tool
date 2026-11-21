@@ -79,3 +79,30 @@ test('typed and dragged edits share the retained undo limit across a fresh resto
   assert.equal(store.undoStack.length, 150);
   assert.equal(new Store(saved(store)).undoStack.length, 150);
 });
+
+test('three-way critical path mode persists and stays compatible with boolean critical preference', () => {
+  const store = new Store();
+  assert.equal(store.criticalMode(), 'show');
+  assert.equal(store.critical, true);
+  assert.equal(store.criticalOnly, false);
+
+  store.setCriticalMode('only');
+  assert.equal(store.criticalMode(), 'only');
+  assert.equal(store.critical, true);
+  assert.equal(store.criticalOnly, true);
+  const restoredOnly = new Store(saved(store));
+  assert.equal(restoredOnly.criticalMode(), 'only');
+  assert.equal(restoredOnly.critical, true);
+  assert.equal(restoredOnly.criticalOnly, true);
+
+  store.setCriticalMode('off');
+  assert.equal(store.criticalMode(), 'off');
+  assert.equal(store.critical, false);
+  assert.equal(store.criticalOnly, false);
+  assert.equal(new Store(saved(store)).criticalMode(), 'off');
+
+  store.setCriticalMode('only');
+  store.setPref('critical', false);
+  assert.equal(store.criticalMode(), 'off');
+  assert.equal(store.criticalOnly, false);
+});

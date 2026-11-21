@@ -148,33 +148,33 @@ body{
 .strip{
   background:var(--mb-paper);
   border-bottom:1px solid var(--mb-line);
-  padding:4px 7px;
-  gap:4px 3px;
+  padding:4px 5px;
+  gap:4px 2px;
   min-height:36px;
 }
-.strip .sep{margin:0 2px}
+.strip .sep{margin:0 1px}
 .seg{background:var(--mb-tile);border-radius:9999px;padding:2px;gap:0}
-.seg button{border-radius:9999px;height:24px;padding:0 6px;font-size:11.5px;color:var(--mb-ink-2)}
+.seg button{border-radius:9999px;height:24px;padding:0 4.5px;font-size:11.5px;color:var(--mb-ink-2)}
 .seg button:hover{background:rgba(22,21,19,.04);color:var(--mb-ink)}
 .seg button.on{background:var(--mb-paper);color:var(--mb-ink);font-weight:600;box-shadow:var(--mb-shadow-xs)}
 .seg button.fit{margin-left:1px;color:var(--mb-ink);font-weight:600}
-.strip button.icon{width:24px;height:26px}
-.strip [data-act=today]{height:26px;padding:0 7px;font-size:11.5px}
+.strip button.icon{width:22px;height:26px}
+.strip [data-act=today]{height:26px;padding:0 5.5px;font-size:11.5px}
 .strip #density{
   appearance:none;
   border-radius:9999px;border:1px solid var(--mb-line-2);
-  background:var(--mb-canvas) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5' fill='none' stroke='%2357544d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 7px center/12px;
+  background:var(--mb-canvas) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5' fill='none' stroke='%2357544d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 6px center/11px;
   color:var(--mb-ink-2);
-  padding:0 21px 0 9px;height:26px;width:82px;font-size:11.5px;font-weight:500;
+  padding:0 18px 0 8px;height:26px;width:81px;font-size:11.5px;font-weight:500;
   transition:background-color .15s var(--mb-ease),border-color .15s var(--mb-ease),color .15s var(--mb-ease);
 }
 .strip #density:hover{background-color:var(--mb-tile);color:var(--mb-ink);border-color:rgba(22,21,19,.2)}
 .strip #density:focus-visible{outline:2px solid var(--mb-ink);outline-offset:2px}
 
 /* Full "Critical path" / "Longest path" fits cleanly while long milestone targets cap neatly so Auto-schedule stays on row 1 */
-.critical-controls{width:auto;gap:4px;margin-left:4px}
+.critical-controls{width:auto;gap:3px;margin-left:2px}
 .strip #critical-target{
-  width:auto;max-width:82px;flex:0 1 auto;
+  width:auto;max-width:72px;flex:0 1 auto;
   padding:0 1px;font-size:11.5px;font-weight:500;color:var(--mb-ink-2);
   text-decoration-color:var(--mb-ink-3);
 }
@@ -183,12 +183,12 @@ body{
 .strip #critical-target.targeted{color:var(--crit-d);font-weight:600;text-decoration-color:var(--crit)}
 
 /* Switches: tactile obsidian pill track, crimson for critical path */
-.switch{color:var(--mb-ink-2);font-weight:500;font-size:11.5px;gap:5px;margin-left:4px}
-.switch i{background:var(--mb-tile-2);width:30px;height:18px;border-radius:9999px;transition:background-color .18s var(--mb-ease);box-shadow:inset 0 1px 2px rgba(22,21,19,.08)}
-.switch i::after{width:14px;height:14px;box-shadow:0 1px 3px rgba(22,21,19,.28);transition:transform .18s var(--mb-ease)}
+.switch{color:var(--mb-ink-2);font-weight:500;font-size:11.5px;gap:4px;margin-left:2px}
+.switch i{background:var(--mb-tile-2);width:26px;height:16px;border-radius:9999px;transition:background-color .18s var(--mb-ease);box-shadow:inset 0 1px 2px rgba(22,21,19,.08)}
+.switch i::after{width:12px;height:12px;box-shadow:0 1px 3px rgba(22,21,19,.28);transition:transform .18s var(--mb-ease)}
 .switch input:checked+i{background:var(--mb-ink);box-shadow:none}
 .switch.crit input:checked+i{background:var(--crit)}
-.switch input:checked+i::after{transform:translateX(12px)}
+.switch input:checked+i::after{transform:translateX(10px)}
 .switch input:focus-visible+i,.sw input:focus-visible+i,.colpop .ci input:focus-visible+i{outline:2px solid var(--mb-ink);outline-offset:2px}
 
 /* Splitter: architectural drafting rule with centered grip pill on hover */
@@ -286,11 +286,6 @@ body{
 .ghead .t3.td small{color:rgba(255,255,255,.72)}
 .ghead .tdu{color:var(--mb-ink);background:var(--mb-tile);font-weight:600}
 
-.todayline{border-left:1.5px solid var(--mb-ink);opacity:.26}
-.todayline::before{
-  content:"";position:absolute;left:-4.25px;top:0;width:7px;height:7px;
-  border-radius:50%;background:var(--mb-ink);box-shadow:0 0 0 2px #fff;
-}
 
 svg.bg{
   background:linear-gradient(to bottom,transparent calc(var(--row) - 1px),rgba(22,21,19,.042) calc(var(--row) - 1px)) 0 0/100% var(--row),
@@ -298,7 +293,7 @@ svg.bg{
 }
 
 /* True 3-plane spatial depth stack inside #canvas:
- * z:0 bg | z:1 todayline, rowsel, base/dimmed links | z:2 dimmed bars | z:3 elevated focused links (overpass)
+ * z:0 bg | z:1 rowsel, base/dimmed links | z:2 dimmed bars | z:3 elevated focused links (overpass)
  * z:4 slack cushion runway | z:5 normal & focused related bars | z:6 hero selected bar | z:7 delay markers | z:8-9 dragging */
 .bars{z-index:auto}
 svg.links{z-index:1;pointer-events:none}
@@ -946,3 +941,61 @@ code{background:var(--mb-tile);border-radius:6px;color:var(--mb-ink);padding:2px
   .modal-back{animation:none}
   .tools button,.strip button,.seg button,.colbtn,.tplbtn,.verbtn,.tab,.switch i,.switch i::after,.chip2,.tcard,.modal button,.ctxmenu button,.task-menu button,.fld input,.fld select,.fld textarea,.bar,.bar.ms::before,.tog,.an-nav button,.r.dim{transition:none}
 }
+
+/* ---- critical-path three-way sliding toggle and activity end dates ---- */
+.tri-switch{
+  position:relative;display:inline-grid;grid-template-columns:repeat(3,1fr);align-items:center;
+  width:38px;height:16px;padding:0 2px;border-radius:9999px;flex:none;
+  background:var(--mb-tile-2);box-shadow:inset 0 1px 2px rgba(22,21,19,.08);
+  transition:background-color .18s var(--mb-ease),box-shadow .18s var(--mb-ease);
+}
+.tri-switch[data-mode=show]{background:var(--crit);box-shadow:none}
+.tri-switch[data-mode=only]{background:var(--crit-d);box-shadow:0 0 0 1.5px rgba(225,29,72,.26)}
+.strip .tri-switch button{
+  position:relative;z-index:2;width:100%;height:16px;min-width:0;padding:0;margin:0;
+  border:0;border-radius:9999px;background:transparent;display:grid;place-items:center;cursor:pointer;
+}
+.strip .tri-switch button:hover,.strip .tri-switch button:active{background:transparent;transform:none}
+.strip .tri-switch button::before{
+  content:"";width:3px;height:3px;border-radius:50%;
+  background:rgba(22,21,19,.24);transition:background-color .15s var(--mb-ease),opacity .15s var(--mb-ease);
+}
+.tri-switch[data-mode=show] button::before,.tri-switch[data-mode=only] button::before{background:rgba(255,255,255,.5)}
+.strip .tri-switch button.on::before{opacity:0}
+.strip .tri-switch button:focus-visible{outline:2px solid var(--mb-ink);outline-offset:2px}
+.tri-thumb{
+  position:absolute;z-index:1;left:2px;top:2px;width:12px;height:12px;border-radius:50%;
+  background:#fff;pointer-events:none;
+  box-shadow:0 1px 3px rgba(22,21,19,.28);
+  transition:transform .18s var(--mb-ease);
+}
+.tri-switch[data-mode=show] .tri-thumb{transform:translateX(11px)}
+.tri-switch[data-mode=only] .tri-thumb{transform:translateX(22px)}
+.tri-switch[data-mode=only] .tri-thumb::after{
+  content:"";position:absolute;left:4px;top:4px;width:4px;height:4px;border-radius:50%;background:var(--crit-d);
+}
+.crit-only .strip #critical-target{color:var(--crit-d);font-weight:600;text-decoration-color:var(--crit)}
+.focusleg .crit-k i{background:var(--crit)}
+
+/* Activity end date badge: 2 stacked rows (dd / mmm) */
+.edate{
+  display:none;flex:none;flex-direction:column;justify-content:center;align-items:center;
+  font:600 8px/8px var(--mono);letter-spacing:0;text-align:center;pointer-events:none;
+}
+.edate b{font-weight:700;display:block}
+.edate i{font-style:normal;font-weight:500;opacity:.88;display:block;font-size:7.5px;line-height:7.5px}
+html[data-density=auto] .edate{font-size:9px;line-height:9.5px}
+html[data-density=auto] .edate i{font-size:8.5px;line-height:9px}
+.show-ed .edate{display:flex}
+.bar>.edate{position:absolute;z-index:1;right:8px;top:0;height:var(--bar);color:rgba(255,255,255,.95)}
+.bar .label>.edate{
+  position:static;margin-left:6px;padding-left:6px;height:calc(var(--bar) - 2px);
+  border-left:1px solid rgba(22,21,19,.14);color:var(--mb-ink-2);
+}
+.focusing .bar.dim>.edate{color:rgba(22,21,19,.30)}
+.focusing .bar.dim .label>.edate,.focusing .bar.summary:not(.r-self) .label>.edate{border-left-color:rgba(22,21,19,.08);color:rgba(22,21,19,.28)}
+/* Collapsed summary containing critical work stays legible in critical-only focus mode */
+.focusing.crit-only .bar.summary.collapsed-crit{background:#ede8dc;box-shadow:inset 0 0 0 1.25px var(--crit-d);filter:none;z-index:5}
+.focusing.crit-only .bar.summary.collapsed-crit::before,.focusing.crit-only .bar.summary.collapsed-crit::after{background:var(--crit-d)}
+.focusing.crit-only .bar.summary.collapsed-crit .fill{opacity:1}
+.focusing.crit-only .bar.summary.collapsed-crit .label{color:var(--mb-ink);background:#f4f3ef;border-color:rgba(225,29,72,.35);box-shadow:0 1px 2px rgba(22,21,19,.06)}

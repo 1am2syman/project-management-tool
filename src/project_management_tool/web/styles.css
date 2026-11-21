@@ -40,7 +40,7 @@ svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-l
 .pane{display:flex;flex-direction:column;min-width:0;min-height:0}
 .pane.left{width:min(var(--gridw), max(320px, calc(100% - 321px)));flex:none}
 .pane.right{flex:1;position:relative}
-.strip .switch{white-space:nowrap;flex:none;height:28px;margin-left:4px}
+.strip .switch{white-space:nowrap;flex:none;height:28px;margin-left:2px}
 .split{width:7px;margin:0 -3px;cursor:col-resize;z-index:30;position:relative;flex:none}
 .split::after{content:"";position:absolute;left:3px;top:0;bottom:0;width:1px;background:var(--line);transition:background .15s,width .15s}
 .split:hover::after,.split.on::after{background:var(--blue);width:2px;left:2.5px}
@@ -155,14 +155,13 @@ svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-l
 .gbody{flex:1;min-height:0;overflow:auto;position:relative;cursor:grab}
 .gbody.panning{cursor:grabbing}
 .canvas{position:relative;min-width:100%}
-.canvas>svg,.todayline{position:absolute;left:0;top:0}
+.canvas>svg{position:absolute;left:0;top:0}
 svg.bg{pointer-events:none;shape-rendering:crispEdges;
   background:linear-gradient(to bottom,transparent calc(var(--row) - 1px),rgba(15,23,42,.045) calc(var(--row) - 1px)) 0 0/100% var(--row),
              repeating-linear-gradient(to bottom,#fff 0 var(--row),var(--alt) var(--row) calc(var(--row)*2))}
 svg.bg *{stroke:none}
 svg.links{z-index:2}
 svg.linkdrag{pointer-events:none;z-index:6;overflow:visible}
-.todayline{width:0;border-left:1px solid var(--blue);z-index:1;pointer-events:none;opacity:.18}
 .rowsel{position:absolute;left:0;right:0;height:var(--row);background:rgba(43,89,230,.06);pointer-events:none}
 
 /* links */
