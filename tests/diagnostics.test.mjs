@@ -90,6 +90,17 @@ test('export refreshes resource statuses after module dependencies finish loadin
   assert(!JSON.stringify(report).includes('RESOURCE_SECRET'));
 });
 
+test('failed resources lead the report even when many later requests succeed', async () => {
+  const h = await harness();
+  const entries = [{ name: 'http://localhost:5173/js/people.js', initiatorType: 'script', duration: 3, transferSize: 0, responseStatus: 404 }];
+  for (let i = 0; i < 40; i++) entries.push({ name: `http://localhost:5173/js/m${i}.js`, initiatorType: 'script', duration: 1, transferSize: 10, responseStatus: 200 });
+  h.window.performance = { getEntriesByType: (type) => type === 'resource' ? entries : [] };
+  const report = h.api.snapshot();
+  assert.equal(report.setup.resources.length, 25, 'the report is still bounded');
+  assert.equal(report.setup.resources[0].url, 'http://localhost:5173/js/people.js');
+  assert.equal(report.setup.resources[0].status, 404);
+});
+
 test('fetch records metadata and failures while preserving responses and excluding headers/bodies', async () => {
   const response = { ok: false, status: 503, json: async () => ({}) };
   const h = await harness({ fetch: async () => response });

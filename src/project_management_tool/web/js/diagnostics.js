@@ -68,10 +68,14 @@
     return { end: (detail) => finish('info', detail), fail: (error) => finish('error', { error }) };
   }
   function resources() {
-    return (w.performance?.getEntriesByType('resource') || []).slice(-40).map((entry) => ({
+    // The report keeps at most 25 rows (scrub), so failed requests come first: a 404 must not be crowded out by the fonts and
+    // stylesheets that load around it. Everything else follows in request order.
+    const rows = (w.performance?.getEntriesByType('resource') || []).slice(-80).map((entry) => ({
       url: urlLabel(entry.name), initiator: entry.initiatorType, durationMs: Math.round(entry.duration),
       transferBytes: entry.transferSize, status: entry.responseStatus,
     }));
+    const failed = (row) => row.status >= 400;
+    return [...rows.filter(failed), ...rows.filter((row) => !failed(row))];
   }
   function snapshot() {
     // Module dependencies finish after the initial setup check. Export their final load status too.

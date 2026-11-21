@@ -1,7 +1,7 @@
 // Workbook-local owner suggestions. Picking a person stores their name and email on the task.
 import { esc, setHTML } from './dom.js';
 
-const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
+const AV = ['#2d3a4b', '#0f766e', '#b45309', '#9f1239', '#57544d', '#15803d', '#7c2d12', '#3f3c36'];
 export const initials = (n) => String(n).split(/[\s@._-]+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 export const avColor = (n) => AV[[...String(n)].reduce((a, c) => a + c.charCodeAt(0), 0) % AV.length];
 export const avatar = (n) => `<span class="av" style="background:${avColor(n)}">${esc(initials(n))}</span>`;

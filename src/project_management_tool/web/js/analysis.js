@@ -275,7 +275,7 @@ export function createAnalysis(ctx) {
     const fin = root.querySelector('[data-chart=finish]'), ms = root.querySelector('[data-chart=ms]');
     const w1 = Math.max(320, Math.round(fin.parentElement.clientWidth || 560));
     fin.setAttribute('viewBox', `0 0 ${w1} 250`); fin.setAttribute('width', w1); fin.setAttribute('height', 250);
-    setSVG(fin, lineChart({ width: w1, labels, highlight: hl, pointLabels: true, series: [{ name: 'Finish', color: '#2b59e6', values: state.trend.finish, width: 2.5 }] }));
+    setSVG(fin, lineChart({ width: w1, labels, highlight: hl, pointLabels: true, series: [{ name: 'Finish', color: '#161513', values: state.trend.finish, width: 2.5 }] }));
     const series = trendSeries(state.trend).map((s, i) => ({ name: s.name, color: PALETTE[i % PALETTE.length], values: s.dates, muted: state.trendSelected != null && state.trendSelected !== i }));
     const w2 = Math.max(320, Math.round(ms.parentElement.clientWidth || 560));
     ms.setAttribute('viewBox', `0 0 ${w2} 250`); ms.setAttribute('width', w2); ms.setAttribute('height', 250);

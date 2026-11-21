@@ -146,15 +146,15 @@ export function createGantt(ctx) {
 
   function buildBg() {
     if (ppd >= 5) {
-      const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/>` : '').join('');
+      const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(22,21,19,.03)"/>` : '').join('');
       const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern>`;
-      const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.045 : 0.07;
-      bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,${a})"/></pattern></defs>`;
+      const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.042 : 0.068;
+      bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(22,21,19,${a})"/></pattern></defs>`;
       bgBody = `<rect width="${W}" height="${taskH}" fill="url(#wk)"/><rect width="${W}" height="${taskH}" fill="url(#dl)"/>`;
     } else { bgDefs = ''; bgBody = ''; }
     // explicit month / quarter boundaries in the coarse views
     let lines = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
-    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
+    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(22,21,19,${q ? 0.11 : 0.055})"/>`; }
     bg.setAttribute('width', W); bg.setAttribute('height', taskH);
     setSVG(bg, bgDefs + bgBody + lines);
   }
@@ -486,7 +486,7 @@ export function createGantt(ctx) {
     drag.target = bad ? null : target;
     let ex = cx, ey = cy;
     if (target) [ex, ey] = anchor(target.id, target.end, target.ri);
-    const col = bad ? '#e11d48' : '#2b59e6', sx = ax;
+    const col = bad ? '#e11d48' : '#161513', sx = ax;
     const mx = (sx + ex) / 2;
     linkdrag.setAttribute('width', W); linkdrag.setAttribute('height', H);
     setSVG(linkdrag, `<path d="M${sx} ${ay} C${mx} ${ay} ${mx} ${ey} ${ex} ${ey}" stroke="${col}" stroke-width="2" stroke-dasharray="5 4" fill="none"/><circle cx="${ex}" cy="${ey}" r="4.5" fill="${col}" stroke="none"/>`);

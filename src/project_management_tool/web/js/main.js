@@ -243,5 +243,7 @@ if (window.ResizeObserver) {
 }
 renderAll();
 diagnostics.record('app.ready');
+// The contour backdrop (behind dialogs and menus, and in the bottom-left corner of the page) is decoration: load it after the app is ready, and if it fails the surfaces stay plain white.
+import('./contour.js').then((m) => m.initContour()).catch((e) => diagnostics.record('contour.unavailable', { message: String(e?.message || e) }));
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 void COLS;
