@@ -53,6 +53,8 @@ export function createGantt(ctx) {
   const root = $('#app'), gb = $('#gb'), canvas = $('#canvas'), bg = $('#bg'), linksEl = $('#links'), barsEl = $('#bars'), linkdrag = $('#linkdrag');
   const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), seg = $('#zoomseg');
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
+  const linksHiEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  linksHiEl.classList.add('links', 'links-hi'); canvas.insertBefore(linksHiEl, barsEl);
   const slackEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   slackEl.classList.add('slack-overlay'); slackEl.setAttribute('aria-hidden', 'true'); canvas.insertBefore(slackEl, barsEl);
   const slackRows = () => store.rows.filter((t) => ui.slackMode !== 'off' && (ui.slackMode === 'all' || ui.selId === t.id) && !store.info.get(t.id).summary);
@@ -241,20 +243,26 @@ export function createGantt(ctx) {
     if (t.ms && !f.summary) return [pixel(xOf(f.start)) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
     return [end === 's' ? pixel(xOf(f.start) + 1) : Math.max(pixel(xOf(f.start) + 1) + 6, pixel(xOf(f.end) - 1)), y];
   }
-  // Link paths are keyed by id and only re-parsed when their geometry or state changed, so a drag touches a handful of paths, not all of them.
+  // Link paths are keyed by id and split across base (`linksEl`) and elevated (`linksHiEl`) SVGs so focused/selected links bridge cleanly above dimmed bars.
   const linkEls = new Map(), linkScratch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   function paintLinks(want) {
     const keep = new Set(want.map((w) => w[0]));
     for (const [id, o] of linkEls) if (!keep.has(id)) { o.el.remove(); linkEls.delete(id); }
-    const changed = want.filter(([id, html]) => !linkEls.has(id) || linkEls.get(id).html !== html);
+    const changed = want.filter(([id, html, hi]) => !linkEls.has(id) || linkEls.get(id).html !== html || linkEls.get(id).hi !== hi);
     if (!changed.length) return;
     setSVG(linkScratch, changed.map((c) => c[1]).join(''));
     const fresh = [...linkScratch.children];
-    changed.forEach(([id, html], i) => { const o = linkEls.get(id); if (o) o.el.replaceWith(fresh[i]); else linksEl.appendChild(fresh[i]); linkEls.set(id, { el: fresh[i], html }); });
+    changed.forEach(([id, html, hi], i) => {
+      const o = linkEls.get(id), parent = hi ? linksHiEl : linksEl;
+      if (o && o.hi === hi) o.el.replaceWith(fresh[i]);
+      else { o?.el.remove(); parent.appendChild(fresh[i]); }
+      linkEls.set(id, { el: fresh[i], html, hi });
+    });
   }
   function renderLinks() {
     const idx = new Map(store.rows.map((t, i) => [t.id, i]));
     linksEl.setAttribute('width', W); linksEl.setAttribute('height', H);
+    linksHiEl.setAttribute('width', W); linksHiEl.setAttribute('height', H);
     const want = [];
     for (const l of store.links) {
       const a = idx.get(l.from), b = idx.get(l.to); if (a == null || b == null) continue;
@@ -271,7 +279,9 @@ export function createGantt(ctx) {
         arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
       }
       const rl = ctx.rel ? (ctx.rel.upL.has(l.id) ? ' r-up' : ctx.rel.downL.has(l.id) ? ' r-down' : ' dim') : '';
-      want.push([l.id, `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`]);
+      const hi = Boolean((ctx.rel && (ctx.rel.upL.has(l.id) || ctx.rel.downL.has(l.id))) || ui.linkId === l.id);
+      const halo = hi ? `<path class="halo" d="${d}"/>` : '';
+      want.push([l.id, `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/>${halo}<path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`, hi]);
     }
     paintLinks(want);
   }
@@ -351,7 +361,7 @@ export function createGantt(ctx) {
       const left = canvas.getBoundingClientRect().left;
       let first = Infinity, right = 0;
       const elements = [...barEls.values()].flatMap((el) => [el, el._label, ...el.querySelectorAll('.dot')]);
-      elements.push(...linksEl.querySelectorAll('.vis,.ah'), ...slackEl.querySelectorAll('.slack-item'));
+      elements.push(...linksEl.querySelectorAll('.vis,.ah'), ...linksHiEl.querySelectorAll('.vis,.ah'), ...slackEl.querySelectorAll('.slack-item'));
       for (const el of elements) {
         const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) continue;
         const diamond = el.classList.contains('ms') ? dims.msz * (Math.SQRT2 - 1) / 2 : 0;

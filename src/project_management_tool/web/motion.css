@@ -235,8 +235,9 @@ body{
 .r:nth-child(even){background:var(--alt)}
 .r:hover{background:#f5f4f0}
 .r .c{border-right-color:var(--line2);border-bottom-color:var(--line2)}
-.r.sum{background:#f7f6f2}
+.r.sum{background:#f5f3ed;box-shadow:inset 0 1px 0 rgba(22,21,19,.09)}
 .r.sum .c{background-image:none}
+.r.sum .c.rn{background:#f2efe8;color:var(--mb-ink-2);box-shadow:inset 2.5px 0 0 rgba(22,21,19,.30)}
 .r.sum .c.nm{font-weight:600;letter-spacing:-.012em;color:var(--mb-ink)}
 .r.on{background:#efeee9 !important}
 .r.on .c.rn{background:var(--mb-tile-2);color:var(--mb-ink);font-weight:600;box-shadow:inset 2px 0 0 var(--mb-ink)}
@@ -268,11 +269,11 @@ body{
 .schedule-badge.manual{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
 .schedule-badge.anchor{background:#fefce8;color:#a16207;border-color:#fde68a}
 
-/* Focus mode rails & tints */
+/* Focus mode rails & tints (spreadsheet) */
 .r.r-up{background-image:linear-gradient(rgba(22,21,19,.055),rgba(22,21,19,.055))}
 .r.r-down{background-image:linear-gradient(rgba(22,21,19,.03),rgba(22,21,19,.03))}
 .r.r-anc,.r.r-desc{background-image:linear-gradient(rgba(22,21,19,.042),rgba(22,21,19,.042))}
-.r.dim{opacity:.45}.focusing .r.dim:hover{opacity:.72}
+.r.dim{opacity:.24;transition:opacity .2s var(--mb-ease)}.focusing .r.dim:hover{opacity:.68}
 
 /* ---- Gantt chart (right pane) -------------------------------------------------------------------------------------------- */
 .ghead{border-bottom:1px solid var(--mb-line-2);background:var(--mb-paper)}
@@ -296,11 +297,22 @@ svg.bg{
              repeating-linear-gradient(to bottom,#ffffff 0 var(--row),var(--alt) var(--row) calc(var(--row)*2));
 }
 
+/* True 3-plane spatial depth stack inside #canvas:
+ * z:0 bg | z:1 todayline, rowsel, base/dimmed links | z:2 dimmed bars | z:3 elevated focused links (overpass)
+ * z:4 slack cushion runway | z:5 normal & focused related bars | z:6 hero selected bar | z:7 delay markers | z:8-9 dragging */
+.bars{z-index:auto}
+svg.links{z-index:1;pointer-events:none}
+svg.links-hi{z-index:3;pointer-events:none;filter:drop-shadow(0 3px 4px rgba(22,21,19,.20))}
+svg.slack-overlay{z-index:4}
+.dly-layer{z-index:7}
+svg.linkdrag{z-index:9}
+
 /* Sculpted Gantt bars: crisp pill silhouette, obsidian progress fill, clean sentence-case Geist labels */
 .bar{
+  z-index:5;
   border-radius:9999px;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(22,21,19,.10);
-  transition:box-shadow .16s var(--mb-ease),filter .15s var(--mb-ease);
+  transition:transform .22s var(--mb-ease),box-shadow .22s var(--mb-ease),filter .22s var(--mb-ease),opacity .22s var(--mb-ease),background-color .22s var(--mb-ease);
 }
 html[data-density=auto] .bar{border-radius:9999px}
 .bar .fill{
@@ -314,16 +326,16 @@ html[data-density=auto] .bar{border-radius:9999px}
 }
 html[data-density=auto] .bar .label{font-size:11.5px}
 .bar .label-text{top:0}
-.bar .label.out,.bar.summary .label,.bar.ms .label{
+.bar .label.out,.bar.ms .label{
   color:var(--mb-ink);
   background:rgba(255,255,255,.86);
   border-radius:9999px;
   padding:0 6px;
   font-weight:500;
 }
-.bar.summary .label{font-weight:600;letter-spacing:-.015em}
 .bar.ms .label{font-weight:600;color:var(--mb-ink)}
 .bar .dly-shade{border-radius:0 9999px 9999px 0}
+.bar.selected,.bar.r-self{z-index:6}
 .bar.selected:not(.summary):not(.ms){
   box-shadow:0 0 0 2px #fff,0 0 0 3.5px var(--mb-ink),inset 0 1px 0 rgba(255,255,255,.18);
 }
@@ -334,7 +346,8 @@ html[data-density=auto] .bar .label{font-size:11.5px}
   box-shadow:0 4px 14px -2px rgba(22,21,19,.28),inset 0 1px 0 rgba(255,255,255,.2);
 }
 .bar.dragging{
-  box-shadow:0 10px 26px -4px rgba(22,21,19,.36),inset 0 1px 0 rgba(255,255,255,.22);
+  z-index:8 !important;
+  box-shadow:0 12px 28px -4px rgba(22,21,19,.38),inset 0 1px 0 rgba(255,255,255,.22);
 }
 .crit-on .bar.critical{
   box-shadow:inset 0 1px 0 rgba(255,255,255,.24),inset 0 0 0 1px rgba(190,18,60,.18);
@@ -343,18 +356,31 @@ html[data-density=auto] .bar .label{font-size:11.5px}
   box-shadow:0 4px 14px -2px rgba(225,29,72,.38),inset 0 1px 0 rgba(255,255,255,.28);
 }
 
-/* Architectural summary bracket */
-.bar.summary{
-  height:6px;margin-top:calc((var(--bar) - 6px) / 2);
-  border-radius:3px 3px 1px 1px;
-  background:var(--sum);
-  box-shadow:none;
+/* Bucket / Summary rows: light warm-sandstone architectural caliper beam — unmistakable from dark rounded task pills */
+.bar.summary,.crit-on .bar.summary.critical{
+  height:8px;margin-top:calc((var(--bar) - 8px) / 2);
+  border-radius:2px 2px 0 0;
+  background:#ede8dc;
+  box-shadow:inset 0 0 0 1.25px #2e2c28;
 }
-.bar.summary::before,.bar.summary::after{top:6px;border-top:4px solid var(--sum)}
-.bar.summary::before{border-right:4px solid transparent}
-.bar.summary::after{border-left:4px solid transparent}
-.bar.summary .fill,.crit-on .bar.summary.critical .fill{background:var(--mb-ink);border-radius:3px 0 0 1px;box-shadow:none}
-.bar.summary:hover{box-shadow:none}
+.bar.summary::before,.bar.summary::after{
+  top:6px;width:2px;height:7px;border:0;background:#2e2c28;border-radius:0 0 1px 1px;
+}
+.bar.summary::before{left:0}
+.bar.summary::after{right:0}
+.bar.summary .fill,.crit-on .bar.summary.critical .fill{
+  top:1px;bottom:1px;left:1px;max-width:calc(100% - 2px);
+  background:repeating-linear-gradient(135deg,rgba(22,21,19,.16) 0 1.5px,transparent 1.5px 4.5px),#cfc5b0;
+  border-radius:1px 0 0 0;
+  box-shadow:inset 0 2.5px 0 #161513;
+}
+.bar.summary .label{
+  left:calc(100% + 9px);top:calc((8px - var(--bar)) / 2);
+  color:var(--mb-ink);font-weight:600;font-size:11px;letter-spacing:-.015em;
+  background:#f4f3ef;border:1px solid rgba(22,21,19,.15);border-radius:6px;
+  padding:0 7px;box-shadow:0 1px 2px rgba(22,21,19,.06);
+}
+.bar.summary:hover{box-shadow:inset 0 0 0 1.5px #161513,0 2px 6px rgba(22,21,19,.12)}
 
 /* Faceted milestone diamonds */
 .bar.ms{box-shadow:none}
@@ -362,7 +388,7 @@ html[data-density=auto] .bar .label{font-size:11.5px}
   background:linear-gradient(135deg,#fbbf24 0%,#d97706 100%);
   border-radius:3px;
   box-shadow:0 0 0 1.5px #fff,0 2px 6px rgba(180,83,9,.28);
-  transition:transform .15s var(--mb-ease),box-shadow .15s var(--mb-ease);
+  transition:transform .2s var(--mb-ease),box-shadow .2s var(--mb-ease),opacity .2s var(--mb-ease);
 }
 .bar.ms:hover::before{transform:scale(1.1);box-shadow:0 0 0 2px #fff,0 4px 12px rgba(180,83,9,.42)}
 .bar.ms.selected::before{box-shadow:0 0 0 2px #fff,0 0 0 3.5px var(--mb-ink)}
@@ -373,14 +399,75 @@ html[data-density=auto] .bar .label{font-size:11.5px}
 .bar .dot:hover,.bar .dot.target{background:var(--mb-ink);border-color:var(--mb-ink)}
 .bar .prog{border-bottom-color:var(--mb-ink)}
 
-/* Dependency links & focus legend */
+/* Dependency links: warm stone base, overpass white halo + obsidian/crimson focus */
+.lk .halo{fill:none;stroke:rgba(255,255,255,.92);stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
 .lk .vis{stroke:#b5b0a5;stroke-width:1.8}.lk .ah{fill:#b5b0a5}
 .lk:hover .vis{stroke:var(--mb-ink);stroke-width:2.3}.lk:hover .ah{fill:var(--mb-ink)}
 .crit-on .lk.crit .vis{stroke:var(--crit);stroke-width:2}.crit-on .lk.crit .ah{fill:var(--crit)}
 .lk.viol .vis{stroke:#d97706}.lk.viol .ah{fill:#d97706}
 .lk.sel .vis{stroke:var(--mb-ink);stroke-width:2.6}.lk.sel .ah{fill:var(--mb-ink)}
-.lk.r-up .vis{stroke:var(--up);stroke-width:2.1}.lk.r-up .ah{fill:var(--up)}
-.lk.r-down .vis{stroke:var(--down);stroke-width:2.1}.lk.r-down .ah{fill:var(--down)}
+.lk.r-up .vis{stroke:var(--mb-ink);stroke-width:2.2}.lk.r-up .ah{fill:var(--mb-ink)}
+.lk.r-down .vis{stroke:#57544d;stroke-width:2.2}.lk.r-down .ah{fill:#57544d}
+.crit-on .lk.crit.r-up .vis,.crit-on .lk.crit.r-down .vis{stroke:var(--crit)}.crit-on .lk.crit.r-up .ah,.crit-on .lk.crit.r-down .ah{fill:var(--crit)}
+
+/* ---- Focus mode: 3-plane spatial relief (receded blueprint vs lifted chain vs floating hero) ---- */
+.focusing .rowsel{
+  background:linear-gradient(to bottom,rgba(22,21,19,.04),rgba(22,21,19,.072),rgba(22,21,19,.04));
+  box-shadow:inset 0 1px 0 rgba(22,21,19,.07),inset 0 -1px 0 rgba(22,21,19,.07);
+}
+/* Plane 0: heavily receded ghosted blueprint layer (dimmed items + non-selected bucket/summary indicators) */
+.focusing .bar.dim,.focusing .bar.summary:not(.r-self){z-index:2;filter:grayscale(1)}
+.focusing .bar.dim:not(.summary):not(.ms){
+  background:rgba(22,21,19,.065) !important;
+  box-shadow:inset 0 0 0 1px rgba(22,21,19,.08) !important;
+}
+.focusing .bar.dim .fill{opacity:.10;box-shadow:none}
+.focusing .bar.dim .label,.focusing .bar.summary:not(.r-self) .label{color:rgba(22,21,19,.28);background:transparent;border-color:transparent;box-shadow:none}
+.focusing .bar.summary:not(.r-self),.focusing.crit-on .bar.summary.critical:not(.r-self){
+  background:rgba(22,21,19,.045);box-shadow:inset 0 0 0 1px rgba(22,21,19,.10);transform:none;filter:grayscale(1);
+}
+.focusing .bar.summary:not(.r-self)::before,.focusing .bar.summary:not(.r-self)::after{background:rgba(22,21,19,.13)}
+.focusing .bar.summary:not(.r-self) .fill{opacity:.12;box-shadow:none}
+.focusing .bar.ms.dim::before{opacity:.15;box-shadow:none}
+.focusing .bar.dim:hover,.focusing .bar.summary:not(.r-self):hover{filter:grayscale(.35)}
+.focusing .bar.dim:hover:not(.summary):not(.ms){background:rgba(22,21,19,.16) !important}
+.focusing .bar.dim:hover .label,.focusing .bar.summary:not(.r-self):hover .label{color:var(--mb-ink-2)}
+.focusing .lk.dim{opacity:.07}
+.focusing .lk.dim .vis{stroke:#8b877d !important}.focusing .lk.dim .ah{fill:#8b877d !important}
+
+/* Plane 1: lifted related chain with directional drop shadows */
+.focusing .bar:not(.dim):not(.summary):not(.ms){
+  transform:translateY(-.75px);
+  box-shadow:0 3px 8px -2px rgba(22,21,19,.24),0 8px 18px -6px rgba(22,21,19,.16),inset 0 1px 0 rgba(255,255,255,.22);
+}
+.focusing.crit-on .bar.critical:not(.dim):not(.summary):not(.ms){
+  box-shadow:0 3px 10px -2px rgba(225,29,72,.30),0 8px 20px -6px rgba(225,29,72,.20),inset 0 1px 0 rgba(255,255,255,.28);
+}
+.focusing .bar.ms:not(.dim)::before{
+  transform:scale(1.06);
+  box-shadow:0 0 0 2px #fff,0 4px 10px -1px rgba(22,21,19,.28);
+}
+.focusing .bar.ms.done:not(.dim)::before{
+  background:#6f6b62;
+  box-shadow:0 0 0 2px #fff,0 4px 10px -1px rgba(22,21,19,.26);
+}
+
+/* Plane 2: floating focal hero bar (r-self) */
+.focusing .bar.r-self:not(.summary):not(.ms){
+  transform:translateY(-1.25px);
+  box-shadow:0 0 0 2px #fff,0 0 0 3.5px var(--mb-ink),0 8px 20px -4px rgba(22,21,19,.34),0 18px 34px -10px rgba(22,21,19,.22),inset 0 1px 0 rgba(255,255,255,.26);
+}
+.focusing.crit-on .bar.critical.r-self:not(.summary):not(.ms){
+  box-shadow:0 0 0 2px #fff,0 0 0 3.5px var(--crit-d),0 8px 20px -4px rgba(225,29,72,.38),0 18px 34px -10px rgba(225,29,72,.24),inset 0 1px 0 rgba(255,255,255,.32);
+}
+.focusing .bar.ms.r-self::before{
+  transform:scale(1.14);
+  box-shadow:0 0 0 2px #fff,0 0 0 3.5px var(--mb-ink),0 8px 18px -2px rgba(22,21,19,.34);
+}
+.focusing .bar.summary.r-self{
+  transform:translateY(-1.25px);
+  filter:drop-shadow(0 5px 9px rgba(22,21,19,.22));
+}
 
 .focusleg{
   background:rgba(255,255,255,.94);
@@ -395,11 +482,13 @@ html[data-density=auto] .bar .label{font-size:11.5px}
 .focusleg em{color:var(--mb-ink);font-family:var(--mono);font-size:11px}
 .focusleg i{width:10px;height:6px;border-radius:9999px}
 
-/* Slack overlay */
-.slack-overlay .slack-free{fill:rgba(22,21,19,.45)}
-.slack-overlay .slack-total{stroke:rgba(22,21,19,.45)}
-.slack-overlay .slack-cap{stroke:rgba(22,21,19,.55)}
-.slack-overlay text{font:600 10.5px var(--mono);fill:var(--mb-ink)}
+/* Slack overlay: original solid-free / dashed-total tail geometry in crisp emerald green */
+.slack-overlay .slack-free{fill:rgba(21,128,61,.55)}
+.slack-overlay .slack-total{stroke:rgba(21,128,61,.55)}
+.slack-overlay .slack-cap{stroke:rgba(21,128,61,.72)}
+.slack-overlay text{font:600 10.5px var(--mono);fill:#15803d}
+.slack-key .free-key::before{background:rgba(21,128,61,.55)}
+.slack-key .total-key::before{background:repeating-linear-gradient(90deg,rgba(21,128,61,.6) 0 4px,transparent 4px 7px)}
 
 /* ---- bottom sheetbar dock ------------------------------------------------------------------------------------------------ */
 .sheetbar{
@@ -855,5 +944,5 @@ code{background:var(--mb-tile);border-radius:6px;color:var(--mb-ink);padding:2px
 
 @media(prefers-reduced-motion:reduce){
   .modal-back{animation:none}
-  .tools button,.strip button,.seg button,.colbtn,.tplbtn,.verbtn,.tab,.switch i,.switch i::after,.chip2,.tcard,.modal button,.ctxmenu button,.task-menu button,.fld input,.fld select,.fld textarea,.bar,.bar.ms::before,.tog,.an-nav button{transition:none}
+  .tools button,.strip button,.seg button,.colbtn,.tplbtn,.verbtn,.tab,.switch i,.switch i::after,.chip2,.tcard,.modal button,.ctxmenu button,.task-menu button,.fld input,.fld select,.fld textarea,.bar,.bar.ms::before,.tog,.an-nav button,.r.dim{transition:none}
 }
