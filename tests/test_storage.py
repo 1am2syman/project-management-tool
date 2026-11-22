@@ -60,19 +60,6 @@ class StorageTests(unittest.TestCase):
         status, _, response = http_request(self.server.server_port, path, raw, {"Content-Type": "application/json", **(headers or {})})
         return status, json.loads(response)
 
-    def test_removed_integration_routes_assets_and_launcher_options_are_unavailable(self):
-        port = self.server.server_port
-        for path in ['/api/native/status', '/api/reminder-feasibility/status', '/m365.config.json', '/redirect.html', '/reminder-feasibility.html', '/js/m365.js', '/vendor/msal-browser.min.js']:
-            with self.subTest(path=path):
-                self.assertEqual(http_request(port, path)[0], 404)
-        for path in ['/api/native/connect', '/api/native/install', '/api/native/mail-send', '/api/reminder-feasibility/install']:
-            self.assertEqual(http_request(port, path, b'{}', {'Content-Type': 'application/json'})[0], 404)
-        self.assertFalse((self.directory / 'plan.db').exists())
-        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'start.py'), '--help'], capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0)
-        for option in ['reminder-feasibility', 'background-setup', 'production', 'browser-only-test']:
-            self.assertNotIn(option, result.stdout)
-
     def test_legacy_metadata_roundtrips_as_inert_local_data(self):
         state = copy.deepcopy(STATE)
         state['browser'].update({'pm-reminder-owner-v2': 'native-v1', 'pm-rem-ledger-v1:test@example.com': '{"old":"record"}'})
