@@ -247,6 +247,7 @@ export function openProjectFile(store, contents, options = {}) {
   try {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
+    if (!store.critical) store.criticalOnly = false;
     adoptCauses(project);
     const extra = { rem: project.rem, ...criticalPathFields(project.preferences.criticalPath), ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
     const id = store.addSheet(project.data, project.name, extra);

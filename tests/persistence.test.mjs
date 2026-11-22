@@ -1,7 +1,9 @@
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Store } from '../src/project_management_tool/web/js/model.js';
+import { Store, D } from '../src/project_management_tool/web/js/model.js';
 import { appState } from '../src/project_management_tool/web/js/appstate.js';
+import { agreeBaseline } from '../src/project_management_tool/web/js/delays.js';
+import { encodeProjectFile, openProjectFile } from '../src/project_management_tool/web/js/projectfiles.js';
 
 let memory;
 beforeEach(() => {
@@ -105,4 +107,64 @@ test('three-way critical path mode persists and stays compatible with boolean cr
   store.setPref('critical', false);
   assert.equal(store.criticalMode(), 'off');
   assert.equal(store.criticalOnly, false);
+});
+
+test('snapshotAgreed persists cleared undo/redo stacks so reload cannot undo the baseline agreement', () => {
+  const store = new Store(); store.auto = false;
+  let persisted = null;
+  store.persist = (state) => { persisted = JSON.parse(JSON.stringify(state)); };
+  store.setCell(3, 'name', 'Pre-baseline edit');
+  assert.equal(store.undoStack.length, 1);
+  const result = store.snapshotAgreed(() => agreeBaseline(store), { name: 'Agreed v1', type: 'baseline' });
+  assert.equal(result.error, undefined);
+  assert.equal(store.undoStack.length, 0);
+  assert.equal(persisted.history[store.wb.active].u.length, 0);
+  assert.equal(persisted.history[store.wb.active].r.length, 0);
+  const restored = new Store(persisted);
+  assert.equal(restored.undoStack.length, 0);
+  assert.equal(restored.baselined, true);
+});
+
+test('setTaskKind clears actualEnd on milestone conversion so saved state and .plan files stay valid', () => {
+  const store = new Store();
+  assert.equal(store.updateTask(3, { actualStart: D('2026-11-02'), actualEnd: D('2026-11-06') }), null);
+  assert.equal(store.setTaskKind(3, true), null);
+  assert.equal(store.byId.get(3).ms, true);
+  assert.equal(store.byId.get(3).actualEnd, undefined);
+  assert.equal(store.byId.get(3).actualStart, D('2026-11-02'));
+  assert.doesNotThrow(() => encodeProjectFile(store));
+});
+
+test('opening a .plan file with critical disabled resets criticalOnly', () => {
+  const source = new Store(); source.setCriticalMode('off');
+  const contents = encodeProjectFile(source);
+  const target = new Store(); target.setCriticalMode('only');
+  assert.equal(target.criticalMode(), 'only');
+  openProjectFile(target, contents);
+  assert.equal(target.critical, false);
+  assert.equal(target.criticalOnly, false);
+  assert.equal(target.criticalMode(), 'off');
+  assert.equal(new Store(saved(target)).criticalMode(), 'off');
+});
+
+test('deleteSheet and resetAll prune orphaned sheet view metadata and adopt avoids echo saves', () => {
+  const store = new Store();
+  const s1 = store.wb.active, s2 = store.newBlank();
+  appState.setItem('pm-selection', JSON.stringify({ [s1]: { selId: 3, col: 'name' }, [s2]: { selId: 2, col: 'name' } }));
+  appState.setItem('pm-grid-scroll', JSON.stringify({ [s1]: 10, [s2]: 20 }));
+  appState.setItem('pm-gantt-views', JSON.stringify({ [s1]: { fit: true, top: 0 }, [s2]: { fit: true, top: 5 } }));
+  store.deleteSheet(s2);
+  for (const key of ['pm-selection', 'pm-grid-scroll', 'pm-gantt-views']) {
+    const map = JSON.parse(appState.getItem(key));
+    assert.equal(s2 in map, false, `${key} pruned deleted sheet`);
+    assert.equal(s1 in map, true, `${key} kept live sheet`);
+  }
+  let calls = 0, writes = 0;
+  appState.onChange(() => { calls += 1; });
+  const origSet = localStorage.setItem;
+  localStorage.setItem = (k, v) => { writes += 1; origSet(k, v); };
+  appState.adopt('pm-delay-causes', '{"list":[],"next":1}');
+  assert.equal(appState.getItem('pm-delay-causes'), '{"list":[],"next":1}');
+  assert.equal(calls, 0);
+  assert.equal(writes, 0);
 });

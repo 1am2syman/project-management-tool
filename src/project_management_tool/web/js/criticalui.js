@@ -1,4 +1,5 @@
 import { esc, openModal } from './dom.js';
+import { diagnostics } from './diagnosticlog.js';
 
 export function createCriticalUI(ctx, grid) {
   const { store } = ctx, button = document.querySelector('#critical-target');
@@ -29,6 +30,7 @@ export function createCriticalUI(ctx, grid) {
       const value = modal.body.querySelector('#critical-target-select').value;
       const error = store.setCriticalTarget(value ? Number(value) : null, { method: method.value, threshold: method.value === 'float' ? Number(threshold.value) : options.threshold });
       if (error) { alert.textContent = error; alert.hidden = false; return; }
+      diagnostics.record('critical.apply', { method: method.value, threshold: method.value === 'float' ? Number(threshold.value) : options.threshold, hasTarget: !!value });
       modal.close();
     });
   }

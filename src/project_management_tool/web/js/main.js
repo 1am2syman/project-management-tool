@@ -28,21 +28,76 @@ const storage = await openProjectStorage();
 initDensity();
 const store = new Store(storage.initial);
 storage.attach(store);
-globalThis.PlanDiagnostics?.setStoreSummary(() => ({ sheetCount: store.wb.sheets.length, taskCount: store.tasks.length, linkCount: store.links.length, readOnly: store.readOnly, stale: !!store.stale, autoSchedule: store.auto, connectedFile: !!store.sheet().fileToken, undoCount: store.undoStack.length, saveStatus: $('#save-status').dataset.state }));
+globalThis.PlanDiagnostics?.setStoreSummary(() => {
+  const cal = store.calendar, crit = store.criticalOptions();
+  const customGlobalCalendar = (cal?.workdays?.length ?? 7) !== 7 || (cal?.holidays?.length ?? 0) > 0;
+  return {
+    sheetCount: store.wb.sheets.length,
+    taskCount: store.tasks.length,
+    linkCount: store.links.length,
+    readOnly: store.readOnly,
+    stale: !!store.stale,
+    autoSchedule: store.auto,
+    connectedFile: !!store.sheet().fileToken,
+    undoCount: store.undoStack.length,
+    redoCount: store.redoStack.length,
+    saveStatus: $('#save-status').dataset.state,
+    storageMode: storage.mode?.() || 'unknown',
+    templateCount: store.templates.length,
+    versionCount: store.versions().length,
+    previewingVersion: !!store.preview,
+    criticalMode: store.criticalMode(),
+    criticalMethod: crit.method,
+    criticalThreshold: crit.threshold,
+    hasCriticalTarget: !!store.criticalTarget(),
+    slackMode: ui.slackMode || 'selected',
+    density: dims.name,
+    focus: !!ui.focus,
+    fitMode: !!gantt?.isFit?.(),
+    customGlobalCalendar,
+    holidayCount: cal?.holidays?.length || 0,
+    taskCalendarCount: store.tasks.filter((t) => !!t.calendar).length,
+    baselined: !!store.baselined,
+    agreedTaskCount: store.tasks.filter((t) => !!t.agr).length,
+    pendingInclusionCount: store.tasks.filter((t) => !!t.inc).length,
+    delayLogCount: store.log?.length || 0,
+    starredMilestoneCount: store.stars?.size || 0,
+    violatedLinkCount: store.links.filter((l) => l.violated).length,
+    linkConflictCount: store.linkConflicts().length,
+    actualsTaskCount: store.tasks.filter((t) => t.actualStart != null || t.actualEnd != null).length,
+    notesTaskCount: store.tasks.filter((t) => !!t.notes).length,
+    analysisOpen: !!ctx?.analysis?.isOpen?.(),
+    taskDialogOpen: !!ctx?.taskDialog?.isOpen?.(),
+  };
+});
 diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
 const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
-let selections = {};
-try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) selections = value; } catch { /* no saved selection */ }
+let selectionTimer = 0, queuedSelection = null;
+function readSelections() {
+  try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+function flushSelection() {
+  clearTimeout(selectionTimer); selectionTimer = 0;
+  if (!queuedSelection) return;
+  const { id, value } = queuedSelection; queuedSelection = null;
+  if (!store.sheet(id)) return;
+  const selections = readSelections(), prev = selections[id];
+  if (prev && prev.selId === value.selId && prev.linkId === value.linkId && prev.col === value.col) return;
+  selections[id] = value;
+  appState.setItem('pm-selection', JSON.stringify(selections));
+}
 function restoreSelection() {
-  const current = selections[store.wb.active] || {};
+  flushSelection();
+  const current = readSelections()[store.wb.active] || {};
   ui.selId = current.selId ?? null; ui.linkId = current.linkId ?? null;
   ui.col = COLS.some((col) => col.id === current.col) ? current.col : 'name';
 }
 function rememberSelection() {
-  selections[store.wb.active] = { selId: ui.selId, linkId: ui.linkId, col: ui.col };
-  appState.setItem('pm-selection', JSON.stringify(selections));
+  queuedSelection = { id: store.wb.active, value: { selId: ui.selId, linkId: ui.linkId, col: ui.col } };
+  clearTimeout(selectionTimer); selectionTimer = setTimeout(flushSelection, 250);
 }
+window.addEventListener('pm-flush-view', flushSelection);
 restoreSelection();
 let raf = 0, toastT = 0, grid, gantt, sheets;
 

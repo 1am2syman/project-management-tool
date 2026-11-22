@@ -198,10 +198,20 @@ class ProjectStorage:
                 summary = "Edited relationships"
             elif any(path.startswith("/workbook/sheets/") and "/versions" in path for path in changes):
                 summary = "Updated project versions"
+            elif any(path.startswith("/workbook/sheets/") and ("/data/log" in path or path.endswith("/data/baselined") or "/data/agreedOrig" in path) for path in changes):
+                summary = "Updated delay accounting"
+            elif any(path.startswith("/workbook/sheets/") and "/data/calendar" in path for path in changes):
+                summary = "Updated calendar"
+            elif any(path.startswith("/workbook/sheets/") and "/data/stars" in path for path in changes):
+                summary = "Updated key milestones"
+            elif any((path.startswith("/workbook/sheets/") and "/criticalPath" in path) or path.startswith("/preferences/critical") for path in changes):
+                summary = "Updated critical path settings"
             elif any(path.startswith("/workbook") for path in changes):
                 summary = "Updated projects"
             elif any(path.startswith("/templates") for path in changes):
                 summary = "Updated templates"
+            elif "/browser/pm-delay-causes" in changes:
+                summary = "Updated delay causes"
             else:
                 summary = "Updated app settings or activity"
             snapshot = encode(hashes) if new_revision == 1 or new_revision % 50 == 0 else None

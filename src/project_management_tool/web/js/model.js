@@ -350,7 +350,20 @@ export class Store {
     } catch { /* disk saving can still work when browser storage is full */ }
     this.persist?.(this.savedState());
   }
-  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  pruneSheetMeta() {
+    const live = new Set(this.wb.sheets.map((s) => s.id));
+    for (const key of ['pm-selection', 'pm-grid-scroll', 'pm-gantt-views']) {
+      try {
+        const raw = appState.getItem(key); if (!raw) continue;
+        const map = JSON.parse(raw);
+        if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+        let dropped = false;
+        for (const id of Object.keys(map)) if (!live.has(id)) { delete map[id]; dropped = true; }
+        if (dropped) appState.setItem(key, JSON.stringify(map), { silent: true });
+      } catch { /* ignore invalid stored view map */ }
+    }
+  }
+  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.pruneSheetMeta(); this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   criticalMode() { return !this.critical ? 'off' : this.criticalOnly ? 'only' : 'show'; }
   setCriticalMode(mode) { this.critical = mode !== 'off'; this.criticalOnly = mode === 'only'; this.save(); this.emit(); }
   setPref(k, v) {
@@ -432,7 +445,7 @@ export class Store {
   deleteSheet(id) {
     const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
     if (i < 0 || ws.length < 2) return false;
-    ws.splice(i, 1); this.hist.delete(id); delete this.criticalTargets[id];
+    ws.splice(i, 1); this.hist.delete(id); delete this.criticalTargets[id]; this.pruneSheetMeta();
     if (id === this.wb.active) { this.undoStack = []; this.redoStack = []; this.enter(ws[Math.min(i, ws.length - 1)].id); } else { this.save(); this.emit('meta'); }
     return true;
   }
@@ -477,7 +490,7 @@ export class Store {
     const fail = agree(); if (fail) return { error: fail };
     const r = this.snapshotVersion(opts);
     if (r.error) { this.undo(); this.redoStack.pop(); return r; }
-    this.undoStack = []; this.redoStack = []; this.emit();
+    this.undoStack = []; this.redoStack = []; this.save(); this.emit();
     return r;
   }
   snapshotVersion({ name = '', note = '', by = '', type = null } = {}) {
@@ -912,7 +925,7 @@ export class Store {
     if (typeof milestone !== 'boolean') return 'Unknown task type';
     if (task.ms === milestone) return null;
     const pre = this.hook?.before() ?? null; // a conversion moves the finish like a duration edit: later asks why, earlier is a recovery
-    this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; });
+    this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; if (milestone) delete task.actualEnd; });
     this.hook?.after({ id, kind: 'kind', pre });
     return null;
   }

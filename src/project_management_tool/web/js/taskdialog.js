@@ -7,6 +7,7 @@ import { appState } from './appstate.js';
 import { slackLabel } from './slackui.js';
 import { loadCauses } from './causes.js';
 import * as DL from './delays.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const TYPE_LABEL = { FS: 'Finish → Start', SS: 'Start → Start', FF: 'Finish → Finish', SF: 'Start → Finish' };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -103,6 +104,8 @@ export function createTaskDialog(ctx, grid) {
     modal.appendChild(footer);
 
     bindModalEvents(modal, current.body, footer);
+    const openedTask = store.byId.get(id), openedInfo = store.info.get(id);
+    diagnostics.record('taskDialog.open', { kind: openedInfo?.summary ? 'summary' : openedTask?.ms ? 'milestone' : 'task', readOnly: !!store.structureError() });
     renderAll();
   }
 
@@ -258,9 +261,11 @@ export function createTaskDialog(ctx, grid) {
 
     const err = store.updateTask(taskId, patch);
     if (err) {
+      diagnostics.record('taskDialog.save', { ok: false });
       if (errBox) errBox.textContent = err;
       return false;
     }
+    diagnostics.record('taskDialog.save', { ok: true, fields: Object.keys(patch).length });
     dirty = false;
     const savedName = store.byId.get(taskId)?.name || v.name;
     // If the schedule edit opened the delay-accounting popover, close this modal so the popover sits unobstructed beside the bar.

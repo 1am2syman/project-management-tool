@@ -1,6 +1,7 @@
 import { cleanCalendar, calendarError, dateDay } from './calendar.js';
 import { fmtDate, fmtISO } from './model.js';
 import { esc, setHTML, openModal } from './dom.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function weekLabel(workdays) {
@@ -115,8 +116,9 @@ export function createCalendarUI(ctx, grid) {
         value.holidays.push({ date: dateInput.value, name: nameInput.value.trim() }); dateInput.value = ''; nameInput.value = ''; holidays(); preview();
       } else if (button.dataset.holidayRemove != null) { draft().holidays.splice(+button.dataset.holidayRemove, 1); holidays(); preview(); }
       else if (button.hasAttribute('data-calendar-apply')) {
-        readWeek(); const error = store.setCalendar(useGlobal ? null : draft(), target);
+        readWeek(); const applied = useGlobal ? null : draft(); const error = store.setCalendar(applied, target);
         if (error) { errorBox.textContent = error; return; }
+        diagnostics.record('calendar.apply', { scope: target == null ? 'global' : 'task', reset: useGlobal, workdays: applied ? applied.workdays.length : store.calendar.workdays.length, holidayCount: applied ? applied.holidays.length : store.calendar.holidays.length });
         dialog.close(); ctx.toast(target == null ? 'Global calendar applied' : useGlobal ? 'Task now uses the global calendar' : 'Task calendar applied');
       }
     });

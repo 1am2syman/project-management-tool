@@ -406,7 +406,7 @@ export function createGantt(ctx) {
     if (view?.fit) { fitMode = true; fit(); gb.scrollTop = Number(view.top) || 0; ctx.syncV(gb.scrollTop); syncHead(); restoringView = false; return; }
     gb.scrollLeft = Number.isFinite(view?.leftDay) ? Math.max(0, xOf(view.leftDay)) : Math.max(0, xOf(store.project.start) - 36);
     gb.scrollTop = Number(view?.top) || 0; ctx.syncV(gb.scrollTop);
-    syncHead(); restoringView = false; queueView();
+    syncHead(); restoringView = false; if (!view) queueView();
   }
   function goToday() { fitMode = false; updateSeg(); queueView(); gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
   function reveal(id, horizontal) {
@@ -567,6 +567,7 @@ export function createGantt(ctx) {
     zoomStep: (dir) => setPpd(ppd * (dir > 0 ? 1.3 : 1 / 1.3)),
     cancelDrag: () => finish(false),
     isDragging: () => !!drag && drag.moved,
+    isFit: () => fitMode,
     setScrollTop: (v) => { if (gb.scrollTop !== v) gb.scrollTop = v; },
     popOpen: () => ctx.relationships.isOpen(),
   };
