@@ -100,6 +100,7 @@ export async function openProjectStorage() {
 
   return {
     initial, markStale,
+    mode: () => mode,
     // Whether a server revision is one this window loaded or wrote. An in-flight save can be committed on the
     // server before its response reaches this window, so wait for it before answering.
     async ownsRevision(serverRevision) {

@@ -138,8 +138,19 @@ function cleanAgreed(r, ms) {
   if (r.inc === true && !out.agr) out.inc = true;
   return out;
 }
-// Templates describe a plan's shape only: agreed dates belong to the project they were agreed in.
-const withoutAgreed = (t) => { const c = { ...t }; delete c.agr; delete c.inc; return c; };
+// Templates describe a plan's shape only: agreed dates and recorded actuals belong to the project they happened in.
+const withoutAgreed = (t) => { const c = { ...t }; delete c.agr; delete c.inc; delete c.actualStart; delete c.actualEnd; return c; };
+function cleanActuals(r, ms) {
+  const out = {};
+  const as = dayInt(r.actualStart), ae = ms ? null : dayInt(r.actualEnd);
+  if (as != null) out.actualStart = as;
+  if (ae != null && (as == null || ae >= as)) out.actualEnd = ae;
+  return out;
+}
+function cleanNotes(r) {
+  const n = typeof r.notes === 'string' ? r.notes.trim().slice(0, 2000) : '';
+  return n ? { notes: n } : {};
+}
 const text = (v, n) => String(v ?? '').trim().slice(0, n);
 export function cleanLog(list) {
   const out = [], ids = new Set();
@@ -201,7 +212,7 @@ function sanitize(d) {
     const rawDuration = Math.round(Number(r.dur));
     const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}), ...cleanAgreed(r, ms) });
+    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}), ...cleanAgreed(r, ms), ...cleanActuals(r, ms), ...cleanNotes(r) });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -264,10 +275,10 @@ function builtins() {
 export class Store {
   constructor(saved) {
     this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map(); this.preview = null;
-    this.auto = true; this.critical = true; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
+    this.auto = true; this.critical = true; this.criticalOnly = false; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
     try {
       const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
-      if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical;
+      if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; if ('criticalOnly' in p) this.criticalOnly = !!p.criticalOnly;
       if (p.criticalTargets && typeof p.criticalTargets === 'object' && !Array.isArray(p.criticalTargets)) {
         for (const [sheet, id] of Object.entries(p.criticalTargets)) if (Number.isSafeInteger(id) && id > 0) this.criticalTargets[sheet] = id;
       }
@@ -327,7 +338,7 @@ export class Store {
   savedState() {
     const history = Object.fromEntries([...this.hist].filter(([id]) => this.sheet(id)));
     history[this.wb.active] = { u: this.undoStack, r: this.redoStack };
-    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
+    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
   }
   save() {
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
@@ -335,14 +346,30 @@ export class Store {
     if (!this.preview) this.sheet().data = JSON.parse(this.serialize());
     try {
       localStorage.setItem(WB, JSON.stringify(this.wb));
-      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalTargets: this.criticalTargets }));
+      localStorage.setItem(`${KEY}:prefs`, JSON.stringify({ auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: this.criticalTargets }));
     } catch { /* disk saving can still work when browser storage is full */ }
     this.persist?.(this.savedState());
   }
-  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  pruneSheetMeta() {
+    const live = new Set(this.wb.sheets.map((s) => s.id));
+    for (const key of ['pm-selection', 'pm-grid-scroll', 'pm-gantt-views']) {
+      try {
+        const raw = appState.getItem(key); if (!raw) continue;
+        const map = JSON.parse(raw);
+        if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+        let dropped = false;
+        for (const id of Object.keys(map)) if (!live.has(id)) { delete map[id]; dropped = true; }
+        if (dropped) appState.setItem(key, JSON.stringify(map), { silent: true });
+      } catch { /* ignore invalid stored view map */ }
+    }
+  }
+  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.pruneSheetMeta(); this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  criticalMode() { return !this.critical ? 'off' : this.criticalOnly ? 'only' : 'show'; }
+  setCriticalMode(mode) { this.critical = mode !== 'off'; this.criticalOnly = mode === 'only'; this.save(); this.emit(); }
   setPref(k, v) {
     const catchUp = k === 'auto' && v && !this.auto, pre = catchUp ? this.hook?.before() ?? null : null;
-    this[k] = v; if (k === 'auto' && v) this.tx(() => {});
+    this[k] = v; if (k === 'critical' && !v) this.criticalOnly = false;
+    if (k === 'auto' && v) this.tx(() => {});
     if (catchUp) this.hook?.after({ id: null, kind: 'auto', pre }); // tasks that waited while Auto-schedule was off catch up now
     this.save(); this.emit();
   }
@@ -418,7 +445,7 @@ export class Store {
   deleteSheet(id) {
     const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
     if (i < 0 || ws.length < 2) return false;
-    ws.splice(i, 1); this.hist.delete(id); delete this.criticalTargets[id];
+    ws.splice(i, 1); this.hist.delete(id); delete this.criticalTargets[id]; this.pruneSheetMeta();
     if (id === this.wb.active) { this.undoStack = []; this.redoStack = []; this.enter(ws[Math.min(i, ws.length - 1)].id); } else { this.save(); this.emit('meta'); }
     return true;
   }
@@ -463,7 +490,7 @@ export class Store {
     const fail = agree(); if (fail) return { error: fail };
     const r = this.snapshotVersion(opts);
     if (r.error) { this.undo(); this.redoStack.pop(); return r; }
-    this.undoStack = []; this.redoStack = []; this.emit();
+    this.undoStack = []; this.redoStack = []; this.save(); this.emit();
     return r;
   }
   snapshotVersion({ name = '', note = '', by = '', type = null } = {}) {
@@ -719,17 +746,18 @@ export class Store {
     for (const d of desc) { up.delete(d); down.delete(d); }
     return { anc, desc, up, down, upL, downL };
   }
-  settle() { this.rev = (this.rev || 0) + 1; this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
+  settle() { this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
 
   // ---- derived state ----
   recalc() {
+    this.rev = (this.rev || 0) + 1;
     const T = this.tasks, n = T.length;
     this.byId = new Map(T.map((t) => [t.id, t]));
     const info = new Map();
     for (let i = 0; i < n; i++) { let e = i; while (e + 1 < n && T[e + 1].level > T[i].level) e++; info.set(T[i].id, { i, sub: e, summary: e > i }); }
     this.info = info;
-    // A summary has no independent schedule or calendar; undo restores its former leaf state.
-    for (const t of T) if (info.get(t.id).summary) delete t.calendar;
+    // A summary has no independent schedule, calendar or leaf actuals; undo restores its former leaf state.
+    for (const t of T) if (info.get(t.id).summary) { delete t.calendar; delete t.actualStart; delete t.actualEnd; }
     this.links = this.links.filter((l) => info.has(l.from) && info.has(l.to) && !info.get(l.from).summary && !info.get(l.to).summary);
     this.index();
     // summaries
@@ -897,7 +925,7 @@ export class Store {
     if (typeof milestone !== 'boolean') return 'Unknown task type';
     if (task.ms === milestone) return null;
     const pre = this.hook?.before() ?? null; // a conversion moves the finish like a duration edit: later asks why, earlier is a recovery
-    this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; });
+    this.tx(() => { task.ms = milestone; task.dur = milestone ? 0 : 1; if (milestone) delete task.actualEnd; });
     this.hook?.after({ id, kind: 'kind', pre });
     return null;
   }
@@ -954,14 +982,16 @@ export class Store {
     if (this.reaches(to, from)) return 'That link would create a cycle';
     return null;
   }
-  addLink(from, fromEnd, to, toEnd) {
+  addLink(from, fromEnd, to, toEnd, lag = 0) {
     if (this.readOnly) return this.preview ? PREVIEW_LOCK : 'This project is read-only';
     if (this.stale) return 'This project changed in another tab; reload before editing relationships';
     const type = (fromEnd === 'f' ? 'F' : 'S') + (toEnd === 'f' ? 'F' : 'S');
+    const lagDays = Number(lag);
+    if (!Number.isSafeInteger(lagDays) || Math.abs(lagDays) > 99999999) return 'Lag must be a whole number of days';
     const err = this.canLink(from, to); if (err) return err;
     if (this.linksBetween(from, to).length) return 'A relationship already exists between these tasks';
     const pre = this.hook?.before() ?? null;
-    this.tx(() => { this.links.push({ id: 'l' + this.nextLink++, from, to, type, lag: 0 }); });
+    this.tx(() => { this.links.push({ id: 'l' + this.nextLink++, from, to, type, lag: lagDays }); });
     this.hook?.after({ id: to, kind: 'link', pre });
     return null;
   }
@@ -1001,6 +1031,133 @@ export class Store {
     const error = this.applyCell(id, col, raw);
     if (track && !error) this.hook.after({ id, kind: col, pre });
     return error;
+  }
+  // Atomic multi-field update for the item details dialog: validates everything before one undoable transaction.
+  updateTask(id, patch = {}) {
+    const err = this.structureError(); if (err) return err;
+    const t = this.byId.get(id), f = this.info.get(id);
+    if (!t || !f) return 'Task no longer exists';
+    const work = this.workFor(t), summary = f.summary;
+
+    const next = {};
+    if ('name' in patch) {
+      const n = String(patch.name ?? '').trim().slice(0, 200);
+      if (!n) return 'Name cannot be empty';
+      if (n !== t.name) next.name = n;
+    }
+    if ('owner' in patch) {
+      const o = String(patch.owner ?? '').trim().slice(0, 80);
+      if (o !== (t.owner || '')) next.owner = o;
+    }
+    if ('email' in patch) {
+      const e = String(patch.email ?? '').trim();
+      if (e && !isEmail(e)) return 'Not a valid email address';
+      if (e !== (t.email || '')) next.email = e;
+    }
+    if ('notes' in patch) {
+      const n = String(patch.notes ?? '').trim().slice(0, 2000);
+      if (n !== (t.notes || '')) next.notes = n;
+    }
+
+    const willBeMs = !summary && 'ms' in patch ? !!patch.ms : t.ms;
+    const msChanged = !summary && 'ms' in patch && willBeMs !== t.ms;
+    if (summary && 'ms' in patch && !!patch.ms) return 'A cascade with child tasks cannot be converted to a milestone';
+
+    let modeChanged = false, nextMode = t.scheduling;
+    if (!summary && 'scheduling' in patch) {
+      if (!['auto', 'manual', 'anchor'].includes(patch.scheduling)) return 'Unknown scheduling mode';
+      if (patch.scheduling !== t.scheduling) { modeChanged = true; nextMode = patch.scheduling; }
+    }
+
+    let startChanged = false, nextStart = f.start;
+    if ('start' in patch && patch.start !== undefined) {
+      const s = dayInt(patch.start);
+      if (s == null) return 'Start date is invalid';
+      if (s !== f.start) { startChanged = true; nextStart = s; }
+    }
+
+    let durChanged = false, nextDur = msChanged ? (willBeMs ? 0 : 1) : t.dur;
+    if (!summary && !willBeMs && 'dur' in patch && patch.dur !== undefined) {
+      const d = Math.round(Number(patch.dur));
+      if (!Number.isSafeInteger(d) || d < 1 || d > 99999999) return 'Duration must be at least 1 working day';
+      if (d !== nextDur || msChanged) { durChanged = true; nextDur = d; }
+    }
+
+    let endChanged = false, nextEnd = null;
+    if (!summary && !willBeMs && !durChanged && 'end' in patch && patch.end !== undefined) {
+      const e = dayInt(patch.end);
+      if (e == null) return 'Finish date is invalid';
+      if (e !== f.end - 1 || msChanged) { endChanged = true; nextEnd = e; }
+    }
+
+    if (!summary) {
+      const effStart = startChanged ? work.next(nextStart) : t.start;
+      const effDur = willBeMs ? 0 : endChanged ? Math.max(1, work.count(effStart, nextEnd + 1)) : nextDur;
+      const lb = this.lowerBound(id);
+      if (modeChanged && nextMode === 'auto' && !startChanged && this.incoming(id).length > 0 && (!Number.isSafeInteger(lb) || Math.abs(work.finish(lb, effDur)) > 99999999)) {
+        return 'Calculated dates are outside the supported range';
+      }
+      if (Math.abs(effStart) > 99999999 || Math.abs(work.finish(effStart, effDur)) > 99999999) {
+        return 'Dates are outside the supported range';
+      }
+    }
+
+    if (!summary && 'progress' in patch && patch.progress !== undefined) {
+      const p = Math.round(Number(patch.progress));
+      if (!Number.isFinite(p) || p < 0 || p > 100) return 'Progress must be 0–100';
+      if (p !== t.progress) next.progress = p;
+    }
+
+    if (!summary && ('actualStart' in patch || 'actualEnd' in patch || msChanged)) {
+      const as = 'actualStart' in patch ? (patch.actualStart == null || patch.actualStart === '' ? null : dayInt(patch.actualStart)) : (t.actualStart ?? null);
+      const ae = willBeMs ? null : ('actualEnd' in patch ? (patch.actualEnd == null || patch.actualEnd === '' ? null : dayInt(patch.actualEnd)) : (t.actualEnd ?? null));
+      if ('actualStart' in patch && patch.actualStart != null && patch.actualStart !== '' && as == null) return 'Actual start date is invalid';
+      if (!willBeMs && 'actualEnd' in patch && patch.actualEnd != null && patch.actualEnd !== '' && ae == null) return 'Actual finish date is invalid';
+      if (as != null && ae != null && ae < as) return 'Actual finish cannot be before actual start';
+      if (as !== (t.actualStart ?? null)) next.actualStart = as;
+      if (ae !== (t.actualEnd ?? null)) next.actualEnd = ae;
+    }
+
+    const schedChanged = msChanged || modeChanged || startChanged || durChanged || endChanged;
+    const hookKind = msChanged ? 'kind' : startChanged ? 'start' : (durChanged || endChanged) ? 'dur' : modeChanged ? 'mode' : null;
+    const pre = schedChanged && this.hook ? this.hook.before() : null;
+
+    this.tx(() => {
+      if ('name' in next) t.name = next.name;
+      if ('owner' in next) t.owner = next.owner;
+      if ('email' in next) t.email = next.email;
+      if ('notes' in next) { if (next.notes) t.notes = next.notes; else delete t.notes; }
+      if ('progress' in next) t.progress = next.progress;
+      if ('actualStart' in next) { if (next.actualStart != null) t.actualStart = next.actualStart; else delete t.actualStart; }
+      if ('actualEnd' in next) { if (next.actualEnd != null) t.actualEnd = next.actualEnd; else delete t.actualEnd; }
+
+      if (msChanged) { t.ms = willBeMs; t.dur = willBeMs ? 0 : nextDur; }
+      if (modeChanged) t.scheduling = nextMode;
+
+      if (startChanged) {
+        if (summary) this.dragMove(id, nextStart - f.start);
+        else {
+          if (!modeChanged && t.scheduling === 'auto') t.scheduling = 'manual';
+          let s = nextStart;
+          if (this.auto && t.scheduling === 'anchor') s = Math.max(s, this.lowerBound(id));
+          t.start = work.next(s);
+        }
+      }
+      if (!summary && !t.ms) {
+        if (durChanged) t.dur = nextDur;
+        else if (endChanged) {
+          if (!modeChanged && t.scheduling === 'auto' && !t.agr) t.scheduling = 'manual';
+          t.dur = Math.max(1, work.count(t.start, nextEnd + 1));
+          if (this.auto && t.scheduling === 'anchor') t.dur = Math.max(t.dur, work.count(t.start, this.endLB(id)));
+        }
+      }
+      if (modeChanged && nextMode === 'auto' && !startChanged && this.incoming(id).length > 0) {
+        t.start = work.next(this.lowerBound(id));
+      }
+    });
+
+    if (schedChanged && this.hook && hookKind) this.hook.after({ id, kind: hookKind, pre });
+    return null;
   }
   applyCell(id, col, raw) {
     const t = this.byId.get(id), work = this.workFor(t), f = this.info.get(id), v = String(raw).trim();

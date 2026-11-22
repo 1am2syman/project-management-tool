@@ -4,6 +4,7 @@ import { readSpreadsheet } from './xlsxread.js';
 import { cleanCalendar, calendarError, WorkingCalendar } from './calendar.js';
 import { buildTemplate } from './xlsx.js';
 import { esc, setHTML, openModal } from './dom.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const MAX_TASKS = 5000;
 const ALIASES = {
@@ -199,7 +200,11 @@ export function createImport(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#impbtn');
   const download = (blob, name) => { const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); };
-  const getTemplate = async () => { try { download(await buildTemplate(), 'project-import-template.xlsx'); ctx.toast('Template downloaded — fill in the Tasks sheet, then import it'); } catch (e) { console.error(e); ctx.toast(`Could not build the template: ${e.message}`); } };
+  const getTemplate = async () => {
+    const op = diagnostics.begin('import.template');
+    try { download(await buildTemplate(), 'project-import-template.xlsx'); op.end(); ctx.toast('Template downloaded — fill in the Tasks sheet, then import it'); }
+    catch (e) { op.fail(e); console.error(e); ctx.toast(`Could not build the template: ${e.message}`); }
+  };
 
   let dlg = null;
   const baseName = (f) => f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Imported project';
@@ -234,6 +239,8 @@ export function createImport(ctx) {
   async function load(file) {
     if (!dlg) open();
     state = { file, sheets: [], busy: true, error: '' }; paint();
+    const ext = (file?.name || '').match(/\.(xlsx|xlsm|csv|tsv|txt)$/i)?.[0]?.toLowerCase() || 'other';
+    const op = diagnostics.begin('import.read', { bytes: file?.size || 0, extension: ext });
     try {
       const raw = await readSpreadsheet(file);
       const calendars = spreadsheetCalendars(raw);
@@ -242,7 +249,8 @@ export function createImport(ctx) {
         return { ...res, src: s.name, title: raw.length === 1 || /^(csv|tasks?|sheet\d*|import|plan)$/i.test(s.name) ? baseName(file) : s.name, on: res.ok && !skip, i };
       });
       if (!state.sheets.length) state.error = 'The file is empty.';
-    } catch (e) { console.error(e); state.error = e.message || String(e); }
+      op.end({ sheetCount: state.sheets.length, okCount: state.sheets.filter((s) => s.ok).length });
+    } catch (e) { op.fail(e); console.error(e); state.error = e.message || String(e); }
     state.busy = false; paint();
   }
 
@@ -285,6 +293,7 @@ export function createImport(ctx) {
       const name = (s.title || s.src || 'Imported project').trim().slice(0, 60) || 'Imported project';
       store.addSheet(s.data, name); n += 1; last = name;
     }
+    diagnostics.record('import.commit', { sheetCount: n, rowCount: pick.reduce((sum, s) => sum + s.data.tasks.length, 0) });
     dlg.close(); ctx.requestRender();
     ctx.toast(n === 1 ? `Imported “${last}”` : `Imported ${n} projects`);
     requestAnimationFrame(() => document.querySelector('[data-fit]')?.click());

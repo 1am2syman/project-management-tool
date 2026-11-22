@@ -33,8 +33,15 @@ const GROUPS = [
   { id: 'trend', label: 'Trend' },
   { id: 'dep', label: 'Dependencies & team' },
 ];
-const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
-const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgba(79,102,240,${(0.05 + v * 0.62).toFixed(3)});${v > 0.62 ? 'color:#fff;font-weight:600;' : ''}`; };
+const AV = ['#2d3a4b', '#0f766e', '#b45309', '#9f1239', '#57544d', '#15803d', '#7c2d12', '#3f3c36'];
+// Subtle architectural tonal wash for durations and hairline progress bar for completion, keeping ink figures razor-legible.
+const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgb(var(--heat,22 21 19) / ${(0.025 + v * 0.115).toFixed(3)});${v > 0.55 ? 'font-weight:600;' : ''}`; };
+const progStyle = (p) => {
+  p = Math.max(0, Math.min(100, Math.round(p)));
+  if (!p) return '';
+  if (p >= 100) return 'background:linear-gradient(to top,#15803d 2.5px,transparent 2.5px),#f0fdf4;color:#15803d;font-weight:600;';
+  return `background:linear-gradient(to right,rgb(var(--heat,22 21 19) / .82) ${p}%,rgb(var(--heat,22 21 19) / .10) ${p}%) left bottom/100% 2.5px no-repeat,linear-gradient(to right,rgb(var(--heat,22 21 19) / .055) ${p}%,transparent ${p}%);`;
+};
 const smooth = (x) => x * x * (3 - 2 * x);
 
 function spark(f) {
@@ -42,11 +49,11 @@ function spark(f) {
   const pts = []; for (let i = 0; i <= 14; i++) { const u = i / 14; pts.push(`${x(u).toFixed(1)},${y(smooth(u)).toFixed(1)}`); }
   const fr = Math.max(0, Math.min(1, (today - s) / (e - s))), p = f.progress / 100;
   const behind = p < fr - 0.05, done = f.progress >= 100, started = today >= s || f.progress > 0;
-  const col = done ? '#15803d' : !started ? '#94a3b8' : behind ? '#dc2626' : '#15803d';
+  const col = done ? '#15803d' : !started ? '#a8a39a' : behind ? '#e11d48' : '#15803d';
   const ex = x(started ? Math.max(fr, p > 0 ? Math.min(fr, 1) : 0) : 0), ey = y(started ? p : 0);
-  return `<svg viewBox="0 0 ${W} ${H}"><polyline points="${pts.join(' ')}" stroke="#aab4c6" stroke-width="1.3" fill="none"/>` +
-    (started ? `<polyline points="${x(0)},${y(0)} ${ex.toFixed(1)},${ey.toFixed(1)}" stroke="#5b7cfa" stroke-width="1.8" fill="none"/>` : '') +
-    `<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.2" fill="${col}" stroke="none"/></svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}"><polyline points="${pts.join(' ')}" stroke="#d6d2c9" stroke-width="1.3" fill="none"/>` +
+    (started ? `<polyline points="${x(0)},${y(0)} ${ex.toFixed(1)},${ey.toFixed(1)}" stroke="#161513" stroke-width="1.75" fill="none"/>` : '') +
+    `<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.2" fill="${col}" stroke="#fff" stroke-width="1.2"/></svg>`;
 }
 
 export function createGrid(ctx) {
@@ -128,7 +135,7 @@ export function createGrid(ctx) {
       case 'start': html = fmtDate(f.start); break;
       case 'end': html = fmtDate(t.ms && !f.summary ? t.start : f.end - 1); break;
       case 'dur': if (t.ms && !f.summary) { html = '◆'; cls += ' dim'; } else { cls += ' heat'; style = heat(dur / maxDur * 0.9); html = dur; } break;
-      case 'progress': { const p = Math.round(f.progress); cls += ' heat'; style = p ? heat(p / 100) : ''; html = p ? p + '%' : '<span style="color:#b6c0d0">·</span>'; break; }
+      case 'progress': { const p = Math.round(f.progress); cls += ' heat prog-c'; style = progStyle(p); html = p ? p + '%' : '<span class="c-empty">·</span>'; break; }
       case 'float': case 'freeFloat': {
         const value = c.id === 'float' ? f.float : f.freeFloat;
         cls += ' slack-cell';
@@ -185,7 +192,7 @@ export function createGrid(ctx) {
       else if (c.id === 'start') v = fmtDate(P.start);
       else if (c.id === 'end') v = fmtDate(P.end - 1);
       else if (c.id === 'dur') v = pd;
-      else if (c.id === 'progress') { cl += ' heat'; st = heat(allProg / 100 * 0.95 + 0.1); v = Math.round(allProg) + '%'; }
+      else if (c.id === 'progress') { cl += ' heat prog-c'; st = progStyle(allProg); v = Math.round(allProg) + '%'; }
       else if (c.id === 'float') { cl += ' zero'; v = store.critCount + ' crit'; }
       else if (c.dly) { const T = ctx.delay.total(c.id); v = T.html; cl += T.cls; }
       else if (c.id === 'owner') v = new Set(store.tasks.map((t) => t.owner).filter(Boolean)).size + ' people';

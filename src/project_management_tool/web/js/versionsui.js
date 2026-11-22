@@ -2,6 +2,7 @@
 // restore / copy / rename / delete. Versions belong to the active project tab.
 import { esc, openModal, setHTML } from './dom.js';
 import { metrics, fmtDay } from './versiondiff.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const when = (ts) => (ts ? new Date(ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'unknown date');
 export const versionLabel = (v) => `v${v.n} · ${v.name}`;
@@ -82,8 +83,10 @@ export function createVersionsUI(ctx) {
 
   // ---------- actions ----------
   function show(vid) {
-    if (!vid) { store.exitPreview(); return; }
-    const error = store.previewVersion(vid); if (error) ctx.toast(error);
+    if (!vid) { store.exitPreview(); diagnostics.record('version.preview', { active: false }); return; }
+    const error = store.previewVersion(vid);
+    if (error) ctx.toast(error);
+    else diagnostics.record('version.preview', { active: true });
   }
   function snapshot() {
     if (store.stale) { ctx.toast(store.versionError()); return; }
@@ -106,6 +109,7 @@ export function createVersionsUI(ctx) {
       // An Agreed baseline agrees the dates and saves the version as one step; the agreed dates are part of the saved plan.
       const r = type === 'baseline' ? store.snapshotAgreed(() => ctx.delay.agreeOnSave(body), opts) : store.snapshotVersion(opts);
       if (r.error) { err.textContent = r.error; return; }
+      diagnostics.record('version.snapshot', { type: type || 'none', versionCount: store.versions().length });
       dialog.close(); ctx.toast(type === 'baseline' ? `Saved ${versionLabel(r.version)} · undo history starts here` : `Saved ${versionLabel(r.version)}`);
     };
     body.querySelector('[data-save]').addEventListener('click', save);
@@ -130,7 +134,9 @@ export function createVersionsUI(ctx) {
   function remove(vid) {
     const v = store.version(vid); if (!v) return;
     if (!window.confirm(`Delete ${versionLabel(v)}? This cannot be undone.`)) return;
-    const e = store.deleteVersion(vid); ctx.toast(e || `Deleted ${versionLabel(v)}`);
+    const e = store.deleteVersion(vid);
+    if (!e) diagnostics.record('version.delete', { versionCount: store.versions().length });
+    ctx.toast(e || `Deleted ${versionLabel(v)}`);
   }
   function restore(vid) {
     const v = store.version(vid); if (!v) return;
@@ -145,17 +151,20 @@ export function createVersionsUI(ctx) {
     const body = dialog.body;
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
     body.querySelector('[data-restore]').addEventListener('click', () => {
-      if (body.querySelector('#vkeep').checked) {
+      const savedCurrent = body.querySelector('#vkeep').checked;
+      if (savedCurrent) {
         const r = store.snapshotVersion({ name: `Before restoring v${v.n}`, by: '' });
         if (r.error) { body.querySelector('.set-err').textContent = r.error; return; }
       }
       const e = store.restoreVersion(vid);
       if (e) { body.querySelector('.set-err').textContent = e; return; }
+      diagnostics.record('version.restore', { savedCurrent });
       dialog.close(); ctx.toast(`Restored ${versionLabel(v)} · Undo reverses it`);
     });
   }
   function copy(vid) {
     const r = store.copyVersionAsProject(vid);
+    if (!r.error) diagnostics.record('version.copy');
     ctx.toast(r.error || `Created “${store.sheet().name}” from the version`);
   }
 

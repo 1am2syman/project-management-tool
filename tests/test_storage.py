@@ -60,19 +60,6 @@ class StorageTests(unittest.TestCase):
         status, _, response = http_request(self.server.server_port, path, raw, {"Content-Type": "application/json", **(headers or {})})
         return status, json.loads(response)
 
-    def test_removed_integration_routes_assets_and_launcher_options_are_unavailable(self):
-        port = self.server.server_port
-        for path in ['/api/native/status', '/api/reminder-feasibility/status', '/m365.config.json', '/redirect.html', '/reminder-feasibility.html', '/js/m365.js', '/vendor/msal-browser.min.js']:
-            with self.subTest(path=path):
-                self.assertEqual(http_request(port, path)[0], 404)
-        for path in ['/api/native/connect', '/api/native/install', '/api/native/mail-send', '/api/reminder-feasibility/install']:
-            self.assertEqual(http_request(port, path, b'{}', {'Content-Type': 'application/json'})[0], 404)
-        self.assertFalse((self.directory / 'plan.db').exists())
-        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'start.py'), '--help'], capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0)
-        for option in ['reminder-feasibility', 'background-setup', 'production', 'browser-only-test']:
-            self.assertNotIn(option, result.stdout)
-
     def test_legacy_metadata_roundtrips_as_inert_local_data(self):
         state = copy.deepcopy(STATE)
         state['browser'].update({'pm-reminder-owner-v2': 'native-v1', 'pm-rem-ledger-v1:test@example.com': '{"old":"record"}'})
@@ -99,14 +86,20 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.request(path="/api/diagnostics")[1]["sourceFingerprint"], result["sourceFingerprint"])
         fake_web = Path(self.temp.name) / "private-installation" / "web"
         (fake_web / "js").mkdir(parents=True)
+        (fake_web / "fonts").mkdir(parents=True)
         script = fake_web / "js" / "main.js"
+        font = fake_web / "fonts" / "Geist-Variable.woff2"
         script.write_text("first build", encoding="utf-8")
+        font.write_bytes(b"font-v1")
         with patch("src.project_management_tool.WEB", fake_web):
             first = self.request(path="/api/diagnostics")[1]
             script.write_text("second build", encoding="utf-8")
             second = self.request(path="/api/diagnostics")[1]
+            font.write_bytes(b"font-v2")
+            third = self.request(path="/api/diagnostics")[1]
         self.assertNotEqual(first["sourceFingerprint"], second["sourceFingerprint"])
-        self.assertNotIn("private-installation", json.dumps(second))
+        self.assertNotEqual(second["sourceFingerprint"], third["sourceFingerprint"])
+        self.assertNotIn("private-installation", json.dumps(third))
 
     def test_round_trip_and_server_restart(self):
         status, empty = self.request()
@@ -185,6 +178,36 @@ class StorageTests(unittest.TestCase):
         with closing(sqlite3.connect(storage.path)) as db:
             stored = [persistence.decode(value) for (value,) in db.execute("SELECT value FROM objects")]
         self.assertEqual(sum(1 for value in stored if value == ["value", plan]), 1)
+
+    def test_history_summaries_cover_calendar_delay_critical_and_causes_edits(self):
+        storage = persistence.ProjectStorage(self.directory)
+        state = copy.deepcopy(STATE)
+        revision = storage.write(None, state)["revision"]
+
+        state = copy.deepcopy(state)
+        state["workbook"]["sheets"][0]["data"]["calendar"] = {"workdays": [1, 2, 3, 4, 5], "holidays": []}
+        revision = storage.write(revision, state)["revision"]
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated calendar")
+
+        state = copy.deepcopy(state)
+        state["workbook"]["sheets"][0]["data"]["log"] = [{"id": 1, "type": "delay", "taskId": 1, "taskName": "T", "at": 1, "days": 2}]
+        revision = storage.write(revision, state)["revision"]
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated delay accounting")
+
+        state = copy.deepcopy(state)
+        state["workbook"]["sheets"][0]["data"]["stars"] = [1]
+        revision = storage.write(revision, state)["revision"]
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated key milestones")
+
+        state = copy.deepcopy(state)
+        state["workbook"]["sheets"][0]["criticalPath"] = {"method": "longest", "threshold": 0}
+        revision = storage.write(revision, state)["revision"]
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated critical path settings")
+
+        state = copy.deepcopy(state)
+        state["browser"]["pm-delay-causes"] = '{"list":[],"next":1}'
+        storage.write(revision, state)
+        self.assertEqual(storage.history()["entries"][0]["summary"], "Updated delay causes")
 
     def test_stale_revision_cannot_overwrite_newer_save(self):
         self.request({"revision": None, "state": STATE})

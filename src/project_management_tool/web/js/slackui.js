@@ -1,6 +1,7 @@
 import { appState } from './appstate.js';
 import { fmtISO } from './model.js';
 import { esc, openModal, setHTML } from './dom.js';
+import { diagnostics } from './diagnosticlog.js';
 
 export function slackLabel(info, free = false) {
   const value = free ? info.freeFloat : info.float;
@@ -47,7 +48,7 @@ export function createSlackUI(ctx, grid) {
     if (dialog) { render(); return; }
     dialog = openModal('Task slack', `<label class="fld"><span>Show slack on Gantt</span><select id="slack-mode"><option value="off">Off</option><option value="selected">Selected task</option><option value="all">All tasks</option></select></label><p class="slack-key"><span class="free-key">Thick tail: free</span><span class="total-key">Dashed tail: total</span> · The tail runs from the task’s finish to its latest finish; it is not extra duration. Only positive allowances are drawn.</p><div id="slack-content"></div>`, { wide: true, onClose: () => { dialog = null; } });
     const select = dialog.body.querySelector('#slack-mode'); select.value = ui.slackMode;
-    select.addEventListener('change', () => { ui.slackMode = select.value; appState.setItem('pm-slack-mode', ui.slackMode); ctx.requestRender(); });
+    select.addEventListener('change', () => { ui.slackMode = select.value; appState.setItem('pm-slack-mode', ui.slackMode); diagnostics.record('slack.mode', { mode: ui.slackMode }); ctx.requestRender(); });
     render();
   }
   button.addEventListener('click', () => open());

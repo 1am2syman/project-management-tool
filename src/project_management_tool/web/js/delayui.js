@@ -6,6 +6,7 @@ import { dims } from './dims.js';
 import * as DL from './delays.js';
 import { loadCauses, saveCauses } from './causes.js';
 import { appState } from './appstate.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const { sign } = DL;
 const pl = (n, w) => `${n} ${w}${Math.abs(n) === 1 ? '' : 's'}`;
@@ -26,7 +27,7 @@ export function createDelayUI(ctx) {
   store.on((kind) => { if (kind === 'sheet' || kind === 'version') { closePop(); refreshCauses(); } }); // a file opened elsewhere may bring causes
   window.addEventListener('storage', (e) => { // causes added or renamed in another tab
     if (e.key !== 'pm-delay-causes' || e.newValue == null) return;
-    appState.setItem(e.key, e.newValue); refreshCauses(); ctx.requestRender();
+    appState.adopt(e.key, e.newValue); refreshCauses(); ctx.requestRender();
   });
 
   // ---------------------------------------------------------------- sheet columns
@@ -203,6 +204,7 @@ export function createDelayUI(ctx) {
       if (o.unrecorded) {
         const x = DL.recordUnrecorded(store, o.id, { ...entry, kind: entry.kind });
         if (x) return err(x);
+        diagnostics.record('delay.record', { type: 'delay', hasCause: !!entry.cause, unrecorded: true });
         closePop(); ctx.toast(entry.cause ? `Delay recorded · ${DL.causeName(causes, entry.cause)}` : 'Delay recorded without a cause · classify it from the task menu'); ctx.requestRender(); return;
       }
       if (o.overdue) { // apply the typed date now, then record why; the task keeps its scheduling mode
@@ -213,6 +215,7 @@ export function createDelayUI(ctx) {
       }
       const e = DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor, link: !!o.link });
       if (e) return err(e);
+      diagnostics.record('delay.record', { type: entry.type, op: o.op, hasCause: !!entry.cause, overdue: !!o.overdue });
       closePop();
       ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d ${DL.causeName(causes, entry.cause)}` : `Delay recorded without a cause · classify it from the task menu`);
       ctx.requestRender();
@@ -288,7 +291,7 @@ export function createDelayUI(ctx) {
     q('[data-ok]').addEventListener('click', () => {
       if (!editable()) { q('.set-err').textContent = denial(); return; }
       const err = DL.reclassify(store, e.id, { kind: q('#dly-kind').value, cause: q('#dly-cause').value, party: q('#dly-party').value, note: q('#dly-note').value });
-      if (err) q('.set-err').textContent = err; else { m.close(); ctx.requestRender(); after?.(); }
+      if (err) q('.set-err').textContent = err; else { diagnostics.record('delay.reclassify', { hasCause: !!q('#dly-cause').value }); m.close(); ctx.requestRender(); after?.(); }
     });
     setTimeout(() => q('#dly-cause')?.focus(), 0);
   };
@@ -367,6 +370,7 @@ export function createDelayUI(ctx) {
       const f = (k) => b.querySelector(`[data-f=${k}]`)?.value ?? '';
       const e = incl ? DL.agreeInclusion(store, id, { finishDay: day, reason: f('reason'), approvedBy: f('approved') }) : DL.setAgreed(store, id, day, { reason: f('reason'), approvedBy: f('approved') });
       if (e) { err.textContent = e; return; }
+      diagnostics.record('delay.agree', { kind });
       m.close(); ctx.toast(incl ? `Agreed inclusion “${t.name}” · agreed ${fmtDate(store.byId.get(id).agr.f)}` : `Agreed ${unit} ${fmtDate(store.byId.get(id).agr.f)} set for “${t.name}”`); ctx.requestRender();
     };
     b.querySelector('[data-ok]').addEventListener('click', ok);
@@ -390,8 +394,10 @@ export function createDelayUI(ctx) {
     b.querySelector('[data-ok]').addEventListener('click', () => {
       if (mode() === 'omit') {
         const f = (k) => b.querySelector(`[data-f=${k}]`);
-        const e = DL.omit(store, id, { reason: f('reason').value, approvedBy: f('approved').value, relink: f('relink') ? f('relink').checked : false });
+        const relink = f('relink') ? f('relink').checked : false;
+        const e = DL.omit(store, id, { reason: f('reason').value, approvedBy: f('approved').value, relink });
         if (e) { b.querySelector('.set-err').textContent = e; return; }
+        diagnostics.record('delay.omit', { relink });
         m.close(); afterOmit(); ctx.toast(`Omitted “${t.name}” from scope · kept in the Delay log`);
       } else { m.close(); del(); ctx.toast(`Deleted “${t.name}”`); }
       ctx.requestRender();
@@ -467,7 +473,7 @@ export function createDelayUI(ctx) {
       <p class="set-err" role="alert"></p><p class="mut">Party is free text; it suggests people already in this workbook, like Owner.</p></div>`);
     const body = m.body, list = body.querySelector('#dly-causes'), err = body.querySelector('.set-err');
     const { entries, used } = allEntries(), uses = (id) => entries.filter((e) => e.cause === id).length;
-    const save = () => { saveCauses(causes); ctx.requestRender(); };
+    const save = () => { saveCauses(causes); diagnostics.record('delay.causes.save', { count: causes.list.length }); ctx.requestRender(); };
     const paint = () => {
       setHTML(list, causes.list.map((c) => `<div class="dly-cause-row${c.retired ? ' retired' : ''}" data-id="${esc(c.id)}"><span class="dly-grip" role="button" tabindex="0" title="Drag to reorder (or use Alt+↑ / Alt+↓)" aria-label="Reorder ${esc(c.name)}">⠿</span><span class="dly-cname" data-rename="${esc(c.id)}" tabindex="0" role="button" title="Click to rename">${esc(c.name)}</span>${c.retired ? '<span class="dly-chip ret">Retired</span>' : ''}<span class="dly-use">${uses(c.id) ? `Used by ${pl(uses(c.id), 'delay')}` : used.has(c.id) ? 'Only in saved versions' : 'Not used'}</span><span class="grow"></span>${c.retired ? `<button data-restore="${esc(c.id)}">Restore</button>` : `<button data-remove="${esc(c.id)}" aria-label="${used.has(c.id) ? 'Retire' : 'Remove'} ${esc(c.name)}">${used.has(c.id) ? 'Retire' : 'Remove'}</button>`}</div>`).join(''));
     };

@@ -9,6 +9,7 @@ import { finishWaterfall } from './finishwaterfall.js';
 import { waterfallChart, waterfallMarkup, waterfallDetails, nameLines } from './waterfallui.js';
 import * as DL from './delays.js';
 import { createDelayAnalysis, DELAY_SECTIONS } from './delayanalysis.js';
+import { diagnostics } from './diagnosticlog.js';
 
 const PALETTE = ['#2b59e6', '#f59e0b', '#0d9488', '#7c3aed', '#e11d48', '#15803d', '#0891b2', '#c2410c', '#64748b', '#db2777'];
 const MAX_TREND_MILESTONES = 10;
@@ -145,12 +146,14 @@ export function createAnalysis(ctx) {
     ctx.versions?.closeMenu();
     root.hidden = false; document.body.classList.add('analysis-open');
     skeleton(); update();
+    diagnostics.record('analysis.open', { versionCount: versions.length, hasDelay: !!state.hasDelay });
     root.querySelector('.an-x').focus();
   }
   function close() {
     if (!isOpen()) return;
     root.hidden = true; document.body.classList.remove('analysis-open'); state = null;
     setHTML(root, '');
+    diagnostics.record('analysis.close');
     if (prevFocus?.isConnected) prevFocus.focus();
   }
 
@@ -275,7 +278,7 @@ export function createAnalysis(ctx) {
     const fin = root.querySelector('[data-chart=finish]'), ms = root.querySelector('[data-chart=ms]');
     const w1 = Math.max(320, Math.round(fin.parentElement.clientWidth || 560));
     fin.setAttribute('viewBox', `0 0 ${w1} 250`); fin.setAttribute('width', w1); fin.setAttribute('height', 250);
-    setSVG(fin, lineChart({ width: w1, labels, highlight: hl, pointLabels: true, series: [{ name: 'Finish', color: '#2b59e6', values: state.trend.finish, width: 2.5 }] }));
+    setSVG(fin, lineChart({ width: w1, labels, highlight: hl, pointLabels: true, series: [{ name: 'Finish', color: '#161513', values: state.trend.finish, width: 2.5 }] }));
     const series = trendSeries(state.trend).map((s, i) => ({ name: s.name, color: PALETTE[i % PALETTE.length], values: s.dates, muted: state.trendSelected != null && state.trendSelected !== i }));
     const w2 = Math.max(320, Math.round(ms.parentElement.clientWidth || 560));
     ms.setAttribute('viewBox', `0 0 ${w2} 250`); ms.setAttribute('width', w2); ms.setAttribute('height', 250);
@@ -341,11 +344,13 @@ export function createAnalysis(ctx) {
     if (!state?.d || state.a === state.b) return;
     const meta = { project: store.sheet().name, a: state.A, b: state.B, trend: state.trend, milestones: trendSeries(state.trend), log: state.log, delay: state.hasDelay ? delay.data(state.B.view) : null };
     const base = `${fname(meta.project)}-analysis-${state.A.short}-vs-${state.B.short}-${new Date().toISOString().slice(0, 10)}`;
+    const op = diagnostics.begin('analysis.export', { kind, hasDelay: !!state.hasDelay });
     try {
       if (kind === 'pdf') download(buildAnalysisPdf(state.d, meta), `${base}.pdf`);
       else download(await buildAnalysisXlsx(state.d, meta), `${base}.xlsx`);
+      op.end();
       ctx.toast(`Exported the version analysis as ${kind === 'pdf' ? 'PDF' : 'Excel'}`);
-    } catch (error) { console.error(error); ctx.toast(`Export failed: ${error.message}`); }
+    } catch (error) { op.fail(error); console.error(error); ctx.toast(`Export failed: ${error.message}`); }
   }
 
   root.addEventListener('change', (e) => {

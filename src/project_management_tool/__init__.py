@@ -36,7 +36,7 @@ def runtime_diagnostics():
     """Describe the running build without exposing paths, environment variables or saved data."""
     digest = hashlib.sha256()
     source = WEB.parent
-    for path in sorted([*source.glob("*.py"), *WEB.glob("*.html"), *WEB.glob("*.css"), *WEB.glob("js/*.js")]):
+    for path in sorted([*source.glob("*.py"), *WEB.glob("*.html"), *WEB.glob("*.css"), *WEB.glob("*.svg"), *WEB.glob("js/*.js"), *WEB.glob("fonts/*.woff2")]):
         digest.update(path.relative_to(source).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
@@ -99,7 +99,8 @@ class PlanServer(http.server.ThreadingHTTPServer):
 
 class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
-                      ".js": "text/javascript", ".css": "text/css", ".json": "application/json"}
+                      ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
+                      ".woff2": "font/woff2"}
 
     def __init__(self, *args, storage, **kwargs):
         self.storage = storage

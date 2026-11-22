@@ -49,7 +49,7 @@ try {
     await page.locator('[data-fit]').click(); await settle();
     const bounds = await page.evaluate(() => {
       const v = document.querySelector('#gb').getBoundingClientRect();
-      return [...document.querySelectorAll('.bar')].map((b) => ({ name: b.title, left: Math.min(b.getBoundingClientRect().left, b.querySelector('.label').getBoundingClientRect().left) - v.left, right: Math.max(b.getBoundingClientRect().right, b.querySelector('.label').getBoundingClientRect().right) - v.left, width: document.querySelector('#gb').clientWidth }));
+      return [...document.querySelectorAll('.bar')].map((b) => ({ name: b.getAttribute('aria-label') || b.dataset.id, left: Math.min(b.getBoundingClientRect().left, b.querySelector('.label').getBoundingClientRect().left) - v.left, right: Math.max(b.getBoundingClientRect().right, b.querySelector('.label').getBoundingClientRect().right) - v.left, width: document.querySelector('#gb').clientWidth }));
     });
     for (const b of bounds) { assert(b.left >= -1, JSON.stringify(b)); assert(b.right <= b.width - 8, JSON.stringify(b)); }
   }

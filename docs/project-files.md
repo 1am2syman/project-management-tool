@@ -74,6 +74,8 @@ This is a complete version 3 file containing one automatic task:
 | `tasks[].calendar` | Optional complete calendar override (version 5), with the same validation as the global calendar. Absence or null means inherit global. Summary rows cannot have overrides. |
 | `tasks[].scheduling` | Optional `"auto"`, `"manual"` or `"anchor"` (version 3). Auto uses the earliest linked date while live Auto-schedule is on; without incoming links it keeps its current date. Manual dates are not moved by dependencies. Anchors may be delayed but are not pulled earlier. An absent mode defaults to Auto, including in older files; enabling Auto-schedule can therefore remove existing gaps. Explicit Manual and Anchor modes are preserved. Summary dates still roll up from children. |
 | `tasks[].progress` | Integer percentage from 0 through 100. |
+| `tasks[].actualStart`, `tasks[].actualEnd` | Optional recorded execution dates (integer calendar days with the same range as `start`). Summary rows cannot carry actual dates, milestones carry at most `actualStart`, and when both are present `actualEnd` must be on or after `actualStart`. Omitted when unset and cleared in templates. |
+| `tasks[].notes` | Optional task notes, at most 2,000 characters. Omitted when empty. |
 | `tasks[].owner`, `tasks[].email` | Owner display name (at most 80 characters) and email address (at most 254 characters). Both can be empty strings; a nonempty email must pass the app's email validation. |
 | `tasks[].noRem`, `tasks[].ms` | `noRem` is an inert legacy flag retained for compatibility. `ms` marks a milestone. |
 | `links` | Relationships between existing, distinct tasks. Summary endpoints and dependency cycles are rejected. |

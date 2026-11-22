@@ -71,10 +71,16 @@ function validateTasks(tasks, fileVersion = VERSION) {
     if (!integer(t.start, -99999999, 99999999) || typeof t.ms !== 'boolean' || !integer(t.dur, t.ms ? 0 : 1, 99999999) || (t.ms && t.dur !== 0) || Math.abs(t.start + t.dur) > 99999999) invalid(`task ${t.id} has an invalid date or duration.`);
     if (t.scheduling != null && !['auto', 'manual', 'anchor'].includes(t.scheduling)) invalid(`task ${t.id} has invalid scheduling mode.`);
     if (!integer(t.progress, 0, 100) || typeof t.noRem !== 'boolean') invalid(`task ${t.id} has invalid progress or reminder settings.`);
+    if (t.actualStart != null && !integer(t.actualStart, -99999999, 99999999)) invalid(`task ${t.id} has an invalid actual start date.`);
+    if (t.actualEnd != null && (t.ms || !integer(t.actualEnd, -99999999, 99999999) || (t.actualStart != null && t.actualEnd < t.actualStart))) invalid(`task ${t.id} has an invalid actual finish date.`);
+    if (t.notes != null && !text(t.notes, 2000)) invalid(`task ${t.id} has invalid notes.`);
     ids.add(t.id); maxId = Math.max(maxId, t.id); previousLevel = t.level;
   }
   const summaries = new Set(tasks.filter((t, i) => tasks[i + 1]?.level > t.level).map((t) => t.id));
-  for (const t of tasks) validateAgreed(t, fileVersion, summaries.has(t.id));
+  for (const t of tasks) {
+    validateAgreed(t, fileVersion, summaries.has(t.id));
+    if (summaries.has(t.id) && (t.actualStart != null || t.actualEnd != null)) invalid(`task ${t.id} is a summary and cannot have actual dates.`);
+  }
   return { ids, maxId, summaries };
 }
 
@@ -241,6 +247,7 @@ export function openProjectFile(store, contents, options = {}) {
   try {
     // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
     store.auto = project.preferences.auto; store.critical = project.preferences.critical;
+    if (!store.critical) store.criticalOnly = false;
     adoptCauses(project);
     const extra = { rem: project.rem, ...criticalPathFields(project.preferences.criticalPath), ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
     const id = store.addSheet(project.data, project.name, extra);

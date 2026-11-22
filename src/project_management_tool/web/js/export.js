@@ -3,6 +3,7 @@ import { buildXlsx } from './xlsx.js';
 import { buildPdf } from './pdf.js';
 import { setHTML } from './dom.js';
 import { appState } from './appstate.js';
+import { diagnostics } from './diagnosticlog.js';
 
 export function createExport(ctx) {
   const { store } = ctx;
@@ -26,11 +27,13 @@ export function createExport(ctx) {
   }
   async function run(kind, all) {
     const ps = projects(all), base = all ? `workbook-${stamp()}` : `${fname(ps[0].name)}-${stamp()}`;
+    const op = diagnostics.begin('export.run', { kind, all, sheetCount: ps.length, ...(kind === 'pdf' ? { pdfSlack } : {}) });
     try {
       if (kind === 'xlsx') download(await buildXlsx(ps), `${base}.xlsx`);
       else download(buildPdf(ps, { slack: pdfSlack }), `${base}.pdf`);
+      op.end();
       ctx.toast(`Exported ${all ? `${ps.length} sheet${ps.length > 1 ? 's' : ''}` : `“${ps[0].name}”`} as ${kind === 'xlsx' ? 'Excel' : 'PDF'}`);
-    } catch (err) { console.error(err); ctx.toast(`Export failed: ${err.message}`); }
+    } catch (err) { op.fail(err); console.error(err); ctx.toast(`Export failed: ${err.message}`); }
   }
 
   const item = (k, a, label, hint) => `<button data-k="${k}" data-all="${a}"><b>${label}</b><span>${hint}</span></button>`;

@@ -5,6 +5,7 @@ import { openProjectStorage } from './storage.js';
 import { createHistory } from './history.js';
 import { createGrid, COLS } from './grid.js';
 import { createTaskUI } from './taskui.js';
+import { createTaskDialog } from './taskdialog.js';
 import { createCalendarUI } from './calendarui.js';
 import { createCriticalUI } from './criticalui.js';
 import { createSlackUI } from './slackui.js';
@@ -27,29 +28,88 @@ const storage = await openProjectStorage();
 initDensity();
 const store = new Store(storage.initial);
 storage.attach(store);
-globalThis.PlanDiagnostics?.setStoreSummary(() => ({ sheetCount: store.wb.sheets.length, taskCount: store.tasks.length, linkCount: store.links.length, readOnly: store.readOnly, stale: !!store.stale, autoSchedule: store.auto, connectedFile: !!store.sheet().fileToken, undoCount: store.undoStack.length, saveStatus: $('#save-status').dataset.state }));
+globalThis.PlanDiagnostics?.setStoreSummary(() => {
+  const cal = store.calendar, crit = store.criticalOptions();
+  const customGlobalCalendar = (cal?.workdays?.length ?? 7) !== 7 || (cal?.holidays?.length ?? 0) > 0;
+  return {
+    sheetCount: store.wb.sheets.length,
+    taskCount: store.tasks.length,
+    linkCount: store.links.length,
+    readOnly: store.readOnly,
+    stale: !!store.stale,
+    autoSchedule: store.auto,
+    connectedFile: !!store.sheet().fileToken,
+    undoCount: store.undoStack.length,
+    redoCount: store.redoStack.length,
+    saveStatus: $('#save-status').dataset.state,
+    storageMode: storage.mode?.() || 'unknown',
+    templateCount: store.templates.length,
+    versionCount: store.versions().length,
+    previewingVersion: !!store.preview,
+    criticalMode: store.criticalMode(),
+    criticalMethod: crit.method,
+    criticalThreshold: crit.threshold,
+    hasCriticalTarget: !!store.criticalTarget(),
+    slackMode: ui.slackMode || 'selected',
+    density: dims.name,
+    focus: !!ui.focus,
+    fitMode: !!gantt?.isFit?.(),
+    customGlobalCalendar,
+    holidayCount: cal?.holidays?.length || 0,
+    taskCalendarCount: store.tasks.filter((t) => !!t.calendar).length,
+    baselined: !!store.baselined,
+    agreedTaskCount: store.tasks.filter((t) => !!t.agr).length,
+    pendingInclusionCount: store.tasks.filter((t) => !!t.inc).length,
+    delayLogCount: store.log?.length || 0,
+    starredMilestoneCount: store.stars?.size || 0,
+    violatedLinkCount: store.links.filter((l) => l.violated).length,
+    linkConflictCount: store.linkConflicts().length,
+    actualsTaskCount: store.tasks.filter((t) => t.actualStart != null || t.actualEnd != null).length,
+    notesTaskCount: store.tasks.filter((t) => !!t.notes).length,
+    analysisOpen: !!ctx?.analysis?.isOpen?.(),
+    taskDialogOpen: !!ctx?.taskDialog?.isOpen?.(),
+  };
+});
 diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
 const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
-let selections = {};
-try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) selections = value; } catch { /* no saved selection */ }
+let selectionTimer = 0, queuedSelection = null;
+function readSelections() {
+  try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+function flushSelection() {
+  clearTimeout(selectionTimer); selectionTimer = 0;
+  if (!queuedSelection) return;
+  const { id, value } = queuedSelection; queuedSelection = null;
+  if (!store.sheet(id)) return;
+  const selections = readSelections(), prev = selections[id];
+  if (prev && prev.selId === value.selId && prev.linkId === value.linkId && prev.col === value.col) return;
+  selections[id] = value;
+  appState.setItem('pm-selection', JSON.stringify(selections));
+}
 function restoreSelection() {
-  const current = selections[store.wb.active] || {};
+  flushSelection();
+  const current = readSelections()[store.wb.active] || {};
   ui.selId = current.selId ?? null; ui.linkId = current.linkId ?? null;
   ui.col = COLS.some((col) => col.id === current.col) ? current.col : 'name';
 }
 function rememberSelection() {
-  selections[store.wb.active] = { selId: ui.selId, linkId: ui.linkId, col: ui.col };
-  appState.setItem('pm-selection', JSON.stringify(selections));
+  queuedSelection = { id: store.wb.active, value: { selId: ui.selId, linkId: ui.linkId, col: ui.col } };
+  clearTimeout(selectionTimer); selectionTimer = setTimeout(flushSelection, 250);
 }
+window.addEventListener('pm-flush-view', flushSelection);
 restoreSelection();
 let raf = 0, toastT = 0, grid, gantt, sheets;
 
 const ctx = {
   store, ui, storage,
-  rel: null,
-  // css classes for a task row/bar given the current selection (focus mode)
+  rel: null, critOnly: false, critKeep: null,
+  // css classes for a task row/bar given the current selection (focus mode or critical-path-only mode)
   relClass(id) {
+    if (this.critOnly) {
+      if (!this.critKeep.has(id)) return ' dim';
+      return id === ui.selId ? ' r-self' : '';
+    }
     const r = this.rel; if (!r) return '';
     if (id === ui.selId) return ' r-self';
     return r.anc.has(id) ? ' r-anc' : r.desc.has(id) ? ' r-desc' : r.up.has(id) ? ' r-up' : r.down.has(id) ? ' r-down' : ' dim';
@@ -106,9 +166,25 @@ function status() {
 function renderAll() {
   if (ui.selId != null && !store.info.has(ui.selId)) ui.selId = null;
   if (ui.linkId != null && !store.links.some((link) => link.id === ui.linkId)) ui.linkId = null;
-  ctx.rel = ui.focus && ui.selId != null ? store.related(ui.selId) : null;
-  $('#app').classList.toggle('focusing', !!ctx.rel);
-  { const n = (s) => (ctx.rel ? ctx.rel[s].size : 0), lg = $('#focusleg'); lg.hidden = !ctx.rel; if (ctx.rel) { lg.querySelector('.n-anc').textContent = n('anc'); lg.querySelector('.n-desc').textContent = n('desc'); lg.querySelector('.n-up').textContent = n('up'); lg.querySelector('.n-down').textContent = n('down'); } }
+  // Critical-only mode: focus exclusively on critical-path items (and their critical links), dimming everything else.
+  ctx.critOnly = store.critical && store.criticalOnly;
+  ctx.critKeep = ctx.critOnly ? new Set(store.tasks.filter((t) => store.info.get(t.id).critical).map((t) => t.id)) : null;
+  ctx.rel = !ctx.critOnly && ui.focus && ui.selId != null ? store.related(ui.selId) : null;
+  $('#app').classList.toggle('focusing', !!ctx.rel || ctx.critOnly);
+  $('#app').classList.toggle('crit-only', ctx.critOnly);
+  {
+    const lg = $('#focusleg');
+    if (ctx.critOnly) {
+      lg.hidden = false;
+      setHTML(lg, `<b>Critical path only</b><span class="k crit-k"><i></i>In focus <em>${store.critCount}</em></span>`);
+    } else if (ctx.rel) {
+      const n = (s) => ctx.rel[s].size;
+      lg.hidden = false;
+      setHTML(lg, `<b>Focus</b><span class="k anc"><i></i>Parents <em class="n-anc">${n('anc')}</em></span><span class="k desc"><i></i>Children <em class="n-desc">${n('desc')}</em></span><span class="k up"><i></i>Predecessors <em class="n-up">${n('up')}</em></span><span class="k down"><i></i>Successors <em class="n-down">${n('down')}</em></span>`);
+    } else {
+      lg.hidden = true;
+    }
+  }
   fitDensity($('#gb').clientHeight, store.rows.length);
   $('#density').value = dims.name;
   ctx.delay.refresh();
@@ -117,7 +193,17 @@ function renderAll() {
   document.title = `${store.sheet().name} — Plan`;
   $('[data-act=undo]').disabled = !store.undoStack.length;
   $('[data-act=redo]').disabled = !store.redoStack.length;
-  $('#optCrit').checked = store.critical; $('#optAuto').checked = store.auto; criticalUI.render();
+  {
+    const mode = store.criticalMode(), cm = $('#critmode');
+    cm.dataset.mode = mode;
+    cm.querySelectorAll('button[data-crit]').forEach((b) => {
+      const on = b.dataset.crit === mode;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+  }
+  $('#optAuto').checked = store.auto; criticalUI.render();
   // A saved version on screen is read-only: its scheduling and critical-path target are the version's own.
   $('#optAuto').disabled = !!store.preview; $('#critical-target').disabled = !!store.preview;
   ctx.versions.render();
@@ -146,6 +232,7 @@ ctx.insertTask = (ms = false, position = 'after', referenceId = ui.selId) => {
   grid.startEdit(result.id, 'name');
 };
 createTaskUI(ctx, grid);
+ctx.taskDialog = createTaskDialog(ctx, grid);
 ctx.calendar = createCalendarUI(ctx, grid);
 const act = {
   add: () => ctx.insertTask(),
@@ -169,7 +256,18 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-ac
 $('#density').addEventListener('change', (e) => { setDensity(e.target.value); ctx.requestRender(); });
 $('#optFocus').checked = ui.focus;
 $('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { appState.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
-$('#optCrit').addEventListener('change', (e) => store.setPref('critical', e.target.checked));
+{
+  const cm = $('#critmode'), modes = ['off', 'show', 'only'];
+  cm.addEventListener('click', (e) => { const b = e.target.closest('button[data-crit]'); if (b) store.setCriticalMode(b.dataset.crit); });
+  cm.addEventListener('keydown', (e) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const cur = modes.indexOf(store.criticalMode());
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? 2 : (cur + (e.key === 'ArrowRight' ? 1 : 2)) % 3;
+    store.setCriticalMode(modes[next]);
+    cm.querySelector(`[data-crit="${modes[next]}"]`)?.focus();
+  });
+}
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 
 // another tab saved the workbook: stop writing from this one (it would overwrite that tab's work) and offer a reload
@@ -243,5 +341,7 @@ if (window.ResizeObserver) {
 }
 renderAll();
 diagnostics.record('app.ready');
+// The contour backdrop (behind dialogs and menus, and in the bottom-left corner of the page) is decoration: load it after the app is ready, and if it fails the surfaces stay plain white.
+import('./contour.js').then((m) => m.initContour()).catch((e) => diagnostics.record('contour.unavailable', { message: String(e?.message || e) }));
 requestAnimationFrame(() => { gantt.initialScroll(); grid.restoreScroll(); });
 void COLS;

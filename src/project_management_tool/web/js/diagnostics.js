@@ -7,14 +7,20 @@
   let entries = [], bytes = 0, dropped = 0, sequence = 0, persistTimer, renderTimer, storeSummary;
   const pending = new Map(), setup = {}, nativeFetch = w.fetch?.bind(w);
   const clock = () => Date.now();
-  const sensitive = /^(authorization|password|passwd|secret|clientSecret|accessToken|idToken|refreshToken|token|cookie|cookies|headers|body|contents|content|tasks|links|workbook|project|email|owner|value)$/i;
+  const sensitive = /^(authorization|password|passwd|secret|clientSecret|accessToken|idToken|refreshToken|token|cookie|cookies|headers|body|contents|content|tasks|links|workbook|project|email|owner|value|notes|note|reason|party|approvedBy|taskName|holidays|versions|templates|causes)$/i;
   function urlLabel(value) {
     try {
       const u = new URL(String(value), w.location.href);
       if (u.origin !== w.location.origin) return u.origin;
       const position = u.pathname.match(/:\d+(?::\d+)?$/)?.[0] || '';
       const pathname = position ? u.pathname.slice(0, -position.length) : u.pathname;
-      const path = /^\/(?:api\/(?:projects|health|diagnostics|history(?:\/\d+)?)|js\/[\w.-]+\.js|styles\.css|index\.html|favicon\.svg)?$/.test(pathname) ? pathname : '/[path]';
+      let path = '/[path]';
+      if (/^\/(?:api\/(?:projects|health|diagnostics|history(?:\/\d+)?|file-access|file-connections\/check|file-operations)|js\/[\w.-]+\.js|fonts\/[\w.-]+\.woff2|(?:styles|motion)\.css|index\.html|favicon\.svg)?$/.test(pathname)) {
+        path = pathname;
+      } else {
+        const fileOp = pathname.match(/^\/api\/file-operations\/[A-Za-z0-9_-]{1,100}(?:\/(content|snapshot|commit|attach|cancel|raise|release))?$/);
+        if (fileOp) path = `/api/file-operations/[id]${fileOp[1] ? `/${fileOp[1]}` : ''}`;
+      }
       return u.origin + path + position;
     } catch { return '[url]'; }
   }
@@ -68,10 +74,14 @@
     return { end: (detail) => finish('info', detail), fail: (error) => finish('error', { error }) };
   }
   function resources() {
-    return (w.performance?.getEntriesByType('resource') || []).slice(-40).map((entry) => ({
+    // The report keeps at most 25 rows (scrub), so failed requests come first: a 404 must not be crowded out by the fonts and
+    // stylesheets that load around it. Everything else follows in request order.
+    const rows = (w.performance?.getEntriesByType('resource') || []).slice(-80).map((entry) => ({
       url: urlLabel(entry.name), initiator: entry.initiatorType, durationMs: Math.round(entry.duration),
       transferBytes: entry.transferSize, status: entry.responseStatus,
     }));
+    const failed = (row) => row.status >= 400 || row.status === 0;
+    return [...rows.filter(failed), ...rows.filter((row) => !failed(row))];
   }
   function snapshot() {
     // Module dependencies finish after the initial setup check. Export their final load status too.
@@ -141,12 +151,49 @@
       catch (error) { this.removeEventListener('loadend', end); span.fail(error); throw error; }
     };
   }
+  function controlLabel(el) {
+    if (!el) return 'unnamed';
+    if (el.id) return el.id;
+    const ds = el.dataset;
+    if (ds) {
+      if (ds.act) return ds.act;
+      if (ds.crit) return `crit:${ds.crit}`;
+      if (ds.fit) return 'zoom:fit';
+      if (ds.zoom) return `zoom:${ds.zoom}`;
+      if (ds.taskAction) return `task:${ds.taskAction}`;
+      if (ds.tdTab) return `td-tab:${ds.tdTab}`;
+      if (ds.tdDly) return `td-dly:${ds.tdDly}`;
+      if (ds.an) return `analysis:${ds.an}`;
+      if (ds.go) return `analysis-go:${ds.go}`;
+      if (ds.filter) return `analysis-filter:${ds.filter}`;
+      if (ds.vb) return `version-banner:${ds.vb}`;
+      if (ds.vm) return `version-menu:${ds.vm}`;
+      if (ds.calendarTab) return `calendar-tab:${ds.calendarTab}`;
+      if (ds.im) return `import:${ds.im}`;
+      if (ds.k) return `export:${ds.k}${ds.all === '1' ? ':all' : ''}`;
+      if (ds.f) return `field:${ds.f}`;
+      if (ds.c) return `col:${ds.c}`;
+      for (const attr of el.getAttributeNames?.() || []) {
+        if (/^data-(?:log|td|dly|calendar|link|add|chooser|startup|wf|dwf|save|cancel|ok|restore|skip|record|more|list)-?[a-z0-9-]*$/i.test(attr)) return attr.slice(5);
+      }
+    }
+    return el.name || el.getAttribute?.('role') || 'unnamed';
+  }
   d.addEventListener('click', (e) => {
-    const control = e.target.closest?.('button,input[type=checkbox],select,[role=tab]');
-    if (control) record('ui.click', { tag: control.tagName, control: control.id || control.dataset.act || control.getAttribute('role') || 'unnamed', disabled: !!control.disabled });
+    const control = e.target.closest?.('button,input[type=checkbox],input[type=radio],select,[role=tab],[role=radio],[role=switch],[role=menuitem],[role=menuitemradio]');
+    if (control) record('ui.click', { tag: control.tagName, control: controlLabel(control), disabled: !!control.disabled });
   }, true);
-  d.addEventListener('change', (e) => { const el = e.target; record('ui.change', { tag: el.tagName, control: el.id || 'unnamed', type: el.type, ...(el.type === 'file' ? { fileCount: el.files?.length } : {}) }); }, true);
-  d.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && ['o', 's', 'z', 'y', 'Enter'].includes(e.key)) record('ui.shortcut', { key: e.key, shift: e.shiftKey }); }, true);
+  d.addEventListener('change', (e) => { const el = e.target; record('ui.change', { tag: el.tagName, control: controlLabel(el), type: el.type, ...(el.type === 'file' ? { fileCount: el.files?.length } : {}) }); }, true);
+  d.addEventListener('keydown', (e) => {
+    const key = typeof e.key === 'string' && e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if ((e.ctrlKey || e.metaKey) && ['o', 's', 'z', 'y', 'Enter', 'Delete', 'Backspace'].includes(key)) {
+      record('ui.shortcut', { key, shift: !!e.shiftKey, alt: !!e.altKey });
+    } else if (e.altKey && ['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(key)) {
+      record('ui.shortcut', { key, alt: true, shift: !!e.shiftKey });
+    } else if (key === 'ContextMenu' || (e.shiftKey && key === 'F10')) {
+      record('ui.shortcut', { key, shift: !!e.shiftKey });
+    }
+  }, true);
   try {
     new w.PerformanceObserver((list) => { for (const e of list.getEntries()) record('performance.longtask', { durationMs: Math.round(e.duration) }, 'warn'); }).observe({ type: 'longtask', buffered: true });
   } catch { /* unsupported */ }

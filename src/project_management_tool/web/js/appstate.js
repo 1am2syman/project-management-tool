@@ -15,12 +15,16 @@ export const appState = {
     if (ready || key in values) return values[key] ?? null;
     try { return localStorage.getItem(key); } catch { return null; }
   },
-  setItem(key, value) {
+  setItem(key, value, { silent = false } = {}) {
     value = String(value);
     const previous = this.getItem(key);
     values[key] = value;
     try { localStorage.setItem(key, value); } catch { /* SQLite can still save */ }
-    if (previous !== value) changed();
+    if (!silent && previous !== value) changed();
+  },
+  // Adopt a change published by another tab without echoing back to localStorage or triggering a doomed save.
+  adopt(key, value) {
+    if (owned(key) && typeof value === 'string') values[key] = value;
   },
   snapshot: () => ({ ...values }),
   onChange: (fn) => { changed = fn; },

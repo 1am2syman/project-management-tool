@@ -6,8 +6,9 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../src/project_management_tool/web/js/diagnostics.js', import.meta.url), 'utf8');
 function storage() { const data = new Map(); return { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) }; }
 async function harness(options = {}) {
-  const events = new Map(), timers = new Map(), output = [], memory = options.storage || storage();
-  const document = { baseURI: 'http://localhost:5173/', cookie: '', visibilityState: 'visible', readyState: 'complete', querySelector: () => null, addEventListener: () => {} };
+  const events = new Map(), docEvents = new Map(), timers = new Map(), output = [], memory = options.storage || storage();
+  const document = { baseURI: 'http://localhost:5173/', cookie: '', visibilityState: 'visible', readyState: 'complete', querySelector: () => null,
+    addEventListener: (name, fn) => { if (!docEvents.has(name)) docEvents.set(name, []); docEvents.get(name).push(fn); } };
   const window = { document, location: { href: 'http://localhost:5173/?token=URL_SECRET#SECRET', origin: 'http://localhost:5173' },
     navigator: { userAgent: 'Edg/151.0.0.1', platform: 'Win32', cookieEnabled: true, language: 'en', onLine: true },
     console: Object.fromEntries(['log', 'info', 'warn', 'error', 'debug'].map((k) => [k, (...args) => output.push(args)])),
@@ -23,6 +24,7 @@ async function harness(options = {}) {
   for (let i = 0; i < 12; i++) await Promise.resolve();
   return { api: window.PlanDiagnostics, window, context, memory, timers, output,
     emit: (name, e) => (events.get(name) || []).forEach((fn) => fn(e)),
+    emitDoc: (name, e) => (docEvents.get(name) || []).forEach((fn) => fn(e)),
     fire: (delay) => { for (const [id, t] of [...timers]) if (t.delay === delay) { timers.delete(id); t.fn(); } } };
 }
 
@@ -90,6 +92,17 @@ test('export refreshes resource statuses after module dependencies finish loadin
   assert(!JSON.stringify(report).includes('RESOURCE_SECRET'));
 });
 
+test('failed resources lead the report even when many later requests succeed', async () => {
+  const h = await harness();
+  const entries = [{ name: 'http://localhost:5173/js/people.js', initiatorType: 'script', duration: 3, transferSize: 0, responseStatus: 404 }];
+  for (let i = 0; i < 40; i++) entries.push({ name: `http://localhost:5173/js/m${i}.js`, initiatorType: 'script', duration: 1, transferSize: 10, responseStatus: 200 });
+  h.window.performance = { getEntriesByType: (type) => type === 'resource' ? entries : [] };
+  const report = h.api.snapshot();
+  assert.equal(report.setup.resources.length, 25, 'the report is still bounded');
+  assert.equal(report.setup.resources[0].url, 'http://localhost:5173/js/people.js');
+  assert.equal(report.setup.resources[0].status, 404);
+});
+
 test('fetch records metadata and failures while preserving responses and excluding headers/bodies', async () => {
   const response = { ok: false, status: 503, json: async () => ({}) };
   const h = await harness({ fetch: async () => response });
@@ -101,4 +114,47 @@ test('fetch records metadata and failures while preserving responses and excludi
   const failing = await harness({ fetch: () => Promise.reject(new Error('Network unavailable')) });
   await assert.rejects(failing.window.fetch('/api/projects'), /Network unavailable/);
   assert(failing.api.snapshot().entries.some((e) => e.event === 'network.fetch.error'));
+});
+
+test('urlLabel covers motion/fonts/local file APIs, redaction covers newer user fields, and status 0 resources lead', async () => {
+  const h = await harness();
+  assert.equal(h.api.urlLabel('http://localhost:5173/motion.css'), 'http://localhost:5173/motion.css');
+  assert.equal(h.api.urlLabel('http://localhost:5173/fonts/Geist-Variable.woff2'), 'http://localhost:5173/fonts/Geist-Variable.woff2');
+  assert.equal(h.api.urlLabel('http://localhost:5173/api/file-access'), 'http://localhost:5173/api/file-access');
+  assert.equal(h.api.urlLabel('http://localhost:5173/api/file-connections/check'), 'http://localhost:5173/api/file-connections/check');
+  assert.equal(h.api.urlLabel('http://localhost:5173/api/file-operations/op-secret-123/commit'), 'http://localhost:5173/api/file-operations/[id]/commit');
+  assert.equal(h.api.urlLabel('http://localhost:5173/api/file-operations/op-secret-123'), 'http://localhost:5173/api/file-operations/[id]');
+  assert.equal(h.api.urlLabel('http://localhost:5173/private/secret.plan'), 'http://localhost:5173/[path]');
+
+  h.api.record('user.fields', { notes: 'NOTE_SECRET', reason: 'REASON_SECRET', party: 'PARTY_SECRET', approvedBy: 'APPROVER_SECRET', taskName: 'TASKNAME_SECRET', holidays: ['HOLIDAY_SECRET'] });
+  const raw = JSON.stringify(h.api.snapshot());
+  for (const s of ['NOTE_SECRET', 'REASON_SECRET', 'PARTY_SECRET', 'APPROVER_SECRET', 'TASKNAME_SECRET', 'HOLIDAY_SECRET']) assert(!raw.includes(s), s);
+
+  const entries = [{ name: 'http://localhost:5173/js/contour.js', initiatorType: 'script', duration: 2, transferSize: 0, responseStatus: 0 }];
+  for (let i = 0; i < 40; i++) entries.push({ name: `http://localhost:5173/js/m${i}.js`, initiatorType: 'script', duration: 1, transferSize: 10, responseStatus: 200 });
+  h.window.performance = { getEntriesByType: (type) => type === 'resource' ? entries : [] };
+  const report = h.api.snapshot();
+  assert.equal(report.setup.resources[0].url, 'http://localhost:5173/js/contour.js');
+  assert.equal(report.setup.resources[0].status, 0);
+});
+
+test('ui listeners label newer data-attribute controls and capture Shift/Alt shortcuts', async () => {
+  const h = await harness();
+  const makeControl = (tag, dataset = {}, attrs = {}) => ({
+    tagName: tag, id: '', dataset, name: attrs.name || '', disabled: false,
+    getAttribute: (k) => attrs[k] || null,
+    getAttributeNames: () => Object.keys(attrs),
+    closest() { return this; },
+  });
+  h.emitDoc('click', { target: makeControl('BUTTON', { crit: 'only' }, { role: 'radio' }) });
+  h.emitDoc('click', { target: makeControl('BUTTON', { fit: '1' }) });
+  h.emitDoc('click', { target: makeControl('BUTTON', { tdTab: 'progress' }, { role: 'tab' }) });
+  h.emitDoc('keydown', { ctrlKey: true, shiftKey: true, key: 'S' });
+  h.emitDoc('keydown', { ctrlKey: true, shiftKey: true, key: 'Z' });
+  h.emitDoc('keydown', { altKey: true, key: 'ArrowRight' });
+  const entries = h.api.snapshot().entries;
+  const clicks = Array.from(entries.filter((e) => e.event === 'ui.click'), (e) => e.detail.control);
+  assert.deepEqual(clicks, ['crit:only', 'zoom:fit', 'td-tab:progress']);
+  const shortcuts = Array.from(entries.filter((e) => e.event === 'ui.shortcut'), (e) => `${e.detail.key}:${!!e.detail.shift}:${!!e.detail.alt}`);
+  assert.deepEqual(shortcuts, ['s:true:false', 'z:true:false', 'ArrowRight:false:true']);
 });

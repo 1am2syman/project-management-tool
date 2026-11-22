@@ -58,6 +58,14 @@ try {
   assert(report.setup.server.python.version); assert(report.setup.server.operatingSystem.system);
   assert.equal(report.setup.indexedDB.available, true); assert.equal(report.setup.cookieSupport.writable, true);
   assert.equal(report.app.sheetCount, 1); assert.equal(report.app.taskCount, 21);
+  assert.equal(report.app.storageMode, 'disk');
+  assert.equal(report.app.criticalMode, 'show');
+  assert.equal(report.app.criticalMethod, 'float');
+  assert.equal(typeof report.app.baselined, 'boolean');
+  assert.equal(typeof report.app.versionCount, 'number');
+  assert.equal(typeof report.app.fitMode, 'boolean');
+  assert.equal(typeof report.app.slackMode, 'string');
+  assert.equal(typeof report.app.density, 'string');
   for (const event of ['app.ready', 'storage.save.end', 'javascript.error', 'javascript.unhandledrejection', 'console.warn', 'console.error', 'network.xhr.end', 'network.fetch.end', 'diagnostics.download']) assert(report.entries.some((e) => e.event === event), event);
   for (const secret of ['COOKIE_SECRET_SENTINEL', 'CREDENTIAL_SECRET_SENTINEL', 'PASSWORD_SECRET_SENTINEL', 'QUERY_SECRET_SENTINEL', 'PRIVATE_TASK_SENTINEL', 'CONSOLE_PROJECT_SECRET_SENTINEL', 'NETWORK_SECRET_SENTINEL', 'XHR_SECRET_SENTINEL']) assert(!raw.includes(secret), secret);
   assert(raw.includes('diagnostic uncaught control'), 'positive control proves errors are actually exported');

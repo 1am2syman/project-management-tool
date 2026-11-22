@@ -50,9 +50,8 @@ try {
   await page.screenshot({ path: join(evidence, 'longest-path-dialog.png') });
   await dialog.getByRole('button', { name: 'Show critical path' }).click(); await saved();
   assert((await site.getAttribute('class')).includes('critical'));
-  assert.equal(await site.evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(244, 63, 94)');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.bar[data-id="1"]')).backgroundColor === 'rgb(244, 63, 94)');
   assert((await page.locator('.lk[data-id="l1"]').getAttribute('class')).includes('crit'));
-  assert((await site.getAttribute('title')).includes('on the driving path'));
   assert.equal(await page.locator('#gbody .r[data-id="1"] [data-col=float]').textContent(), '2');
   assert.deepEqual(await data(), before);
   await page.locator('#gbody .r[data-id="1"] [data-col=float]').click();

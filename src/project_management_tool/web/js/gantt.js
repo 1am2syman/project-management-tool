@@ -51,8 +51,10 @@ export function createGantt(ctx) {
   const { store, ui } = ctx;
   const $ = (s) => document.querySelector(s);
   const root = $('#app'), gb = $('#gb'), canvas = $('#canvas'), bg = $('#bg'), linksEl = $('#links'), barsEl = $('#bars'), linkdrag = $('#linkdrag');
-  const ghdin = $('#ghdin'), todayline = $('#todayline'), tip = $('#tip'), seg = $('#zoomseg');
+  const ghdin = $('#ghdin'), tip = $('#tip'), seg = $('#zoomseg');
   const rowsel = document.createElement('div'); rowsel.className = 'rowsel'; canvas.insertBefore(rowsel, $('#links'));
+  const linksHiEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  linksHiEl.classList.add('links', 'links-hi'); canvas.insertBefore(linksHiEl, barsEl);
   const slackEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   slackEl.classList.add('slack-overlay'); slackEl.setAttribute('aria-hidden', 'true'); canvas.insertBefore(slackEl, barsEl);
   const slackRows = () => store.rows.filter((t) => ui.slackMode !== 'off' && (ui.slackMode === 'all' || ui.selId === t.id) && !store.info.get(t.id).summary);
@@ -62,6 +64,7 @@ export function createGantt(ctx) {
     return end;
   }
   let ppd = 16, origin = null, endDay = 0, W = 0, H = 0, taskH = 0, layoutKey = '';
+  let fitMode = false, fitting = false, fitKey = '';
   const barEls = new Map();
   let vwCache = 0;
   if (window.ResizeObserver) new ResizeObserver(() => { const w = gb.clientWidth; if (w !== vwCache) { vwCache = w; if (origin != null) ctx.requestRender(); } }).observe(gb);
@@ -81,7 +84,7 @@ export function createGantt(ctx) {
   }
   function queueView() {
     if (restoringView || drag || origin == null) return;
-    queuedView = { id: store.wb.active, value: { ppd, leftDay: Math.round((origin + gb.scrollLeft / ppd) * 1000) / 1000, top: gb.scrollTop } };
+    queuedView = { id: store.wb.active, value: fitMode ? { fit: true, top: gb.scrollTop } : { ppd, leftDay: Math.round((origin + gb.scrollLeft / ppd) * 1000) / 1000, top: gb.scrollTop } };
     clearTimeout(viewTimer); viewTimer = setTimeout(flushView, 120);
   }
   window.addEventListener('pm-flush-view', () => { queueView(); flushView(); });
@@ -146,17 +149,13 @@ export function createGantt(ctx) {
 
   function buildBg() {
     if (ppd >= 5) {
-      const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(15,23,42,.035)"/>` : '').join('');
-      const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern>`;
-      const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.045 : 0.07;
-      bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(15,23,42,${a})"/></pattern></defs>`;
-      bgBody = `<rect width="${W}" height="${taskH}" fill="url(#wk)"/><rect width="${W}" height="${taskH}" fill="url(#dl)"/>`;
+      const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(22,21,19,.03)"/>` : '').join('');
+      bgDefs = off ? `<defs><pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern></defs>` : '';
+      bgBody = off ? `<rect width="${W}" height="${taskH}" fill="url(#wk)"/>` : '';
     } else { bgDefs = ''; bgBody = ''; }
-    // explicit month / quarter boundaries in the coarse views
-    let lines = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
-    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(15,23,42,${q ? 0.12 : 0.06})"/>`; }
+    const holidays = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
     bg.setAttribute('width', W); bg.setAttribute('height', taskH);
-    setSVG(bg, bgDefs + bgBody + lines);
+    setSVG(bg, bgDefs + bgBody + holidays);
   }
 
   // ---------- bars ----------
@@ -165,6 +164,7 @@ export function createGantt(ctx) {
     el.dataset.id = id;
     setHTML(el, '<div class="fill"></div><span class="label"><span class="label-text"></span></span><i class="h resize-start"></i><i class="h resize-end"></i><b class="dot s"></b><b class="dot f"></b><u class="prog"></u>');
     el._fill = el.children[0]; el._label = el.children[1]; el._text = el._label.firstElementChild; el._prog = el.children[6];
+    el._edate = document.createElement('span'); el._edate.className = 'edate'; el._edate.append(document.createElement('b'), document.createElement('i'));
     return el;
   }
 
@@ -208,14 +208,13 @@ export function createGantt(ctx) {
       const rc = relClass(t.id);
       const schedule = store.scheduling(t.id);
       el.setAttribute('aria-label', `${t.name} · ${schedule.label}`);
-      const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (t.id === ui.selId ? ' selected' : '') +
+      const cls = 'bar' + rc + (f.summary ? ' summary' : '') + (ms ? ' ms' : '') + (f.critical ? ' critical' : '') + (f.summary && f.critical && store.collapsed.has(t.id) ? ' collapsed-crit' : '') + (t.id === ui.selId ? ' selected' : '') +
         (ms && t.progress >= 100 ? ' done' : '') + (drag && drag.id === t.id && drag.moved ? ' dragging' : '');
       if (el._cls !== cls) { el.className = cls; el._cls = cls; }
       let w = ms ? 18 : Math.max(6, x2 - x1 - 2);
       positionBar(el, ms, x1, x2);
       el.style.top = pixel(y) + 'px';
-      if (el._lt !== t.name) { el._text.textContent = t.name; el.title = t.name; el._lt = t.name; }
-      el.title = `${t.name} · ${schedule.label}: ${schedule.detail}${!f.summary ? ` · Total slack: ${f.float == null ? 'outside selected target' : f.float + ' working days'} · Free slack: ${f.freeFloat} working days${f.critical ? ` · ${store.criticalLabel()}${store.criticalOptions().method === 'longest' && f.float > 0 ? ': on the driving path; calendar working periods allow positive slack' : ''}` : ''}` : ''}${ctx.delay?.tooltip(t.id) ?? ''}`;
+      if (el._lt !== t.name) { el._text.textContent = t.name; el._lt = t.name; }
       { // soft shading on the task where the delay started, only for its own delay days
         const sh = ms || f.summary ? null : ctx.delay?.shade(t.id);
         if (sh) {
@@ -224,10 +223,16 @@ export function createGantt(ctx) {
         } else if (el._shade) { el._shade.remove(); el._shade = null; }
       }
       // Keep readable bars self-contained; only very short bars need an external label.
-      const out = !f.summary && !ms && w < 80 && textW(t.name) + 16 > w;
+      const out = !f.summary && !ms && ((w < 80 && textW(t.name) + 16 > w) || w < 60);
       el._label.classList.toggle('out', out);
+      { // end date (shown on hover): right inside end when text is inside, else right of the outside/milestone/summary text
+        const inside = !f.summary && !ms && !out;
+        const day = ms ? f.start : f.end - 1, host = inside ? el : el._label;
+        if (el._ed !== day) { const [, mo, dd] = ymd(day); el._edate.firstChild.textContent = String(dd).padStart(2, '0'); el._edate.lastChild.textContent = MONTHS[mo]; el._ed = day; }
+        if (el._edate.parentNode !== host) host.appendChild(el._edate);
+      }
       const labelX = ms ? x1 + dims.msz * 1.5 + 9 : x1 + 1 + w + (f.summary ? 8 : 18);
-      el._label.style.maxWidth = f.summary || ms || out ? Math.max(0, Math.min(200, W - labelX - 8)) + 'px' : '';
+      el._label.style.maxWidth = f.summary || ms || out ? Math.max(0, Math.min(248, W - labelX - 8)) + 'px' : '';
       const hw = ms || f.summary ? 8 : clamp(w * 0.22, 3, 8); if (el._hw !== hw) { el._hw = hw; el.style.setProperty('--hw', hw + 'px'); }
       const p = f.progress;
       el._fill.style.width = p + '%'; el._fill.classList.toggle('full', p >= 100);
@@ -242,20 +247,26 @@ export function createGantt(ctx) {
     if (t.ms && !f.summary) return [pixel(xOf(f.start)) + (end === 's' ? -1 : 1) * (dims.msz / 2 + 4), y];
     return [end === 's' ? pixel(xOf(f.start) + 1) : Math.max(pixel(xOf(f.start) + 1) + 6, pixel(xOf(f.end) - 1)), y];
   }
-  // Link paths are keyed by id and only re-parsed when their geometry or state changed, so a drag touches a handful of paths, not all of them.
+  // Link paths are keyed by id and split across base (`linksEl`) and elevated (`linksHiEl`) SVGs so focused/selected links bridge cleanly above dimmed bars.
   const linkEls = new Map(), linkScratch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   function paintLinks(want) {
     const keep = new Set(want.map((w) => w[0]));
     for (const [id, o] of linkEls) if (!keep.has(id)) { o.el.remove(); linkEls.delete(id); }
-    const changed = want.filter(([id, html]) => !linkEls.has(id) || linkEls.get(id).html !== html);
+    const changed = want.filter(([id, html, hi]) => !linkEls.has(id) || linkEls.get(id).html !== html || linkEls.get(id).hi !== hi);
     if (!changed.length) return;
     setSVG(linkScratch, changed.map((c) => c[1]).join(''));
     const fresh = [...linkScratch.children];
-    changed.forEach(([id, html], i) => { const o = linkEls.get(id); if (o) o.el.replaceWith(fresh[i]); else linksEl.appendChild(fresh[i]); linkEls.set(id, { el: fresh[i], html }); });
+    changed.forEach(([id, html, hi], i) => {
+      const o = linkEls.get(id), parent = hi ? linksHiEl : linksEl;
+      if (o && o.hi === hi) o.el.replaceWith(fresh[i]);
+      else { o?.el.remove(); parent.appendChild(fresh[i]); }
+      linkEls.set(id, { el: fresh[i], html, hi });
+    });
   }
   function renderLinks() {
     const idx = new Map(store.rows.map((t, i) => [t.id, i]));
     linksEl.setAttribute('width', W); linksEl.setAttribute('height', H);
+    linksHiEl.setAttribute('width', W); linksHiEl.setAttribute('height', H);
     const want = [];
     for (const l of store.links) {
       const a = idx.get(l.from), b = idx.get(l.to); if (a == null || b == null) continue;
@@ -263,16 +274,21 @@ export function createGantt(ctx) {
       const [ax, ay] = anchor(l.from, fe, a), [bx, by] = anchor(l.to, te, b);
       const dA = fe === 'f' ? 1 : -1, dF = te === 's' ? 1 : -1;
       let d, arrow;
-      const tt = store.byId.get(l.to);
-      if (l.type === 'FS' && by !== ay && !(tt.ms) && bx - ax < 2 * (ppd < 5 ? 4 : 11)) { // back-to-back: drop into the top/bottom edge of the successor instead of looping around it
-        const s = by > ay ? 1 : -1, xv = Math.max(ax + 3, bx + 5), ty = by - s * dims.bar / 2;
+      const tt = store.byId.get(l.to), tf = store.info.get(l.to), isMs = tt.ms && !tf.summary;
+      const g = ppd < 5 ? 4 : 11;
+      if (l.type === 'FS' && by !== ay && bx - ax < 2 * g && (!isMs || pixel(xOf(tf.start)) >= ax - 2)) { // back-to-back: drop into the top/bottom edge (or milestone head/bottom) instead of looping around it
+        const s = by > ay ? 1 : -1;
+        const xv = isMs ? pixel(xOf(tf.start)) : Math.max(ax + 3, bx + 5);
+        const ty = by - s * (isMs ? Math.max(dims.msz / 2 + 4, Math.ceil(dims.msz * Math.SQRT1_2) + 1) : dims.bar / 2);
         d = roundPath([[ax, ay], [xv, ay], [xv, ty]]); arrow = `${xv},${ty} ${xv - 4},${ty - s * 7} ${xv + 4},${ty - s * 7}`;
       } else {
         d = route(ax, ay, dA, bx, by, dF);
         arrow = `${bx},${by} ${bx - dF * 7},${by - 4} ${bx - dF * 7},${by + 4}`;
       }
-      const rl = ctx.rel ? (ctx.rel.upL.has(l.id) ? ' r-up' : ctx.rel.downL.has(l.id) ? ' r-down' : ' dim') : '';
-      want.push([l.id, `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/><path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`]);
+      const rl = ctx.critOnly ? (l.critical ? '' : ' dim') : ctx.rel ? (ctx.rel.upL.has(l.id) ? ' r-up' : ctx.rel.downL.has(l.id) ? ' r-down' : ' dim') : '';
+      const hi = Boolean((ctx.critOnly && l.critical) || (ctx.rel && (ctx.rel.upL.has(l.id) || ctx.rel.downL.has(l.id))) || ui.linkId === l.id);
+      const halo = hi ? `<path class="halo" d="${d}"/>` : '';
+      want.push([l.id, `<g class="lk${rl}${l.critical ? ' crit' : ''}${l.violated ? ' viol' : ''}${ui.linkId === l.id ? ' sel' : ''}" data-id="${esc(l.id)}"><path class="hit" d="${d}"/>${halo}<path class="vis" d="${d}"/><polygon class="ah" points="${arrow}"/></g>`, hi]);
     }
     paintLinks(want);
   }
@@ -299,23 +315,23 @@ export function createGantt(ctx) {
         const text = !total ? `${free}d free` : total === free ? `${total}d slack` : `${total}d total · ${free}d free`;
         shapes += `<text x="${xEnd + 7}" y="${pixel(cy + 4)}">${text}</text>`;
       }
-      const dim = ctx.rel && relClass(task.id).includes('dim') ? ' dim' : '';
+      const dim = (ctx.rel || ctx.critOnly) && relClass(task.id).includes('dim') ? ' dim' : '';
       return `<g class="slack-item${dim}" data-task="${task.id}">${shapes}</g>`;
     }).join('');
     if (slackEl._markup !== markup) { setSVG(slackEl, markup); slackEl._markup = markup; }
   }
 
   // ---------- render ----------
+  // Fit follows the project: refit when the pane, tasks, dates, rows, density or slack change (not while dragging).
+  const fitKeyNow = () => `${gb.clientWidth}|${store.rev}|${store.rows.map((t) => t.id).join()}|${dims.row}|${dims.bar}|${ui.slackMode === 'selected' ? `s:${ui.selId}` : ui.slackMode}|${slackEnd()}`;
   function render() {
+    if (fitMode && !fitting && !drag && origin != null && fitKeyNow() !== fitKey) { fit(); return; }
     layout();
     root.classList.toggle('crit-on', store.critical);
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     if (pendShift) { gb.scrollLeft += pendShift; if (drag && drag.cx0 != null) drag.cx0 += pendShift; pendShift = 0; }
     const si = store.rows.findIndex((t) => t.id === ui.selId);
     rowsel.style.display = si >= 0 ? '' : 'none'; rowsel.style.top = si * dims.row + 'px';
-    const tx = xOf(today) + ppd / 2;
-    todayline.style.height = taskH + 'px';
-    todayline.style.display = taskH > 0 && tx > 0 && tx < W ? '' : 'none'; todayline.style.left = tx + 'px';
     renderBars(); renderLinks(); renderSlack(); ctx.delay?.decorate({ canvas, W, H: taskH, xOf, pixel });
     if (!drag) syncHead(); // while dragging, scrolling (autoscroll/pan) already syncs through the scroll event; reading scrollLeft here would force a layout
     updateSeg();
@@ -324,7 +340,8 @@ export function createGantt(ctx) {
   function updateSeg() {
     let best = null, bd = Infinity;
     seg.querySelectorAll('button[data-zoom]').forEach((b) => { const d = Math.abs(Math.log(+b.dataset.zoom / ppd)); if (d < bd) { bd = d; best = b; } });
-    seg.querySelectorAll('button[data-zoom]').forEach((b) => b.classList.toggle('on', b === best && bd < 0.45));
+    seg.querySelectorAll('button[data-zoom]').forEach((b) => b.classList.toggle('on', !fitMode && b === best && bd < 0.45));
+    seg.querySelector('button[data-fit]').classList.toggle('on', fitMode);
   }
 
   // ---------- zoom / navigation ----------
@@ -333,7 +350,10 @@ export function createGantt(ctx) {
     return f ? f.start : today >= P.start && today <= P.end ? today : P.start;
   }
   function setPpd(np, clientX, preset) {
-    np = clamp(np, 1.2, 90); if (Math.abs(np - ppd) < 0.01) return;
+    const wasFit = fitMode;
+    fitMode = false;
+    np = clamp(np, 1.2, 90);
+    if (Math.abs(np - ppd) < 0.01) { if (wasFit) { updateSeg(); queueView(); } return; }
     const rect = gb.getBoundingClientRect();
     let ax = clientX != null ? clientX - rect.left : rect.width / 2, day = origin + (gb.scrollLeft + ax) / ppd;
     if (preset) { day = anchorDay(); ax = Math.min(rect.width * 0.3, 160); }
@@ -342,50 +362,58 @@ export function createGantt(ctx) {
   }
   function fit() {
     const P = store.project, vw = gb.clientWidth;
-    if (vw < 60 || !store.rows.length) return;
-    // Measure labels, milestone diamonds, connection handles and routed elbows together.
-    // Their bounds change with zoom, so measure again after each adjustment.
-    let padding = 20;
-    ppd = Math.min(90, (vw - 40) / Math.max(1, slackEnd() - P.start));
-    for (let i = 0; i < 12; i++) {
-      origin = P.start - Math.ceil(padding / ppd); layoutKey = ''; render();
-      const left = canvas.getBoundingClientRect().left;
-      let first = Infinity, right = 0;
-      const elements = [...barEls.values()].flatMap((el) => [el, el._label, ...el.querySelectorAll('.dot')]);
-      elements.push(...linksEl.querySelectorAll('.vis,.ah'), ...slackEl.querySelectorAll('.slack-item'));
-      for (const el of elements) {
-        const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) continue;
-        const diamond = el.classList.contains('ms') ? dims.msz * (Math.SQRT2 - 1) / 2 : 0;
-        first = Math.min(first, rect.left - left - diamond);
-        right = Math.max(right, rect.right - left + diamond);
+    vwCache = vw;
+    if (vw < 60 || !store.rows.length) { fitKey = fitKeyNow(); fitting = true; try { render(); } finally { fitting = false; } return; }
+    fitting = true;
+    try {
+      // Measure labels, milestone diamonds, connection handles and routed elbows together.
+      // Their bounds change with zoom, so measure again after each adjustment.
+      let padding = 20, settled = false;
+      ppd = Math.min(90, (vw - 40) / Math.max(1, slackEnd() - P.start));
+      for (let i = 0; i < 12; i++) {
+        origin = P.start - Math.ceil(padding / ppd); layoutKey = ''; render();
+        const left = canvas.getBoundingClientRect().left;
+        let first = Infinity, right = 0;
+        const elements = [...barEls.values()].flatMap((el) => [el, el._label, ...el.querySelectorAll('.dot')]);
+        elements.push(...linksEl.querySelectorAll('.vis,.ah'), ...linksHiEl.querySelectorAll('.vis,.ah'), ...slackEl.querySelectorAll('.slack-item'));
+        for (const el of elements) {
+          const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) continue;
+          const diamond = el.classList.contains('ms') ? dims.msz * (Math.SQRT2 - 1) / 2 : 0;
+          first = Math.min(first, rect.left - left - diamond);
+          right = Math.max(right, rect.right - left + diamond);
+        }
+        // Leave room for the connector hit area and enlarged handles on hover.
+        if (first < 8) { padding += 8 - first; continue; }
+        if (right <= vw - 16) { settled = true; break; }
+        ppd *= Math.max(0.1, (vw - padding - 16) / Math.max(vw - padding, right - padding));
       }
-      // Leave room for the connector hit area and enlarged handles on hover.
-      if (first < 8) { padding += 8 - first; continue; }
-      if (right <= vw - 16) break;
-      ppd *= Math.max(0.1, (vw - padding - 16) / Math.max(vw - padding, right - padding));
-    }
-    gb.scrollLeft = 0; syncHead(); queueView();
+      if (!settled) { origin = P.start - Math.ceil(padding / ppd); layoutKey = ''; render(); }
+      gb.scrollLeft = 0; syncHead(); updateSeg();
+      fitKey = fitKeyNow();
+    } finally { fitting = false; }
+    queueView();
   }
   function reset() {
     flushView(); restoringView = true;
     const view = readViews()[store.wb.active];
     ppd = Number.isFinite(view?.ppd) ? clamp(view.ppd, 0.000001, 90) : 16;
-    origin = null; layoutKey = '';
+    origin = null; layoutKey = ''; fitMode = false;
     for (const el of barEls.values()) el.remove();
     barEls.clear(); gb.scrollTop = 0; gb.scrollLeft = 0; closePop();
   }
   function initialScroll() {
     const view = readViews()[store.wb.active];
+    if (view?.fit) { fitMode = true; fit(); gb.scrollTop = Number(view.top) || 0; ctx.syncV(gb.scrollTop); syncHead(); restoringView = false; return; }
     gb.scrollLeft = Number.isFinite(view?.leftDay) ? Math.max(0, xOf(view.leftDay)) : Math.max(0, xOf(store.project.start) - 36);
     gb.scrollTop = Number(view?.top) || 0; ctx.syncV(gb.scrollTop);
-    syncHead(); restoringView = false; queueView();
+    syncHead(); restoringView = false; if (!view) queueView();
   }
-  function goToday() { gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
+  function goToday() { fitMode = false; updateSeg(); queueView(); gb.scrollTo({ left: xOf(today) - gb.clientWidth / 2, behavior: 'smooth' }); }
   function reveal(id, horizontal) {
     const i = store.rows.findIndex((t) => t.id === id); if (i < 0) return;
     const top = i * dims.row, bot = top + dims.row, vh = gb.clientHeight - 12;
     if (top < gb.scrollTop) gb.scrollTop = top; else if (bot > gb.scrollTop + vh) gb.scrollTop = bot - vh;
-    if (horizontal) {
+    if (horizontal && !fitMode) {
       const f = store.info.get(id), x1 = xOf(f.start), x2 = xOf(f.end);
       if (x2 < gb.scrollLeft + 20 || x1 > gb.scrollLeft + gb.clientWidth - 20) gb.scrollTo({ left: x1 - gb.clientWidth / 3, behavior: 'smooth' });
     }
@@ -436,7 +464,7 @@ export function createGantt(ctx) {
     if (!drag) return;
     drag.lastX = e.clientX; drag.lastY = e.clientY;
     if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 3) return;
-    if (!drag.moved) { drag.moved = true; if (drag.kind === 'pan') gb.classList.add('panning'); }
+    if (!drag.moved) { drag.moved = true; if (drag.kind === 'pan') { gb.classList.add('panning'); if (fitMode) { fitMode = false; updateSeg(); } } }
     step();
     if (drag && drag.kind !== 'pan' && !raf) raf = requestAnimationFrame(loop);
   });
@@ -487,7 +515,7 @@ export function createGantt(ctx) {
     drag.target = bad ? null : target;
     let ex = cx, ey = cy;
     if (target) [ex, ey] = anchor(target.id, target.end, target.ri);
-    const col = bad ? '#e11d48' : '#2b59e6', sx = ax;
+    const col = bad ? '#e11d48' : '#161513', sx = ax;
     const mx = (sx + ex) / 2;
     linkdrag.setAttribute('width', W); linkdrag.setAttribute('height', H);
     setSVG(linkdrag, `<path d="M${sx} ${ay} C${mx} ${ay} ${mx} ${ey} ${ex} ${ey}" stroke="${col}" stroke-width="2" stroke-dasharray="5 4" fill="none"/><circle cx="${ex}" cy="${ey}" r="4.5" fill="${col}" stroke="none"/>`);
@@ -519,13 +547,19 @@ export function createGantt(ctx) {
   gb.addEventListener('pointerup', () => finish(true));
   gb.addEventListener('pointercancel', () => finish(false));
   gb.addEventListener('lostpointercapture', () => { if (drag) finish(true); });
+  gb.addEventListener('dblclick', (e) => {
+    const hit = e.target.closest('.dot, .lk') ? null : (e.target.closest('.bar[data-id]') || document.elementFromPoint(e.clientX, e.clientY)?.closest('.bar[data-id]'));
+    if (!hit || hit.closest('.dot, .lk')) return;
+    if (drag) finish(false);
+    ctx.taskDialog?.open(+hit.dataset.id);
+  });
 
   gb.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); setPpd(ppd * Math.exp(-e.deltaY * 0.0018), e.clientX); }
   }, { passive: false });
   gb.addEventListener('scroll', () => { syncHead(); ctx.syncV(gb.scrollTop); queueView(); });
 
-  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) fit(); else setPpd(+b.dataset.zoom, null, true); });
+  seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.fit) { fitMode = true; fit(); } else setPpd(+b.dataset.zoom, null, true); });
 
   reset();
   return {
@@ -533,6 +567,7 @@ export function createGantt(ctx) {
     zoomStep: (dir) => setPpd(ppd * (dir > 0 ? 1.3 : 1 / 1.3)),
     cancelDrag: () => finish(false),
     isDragging: () => !!drag && drag.moved,
+    isFit: () => fitMode,
     setScrollTop: (v) => { if (gb.scrollTop !== v) gb.scrollTop = v; },
     popOpen: () => ctx.relationships.isOpen(),
   };
