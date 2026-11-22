@@ -600,7 +600,7 @@ try {
   assert(await reach('Tab'), 'Tab wraps inside the popover');
   assert(await reach('Shift+Tab', 12), 'Shift+Tab wraps inside the popover');
   const label = await pop.locator('.fld > span').first().evaluate((e) => getComputedStyle(e).color);
-  assert.equal(label, 'rgb(87, 84, 77)', 'popover labels use the AA colour');
+  assert.equal(label, 'rgb(91, 103, 121)', 'popover labels use the AA colour');
   assert.equal(await pop.locator('.dly-opt:not(.on) .dly-fields').first().evaluate((e) => getComputedStyle(e).opacity), '1', 'the inactive card is dimmed by its background, not by opacity');
   await page.keyboard.press('Escape'); await pop.waitFor({ state: 'detached' }); await settle();
   assert.equal(await focusId(), 'gx', `Escape returns focus to the grid, not the page: ${await focusId()}`);

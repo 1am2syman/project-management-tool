@@ -1,5 +1,4 @@
 *.bat text eol=crlf
-*.woff2 binary
 
 # Preserve the vendored Python distribution byte-for-byte, including text files.
 runtime/windows-x64/** -text -diff
