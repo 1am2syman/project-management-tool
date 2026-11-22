@@ -181,7 +181,7 @@ svg.linkdrag{pointer-events:none;z-index:6;overflow:visible}
 .bar .label{position:absolute;left:7px;right:7px;top:0;height:var(--bar);display:flex;align-items:center;line-height:1;white-space:nowrap;overflow:hidden;pointer-events:none;font-weight:500;font-variant-caps:all-small-caps}
 .bar .label-text{min-width:0;overflow:hidden;text-overflow:ellipsis;position:relative;top:-1px}
 .bar .label.out{left:calc(100% + 18px);right:auto;width:max-content;color:#334155;text-shadow:none}
-.bar .label.out,.bar.summary .label,.bar.ms .label{background:var(--bg);border-radius:3px;padding:0 3px}
+.bar .label.out,.bar.summary .label,.bar.ms .label{background:transparent;border-radius:0;padding:0}
 .bar:hover{box-shadow:0 3px 10px rgba(30,58,160,.3),inset 0 1px 0 rgba(255,255,255,.22)}
 .bar.dragging{box-shadow:0 8px 20px rgba(30,58,160,.38);cursor:grabbing;z-index:5}
 .crit-on .bar.critical{background:var(--crit)}.crit-on .bar.critical .fill{background:var(--crit-d)}

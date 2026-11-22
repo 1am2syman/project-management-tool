@@ -23,6 +23,7 @@ export function facts(view) {
       id: t.id, name: t.name, level: t.level, order, parent: stack.at(-1)?.id ?? null, summary: f.summary, ms,
       start: f.start, finish: ms ? f.start : f.end - 1, end: f.end, dur: view.duration(t.id), progress: Math.round(f.progress),
       calendar: f.summary ? null : t.calendar || null, owner: t.owner || '', email: t.email || '', scheduling: f.summary ? 'summary' : t.scheduling || 'auto',
+      actualStart: f.summary ? null : t.actualStart ?? null, actualEnd: f.summary || ms ? null : t.actualEnd ?? null, notes: t.notes || '',
       critical: !f.summary && !!f.critical, float: f.summary ? null : f.float,
     });
     stack.push(t);
@@ -61,12 +62,15 @@ function taskChanges(a, b) {
   if (a.finish !== b.finish && !b.ms) add('finish', 'Finish moved', a.finish, b.finish, 'date', { delta: b.finish - a.finish });
   if (a.dur !== b.dur && !a.ms && !b.ms) add('dur', 'Duration changed', a.dur, b.dur, 'days', { delta: b.dur - a.dur });
   if (a.progress !== b.progress) add('progress', 'Progress', a.progress, b.progress, 'percent', { delta: b.progress - a.progress });
+  if (a.actualStart !== b.actualStart) add('actualStart', 'Actual start', a.actualStart, b.actualStart, 'date');
+  if (a.actualEnd !== b.actualEnd) add('actualEnd', 'Actual finish', a.actualEnd, b.actualEnd, 'date');
   return finishTaskChanges(a, b, add, out);
 }
 
 function finishTaskChanges(a, b, add, out) {
   if (a.owner !== b.owner || a.email !== b.email) add('owner', 'Owner changed', a.owner || 'Unassigned', b.owner || 'Unassigned');
   if (a.scheduling !== b.scheduling && a.scheduling !== 'summary' && b.scheduling !== 'summary') add('scheduling', 'Scheduling mode', SCHEDULE[a.scheduling], SCHEDULE[b.scheduling]);
+  if (a.notes !== b.notes) add('notes', 'Notes updated', a.notes || 'None', b.notes || 'None');
   return out;
 }
 

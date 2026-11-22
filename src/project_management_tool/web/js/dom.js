@@ -29,6 +29,8 @@ export function openModal(title, bodyMarkup, { wide = false, onClose } = {}) {
   const focusables = () => [...modal.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])')].filter((x) => !x.disabled && !x.hidden && x.offsetParent !== null);
   const key = (e) => {
     if (!back.isConnected) return;
+    const backs = document.querySelectorAll('.modal-back');
+    if (backs[backs.length - 1] !== back) return; // only the topmost modal handles Escape and Tab
     if (e.key === 'Escape') { if (document.querySelector('.pplist')) return; e.stopPropagation(); close(); return; } // an open people list takes Escape first
     if (e.key === 'Tab') { // keep keyboard focus inside the dialog
       const f = focusables(); if (!f.length) { e.preventDefault(); modal.focus(); return; }

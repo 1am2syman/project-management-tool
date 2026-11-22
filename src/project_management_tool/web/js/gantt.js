@@ -150,16 +150,12 @@ export function createGantt(ctx) {
   function buildBg() {
     if (ppd >= 5) {
       const off = [...Array(7)].map((_, i) => !store.work.week.has(dow(origin + i)) ? `<rect x="${i * ppd}" y="0" width="${ppd}" height="100" fill="rgba(22,21,19,.03)"/>` : '').join('');
-      const wk = `<pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern>`;
-      const step = ppd >= 20 ? ppd : 7 * ppd, a = ppd >= 20 ? 0.042 : 0.068;
-      bgDefs = `<defs>${wk}<pattern id="dl" width="${step}" height="100" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1" height="100" fill="rgba(22,21,19,${a})"/></pattern></defs>`;
-      bgBody = `<rect width="${W}" height="${taskH}" fill="url(#wk)"/><rect width="${W}" height="${taskH}" fill="url(#dl)"/>`;
+      bgDefs = off ? `<defs><pattern id="wk" width="${7 * ppd}" height="100" patternUnits="userSpaceOnUse">${off}</pattern></defs>` : '';
+      bgBody = off ? `<rect width="${W}" height="${taskH}" fill="url(#wk)"/>` : '';
     } else { bgDefs = ''; bgBody = ''; }
-    // explicit month / quarter boundaries in the coarse views
-    let lines = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
-    if (ppd < 10) for (let d = nextBoundary('month', origin - 1); d < endDay; d = nextBoundary('month', d)) { const q = ymd(d)[1] % 3 === 0; lines += `<rect x="${xOf(d)}" y="0" width="1" height="${taskH}" fill="rgba(22,21,19,${q ? 0.11 : 0.055})"/>`; }
+    const holidays = store.work.holidays.filter((day) => day >= origin && day < endDay).map((day) => `<rect x="${xOf(day)}" y="0" width="${Math.max(1, ppd)}" height="${taskH}" fill="rgba(245,158,11,.14)"/>`).join('');
     bg.setAttribute('width', W); bg.setAttribute('height', taskH);
-    setSVG(bg, bgDefs + bgBody + lines);
+    setSVG(bg, bgDefs + bgBody + holidays);
   }
 
   // ---------- bars ----------
@@ -227,22 +223,16 @@ export function createGantt(ctx) {
         } else if (el._shade) { el._shade.remove(); el._shade = null; }
       }
       // Keep readable bars self-contained; only very short bars need an external label.
-      const extra = ui.endDates ? 26 : 0;
-      const out = !f.summary && !ms && ((w < 80 && textW(t.name) + 16 + extra > w) || (ui.endDates && w < 38));
+      const out = !f.summary && !ms && ((w < 80 && textW(t.name) + 16 > w) || w < 60);
       el._label.classList.toggle('out', out);
-      { // end date: aligned to the right inside end when text is inside, else right of the outside/milestone/summary text
+      { // end date (shown on hover): right inside end when text is inside, else right of the outside/milestone/summary text
         const inside = !f.summary && !ms && !out;
-        if (ui.endDates) {
-          const day = ms ? f.start : f.end - 1, host = inside ? el : el._label;
-          if (el._ed !== day) { const [, mo, dd] = ymd(day); el._edate.firstChild.textContent = String(dd).padStart(2, '0'); el._edate.lastChild.textContent = MONTHS[mo]; el._ed = day; }
-          if (el._edate.parentNode !== host) host.appendChild(el._edate);
-        } else if (el._edate.parentNode) {
-          el._edate.remove();
-        }
-        el._label.style.right = inside && ui.endDates ? '34px' : '';
+        const day = ms ? f.start : f.end - 1, host = inside ? el : el._label;
+        if (el._ed !== day) { const [, mo, dd] = ymd(day); el._edate.firstChild.textContent = String(dd).padStart(2, '0'); el._edate.lastChild.textContent = MONTHS[mo]; el._ed = day; }
+        if (el._edate.parentNode !== host) host.appendChild(el._edate);
       }
       const labelX = ms ? x1 + dims.msz * 1.5 + 9 : x1 + 1 + w + (f.summary ? 8 : 18);
-      el._label.style.maxWidth = f.summary || ms || out ? Math.max(0, Math.min(ui.endDates ? 236 : 200, W - labelX - 8)) + 'px' : '';
+      el._label.style.maxWidth = f.summary || ms || out ? Math.max(0, Math.min(248, W - labelX - 8)) + 'px' : '';
       const hw = ms || f.summary ? 8 : clamp(w * 0.22, 3, 8); if (el._hw !== hw) { el._hw = hw; el.style.setProperty('--hw', hw + 'px'); }
       const p = f.progress;
       el._fill.style.width = p + '%'; el._fill.classList.toggle('full', p >= 100);
@@ -284,9 +274,12 @@ export function createGantt(ctx) {
       const [ax, ay] = anchor(l.from, fe, a), [bx, by] = anchor(l.to, te, b);
       const dA = fe === 'f' ? 1 : -1, dF = te === 's' ? 1 : -1;
       let d, arrow;
-      const tt = store.byId.get(l.to);
-      if (l.type === 'FS' && by !== ay && !(tt.ms) && bx - ax < 2 * (ppd < 5 ? 4 : 11)) { // back-to-back: drop into the top/bottom edge of the successor instead of looping around it
-        const s = by > ay ? 1 : -1, xv = Math.max(ax + 3, bx + 5), ty = by - s * dims.bar / 2;
+      const tt = store.byId.get(l.to), tf = store.info.get(l.to), isMs = tt.ms && !tf.summary;
+      const g = ppd < 5 ? 4 : 11;
+      if (l.type === 'FS' && by !== ay && bx - ax < 2 * g && (!isMs || pixel(xOf(tf.start)) >= ax - 2)) { // back-to-back: drop into the top/bottom edge (or milestone head/bottom) instead of looping around it
+        const s = by > ay ? 1 : -1;
+        const xv = isMs ? pixel(xOf(tf.start)) : Math.max(ax + 3, bx + 5);
+        const ty = by - s * (isMs ? Math.max(dims.msz / 2 + 4, Math.ceil(dims.msz * Math.SQRT1_2) + 1) : dims.bar / 2);
         d = roundPath([[ax, ay], [xv, ay], [xv, ty]]); arrow = `${xv},${ty} ${xv - 4},${ty - s * 7} ${xv + 4},${ty - s * 7}`;
       } else {
         d = route(ax, ay, dA, bx, by, dF);
@@ -329,12 +322,12 @@ export function createGantt(ctx) {
   }
 
   // ---------- render ----------
-  // Fit follows the project: refit when the pane, tasks, dates, rows, density, end dates or slack change (not while dragging).
-  const fitKeyNow = () => `${gb.clientWidth}|${store.rev}|${store.rows.map((t) => t.id).join()}|${dims.row}|${dims.bar}|${ui.endDates ? 1 : 0}|${ui.slackMode === 'selected' ? `s:${ui.selId}` : ui.slackMode}|${slackEnd()}`;
+  // Fit follows the project: refit when the pane, tasks, dates, rows, density or slack change (not while dragging).
+  const fitKeyNow = () => `${gb.clientWidth}|${store.rev}|${store.rows.map((t) => t.id).join()}|${dims.row}|${dims.bar}|${ui.slackMode === 'selected' ? `s:${ui.selId}` : ui.slackMode}|${slackEnd()}`;
   function render() {
     if (fitMode && !fitting && !drag && origin != null && fitKeyNow() !== fitKey) { fit(); return; }
     layout();
-    root.classList.toggle('crit-on', store.critical); root.classList.toggle('show-ed', !!ui.endDates);
+    root.classList.toggle('crit-on', store.critical);
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     if (pendShift) { gb.scrollLeft += pendShift; if (drag && drag.cx0 != null) drag.cx0 += pendShift; pendShift = 0; }
     const si = store.rows.findIndex((t) => t.id === ui.selId);
@@ -554,6 +547,12 @@ export function createGantt(ctx) {
   gb.addEventListener('pointerup', () => finish(true));
   gb.addEventListener('pointercancel', () => finish(false));
   gb.addEventListener('lostpointercapture', () => { if (drag) finish(true); });
+  gb.addEventListener('dblclick', (e) => {
+    const hit = e.target.closest('.dot, .lk') ? null : (e.target.closest('.bar[data-id]') || document.elementFromPoint(e.clientX, e.clientY)?.closest('.bar[data-id]'));
+    if (!hit || hit.closest('.dot, .lk')) return;
+    if (drag) finish(false);
+    ctx.taskDialog?.open(+hit.dataset.id);
+  });
 
   gb.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); setPpd(ppd * Math.exp(-e.deltaY * 0.0018), e.clientX); }

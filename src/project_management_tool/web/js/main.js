@@ -5,6 +5,7 @@ import { openProjectStorage } from './storage.js';
 import { createHistory } from './history.js';
 import { createGrid, COLS } from './grid.js';
 import { createTaskUI } from './taskui.js';
+import { createTaskDialog } from './taskdialog.js';
 import { createCalendarUI } from './calendarui.js';
 import { createCriticalUI } from './criticalui.js';
 import { createSlackUI } from './slackui.js';
@@ -30,8 +31,7 @@ storage.attach(store);
 globalThis.PlanDiagnostics?.setStoreSummary(() => ({ sheetCount: store.wb.sheets.length, taskCount: store.tasks.length, linkCount: store.links.length, readOnly: store.readOnly, stale: !!store.stale, autoSchedule: store.auto, connectedFile: !!store.sheet().fileToken, undoCount: store.undoStack.length, saveStatus: $('#save-status').dataset.state }));
 diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
-let endDatesOn = false; try { endDatesOn = appState.getItem('pm-end-dates') === '1'; } catch {}
-const ui = { selId: null, col: 'name', linkId: null, focus: focusOn, endDates: endDatesOn };
+const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
 let selections = {};
 try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) selections = value; } catch { /* no saved selection */ }
 function restoreSelection() {
@@ -148,7 +148,7 @@ function renderAll() {
       b.tabIndex = on ? 0 : -1;
     });
   }
-  $('#optEnd').checked = ui.endDates; $('#optAuto').checked = store.auto; criticalUI.render();
+  $('#optAuto').checked = store.auto; criticalUI.render();
   // A saved version on screen is read-only: its scheduling and critical-path target are the version's own.
   $('#optAuto').disabled = !!store.preview; $('#critical-target').disabled = !!store.preview;
   ctx.versions.render();
@@ -177,6 +177,7 @@ ctx.insertTask = (ms = false, position = 'after', referenceId = ui.selId) => {
   grid.startEdit(result.id, 'name');
 };
 createTaskUI(ctx, grid);
+ctx.taskDialog = createTaskDialog(ctx, grid);
 ctx.calendar = createCalendarUI(ctx, grid);
 const act = {
   add: () => ctx.insertTask(),
@@ -212,7 +213,6 @@ $('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; 
     cm.querySelector(`[data-crit="${modes[next]}"]`)?.focus();
   });
 }
-$('#optEnd').addEventListener('change', (e) => { ui.endDates = e.target.checked; try { appState.setItem('pm-end-dates', ui.endDates ? '1' : '0'); } catch {} renderAll(); });
 $('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
 
 // another tab saved the workbook: stop writing from this one (it would overwrite that tab's work) and offer a reload
