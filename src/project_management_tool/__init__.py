@@ -99,7 +99,8 @@ class PlanServer(http.server.ThreadingHTTPServer):
 
 class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
-                      ".js": "text/javascript", ".css": "text/css", ".json": "application/json"}
+                      ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
+                      ".woff2": "font/woff2"}
 
     def __init__(self, *args, storage, **kwargs):
         self.storage = storage

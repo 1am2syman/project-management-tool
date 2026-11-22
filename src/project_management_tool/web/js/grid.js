@@ -34,7 +34,8 @@ const GROUPS = [
   { id: 'dep', label: 'Dependencies & team' },
 ];
 const AV = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
-const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgba(79,102,240,${(0.05 + v * 0.62).toFixed(3)});${v > 0.62 ? 'color:#fff;font-weight:600;' : ''}`; };
+// The tint comes from --heat (an "r g b" triple) so the stylesheet decides the hue; the text turns white once the cell is dark enough.
+const heat = (v) => { v = Math.max(0, Math.min(1, v)); return `background:rgb(var(--heat,79 102 240) / ${(0.05 + v * 0.62).toFixed(3)});${v > 0.85 ? 'color:#fff;font-weight:600;' : ''}`; };
 const smooth = (x) => x * x * (3 - 2 * x);
 
 function spark(f) {
