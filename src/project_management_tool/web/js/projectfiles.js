@@ -1,3 +1,4 @@
+import { appState } from './appstate.js';
 import { diagnostics } from './diagnosticlog.js';
 import { criticalPathFields, validCriticalPath } from './criticalpath.js';
 import { cleanRem, cleanVersions, isEmail, LINK_TYPES, LOG_KINDS, LOG_TYPES, MAX_VERSIONS, VERSION_TYPE_IDS } from './model.js';
@@ -180,7 +181,21 @@ function portablePlan(data) {
   return data;
 }
 
-export function encodeProjectFile(store) {
+export function encodeProjectFile(store, { candidate, sheetId } = {}) {
+  // Presentation reads can display a decision/drag draft. Ordinary file output
+  // reads the acknowledged workbook; staged output is always explicit below.
+  if (!candidate && store.commitsEnabled) {
+    candidate = store.savedState(); sheetId ??= store.wb.active;
+  }
+  // A failed attempt is immutable saved-state data. Build only the portable view;
+  // constructing a Store here could read settings or run scheduling side effects.
+  if (candidate) {
+    const sheet = candidate.workbook.sheets.find(s => s.id === (sheetId || candidate.workbook.active));
+    if (!sheet) throw new Error('The staged project is no longer available.');
+    const view = { sheet: () => sheet, serialize: () => JSON.stringify(sheet.data), versions: () => sheet.versions || [],
+      auto: candidate.preferences.auto, critical: candidate.preferences.critical };
+    return appState.withContext(candidate.browser || {}, () => encodeProjectFile(view));
+  }
   const sheet = store.sheet();
   // While a saved version is on screen, the loaded tasks are that version; the file holds the live plan.
   const data = JSON.parse(store.preview ? JSON.stringify(sheet.data) : store.serialize());
@@ -237,6 +252,8 @@ function adoptCauses(project) {
   if (causes.list.length !== before) saveCauses(causes);
 }
 
+const mutate = (store, fn) => store.commit ? store.commit(fn) : fn(store);
+
 export function openProjectFile(store, contents, options = {}) {
   const validation = diagnostics.begin('file.open.validate');
   let project;
@@ -245,13 +262,17 @@ export function openProjectFile(store, contents, options = {}) {
   if (store.stale) throw new Error('Reload this window before opening a project; the app changed in another window.');
   const apply = diagnostics.begin('file.open.apply');
   try {
-    // Apply the saved scheduling mode before loading, so manually scheduled dates survive.
-    store.auto = project.preferences.auto; store.critical = project.preferences.critical;
-    if (!store.critical) store.criticalOnly = false;
-    adoptCauses(project);
-    const extra = { rem: project.rem, ...criticalPathFields(project.preferences.criticalPath), ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
-    const id = store.addSheet(project.data, project.name, extra);
-    apply.end({ taskCount: store.tasks.length, linkCount: store.links.length }); return id;
+    const result = mutate(store, draft => {
+      // Scheduling, imported causes and the binding belong to the same candidate.
+      draft.auto = project.preferences.auto; draft.critical = project.preferences.critical;
+      if (!draft.critical) draft.criticalOnly = false;
+      adoptCauses(project);
+      const extra = { rem: project.rem, ...criticalPathFields(project.preferences.criticalPath), ...(options.fileToken ? { fileToken: options.fileToken } : {}), ...(project.versions.length ? { versions: project.versions, nextVersion: project.nextVersion } : {}) };
+      return draft.addSheet(project.data, project.name, extra);
+    });
+    const accepted = id => { apply.end({ taskCount: project.data.tasks.length, linkCount: project.data.links.length }); return id; };
+    if (result?.then) return result.then(accepted, error => { apply.fail(error); throw error; });
+    return accepted(result);
   } catch (error) { apply.fail(error); throw error; }
 }
 
@@ -264,7 +285,7 @@ export function projectFileName(name) {
 export function createProjectFiles(ctx, browser = window) {
   const { store } = ctx, doc = browser.document;
   const openButton = doc.querySelector('#openprojectbtn'), saveButton = doc.querySelector('#saveprojectbtn');
-  const normalSave = doc.querySelector('#savefilebtn'), bindings = createFileBindings(browser);
+  const normalSave = doc.querySelector('#savefilebtn'), copyButton = doc.querySelector('#downloadcopybtn'), bindings = createFileBindings(browser);
   // Capability errors remain errors: falling back after an uncertain native request
   // could cause a second picker or write.
   let backendPromise;
@@ -274,14 +295,28 @@ export function createProjectFiles(ctx, browser = window) {
     return backendPromise;
   };
   let busy = false;
-  const tokenFor = (sheet) => sheet.fileToken ||= (browser.crypto?.randomUUID?.() || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  async function connect(sheet, handle, contents) {
-    await bindings.write(tokenFor(sheet), { handle, contents }); store.save(); paintSave();
+  const newToken = () => browser.crypto?.randomUUID?.() || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const bind = (sheetId, token) => mutate(store, draft => {
+    const sheet = draft.sheet(sheetId);
+    if (!sheet) throw new Error('The project no longer exists.');
+    if (token) sheet.fileToken = token; else delete sheet.fileToken;
+    draft.save();
+  });
+  async function connect(sheetId, handle, contents) {
+    const token = store.sheet(sheetId)?.fileToken || newToken();
+    await bindings.write(token, { handle, contents });
+    await bind(sheetId, token); void paintSave();
   }
-  const lock = (value) => { busy = value; openButton.disabled = value; saveButton.disabled = value; if (normalSave) normalSave.disabled = value; };
+  const paintControls = () => {
+    const disabled = !!(busy || store.pending || store.suspended || store.locked);
+    openButton.disabled = disabled; saveButton.disabled = disabled;
+    if (normalSave) normalSave.disabled = disabled;
+    if (copyButton) copyButton.disabled = false;
+  };
+  const lock = value => { busy = value; paintControls(); };
   const report = (action, e) => {
     diagnostics.record(`file.${action}.failure`, { error: e, cancelledOrAborted: e?.name === 'AbortError' }, e?.name === 'AbortError' ? 'warn' : 'error');
-    if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}`);
+    if (e?.name !== 'AbortError') ctx.toast(`Could not ${action} project: ${e.message || e}. Use Download copy to keep a portable copy.`);
   };
   const localError = result => ({
     busy: 'Another file chooser is already open.',
@@ -293,16 +328,20 @@ export function createProjectFiles(ctx, browser = window) {
     permission_denied: 'Cannot access this file. It may be read-only or open in another program. Close it there, check permissions, or use Save As.',
   }[result.error] || 'The local file operation could not be completed.');
   const canOpen = () => {
-    if (!store.stale) return true;
+    if (store.locked) { ctx.toast('This tab is read-only. Use Download copy to keep a portable copy.'); return false; }
+    if (!store.stale && !store.pending && !store.suspended) return true;
+    if (store.pending || store.suspended) { ctx.toast('The workspace has an unconfirmed action. Use Download copy or resolve the storage error before opening a project.'); return false; }
     diagnostics.record('file.open.blocked', { reason: 'stale-window' }, 'warn');
     ctx.toast('Reload this window before opening a project; the app changed in another window.'); return false;
   };
 
-  async function loadFile(file) {
+  async function loadFile(file, handle) {
     diagnostics.record('file.open.selected', { bytes: file.size, mimeType: file.type || '', extension: /\.plan$/i.test(file.name || '') ? '.plan' : 'other' });
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error('Plan project files must be 64 MB or smaller.');
     const contents = await diagnostics.trace('file.open.readText', () => file.text());
-    const id = openProjectFile(store, contents);
+    const token = handle ? newToken() : null;
+    if (handle) await diagnostics.trace('file.open.connect', () => bindings.write(token, { handle, contents }));
+    const id = await openProjectFile(store, contents, { fileToken: token });
     ctx.toast(`Opened “${store.sheet(id).name}”`);
     return { id, contents };
   }
@@ -330,9 +369,9 @@ export function createProjectFiles(ctx, browser = window) {
 
   // A terminal attach rejection keeps the imported or saved contents but drops the unconfirmed binding,
   // so the project does not claim a connection it does not have.
-  function dropUnconfirmed(sheet) { delete sheet.fileToken; store.save(); }
+  const dropUnconfirmed = sheetId => bind(sheetId, null);
 
-  // A refused commit or attach can be this window's own autosave, which moves the workspace revision between
+  // A refused commit or attach can be this window's own action, which moves the workspace revision between
   // the barrier and the server check. Such a refusal retries on the newest revision. The retry count is bounded,
   // so a continuous typist cannot loop forever.
   const OWN_REVISION_RETRIES = 2;
@@ -353,7 +392,7 @@ export function createProjectFiles(ctx, browser = window) {
   }
 
   // Commits the staged snapshot. Only a 409 is a definitive refusal; any other failure keeps the selection for
-  // recovery because the write may have happened. A revision-only refusal caused by this window's own autosave
+  // recovery because the write may have happened. A revision-only refusal caused by this window's own action
   // retries the same selection on the newest barrier revision. Any other refusal releases the selection.
   async function commitFile(native, id, revision, { retryOwn = true } = {}) {
     let current = revision;
@@ -375,7 +414,7 @@ export function createProjectFiles(ctx, browser = window) {
     }
   }
 
-  // Attaches a sheet to a written or opened file. A revision-only refusal from this window's own autosave retries
+  // Attaches a sheet to a written or opened file. A revision-only refusal from this window's own action retries
   // on the newest revision. A final refusal is rethrown: the caller decides what it means for the connection.
   async function attachFile(native, id, sheetId, revision) {
     let current = revision;
@@ -412,20 +451,20 @@ export function createProjectFiles(ctx, browser = window) {
       if (!sheet) {
         const contents = await native.content(pending.id);
         let sheetId;
-        try { sheetId = openProjectFile(store, contents, { fileToken: result.token }); }
+        try { sheetId = await openProjectFile(store, contents, { fileToken: result.token }); }
         catch (error) {
-          try { await native.release(pending.id); native.clear(); } catch { /* retain recovery evidence */ }
+          if (!store.suspended) { try { await native.release(pending.id); native.clear(); } catch { /* retain recovery evidence */ } }
           throw error;
         }
         native.remember({ sheet: sheetId, phase: 'attaching' });
         sheet = store.sheet(sheetId);
       }
-      sheet.fileToken = result.token; store.save();
+      if (sheet.fileToken !== result.token) await bind(sheet.id, result.token);
       const revision = await ctx.storage.barrier();
       try { await attachFile(native, pending.id, sheet.id, revision); }
       catch (error) {
         if (error.status !== 409 && error.status !== 404) throw error;
-        dropUnconfirmed(sheet); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.'); return;
+        await dropUnconfirmed(sheet.id); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.'); return;
       }
       native.clear(); ctx.toast(`Opened “${sheet.name}” · reminders are off`);
       return;
@@ -436,12 +475,12 @@ export function createProjectFiles(ctx, browser = window) {
     if (result.kind === 'save_as' && result.stage === 'succeeded') {
       const sheet = pending.sheet && store.sheet(pending.sheet);
       if (!sheet) { native.clear(); ctx.toast('The file was saved, but its project no longer exists.'); return; }
-      sheet.fileToken = result.token; store.save();
+      if (sheet.fileToken !== result.token) await bind(sheet.id, result.token);
       const revision = await ctx.storage.barrier();
       try { await attachFile(native, pending.id, sheet.id, revision); }
       catch (error) {
         if (error.status !== 409 && error.status !== 404) throw error;
-        dropUnconfirmed(sheet); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.'); return;
+        await dropUnconfirmed(sheet.id); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.'); return;
       }
       native.clear(); ctx.toast('Saved project file and restored its connection'); return;
     }
@@ -462,6 +501,9 @@ export function createProjectFiles(ctx, browser = window) {
     const operation = diagnostics.begin('file.open');
     lock(true);
     try {
+      await doc.activeElement?.blur();
+      await store.whenIdle?.();
+      if (ctx.storage) await ctx.storage.barrier();
       const native = await localBackend();
       if (native) {
         if (native.pending()) { await recoverPending(native); operation.end(); return; }
@@ -473,15 +515,14 @@ export function createProjectFiles(ctx, browser = window) {
           if (selected.stage === 'cancelled') { native.clear(); operation.end({ cancelled: true }); return; }
           if (selected.stage !== 'ready') throw new Error(localError(selected));
           const contents = await native.content(id);
-          const sheetId = openProjectFile(store, contents, { fileToken: selected.token });
+          const sheetId = await openProjectFile(store, contents, { fileToken: selected.token });
           native.remember({ sheet: sheetId, phase: 'attaching' });
           const sheet = store.sheet(sheetId);
-          sheet.fileToken = selected.token; store.save();
           const revision = await ctx.storage.barrier();
           try { await attachFile(native, id, sheetId, revision); }
           catch (error) {
             if (error.status === 409 || error.status === 404) {
-              dropUnconfirmed(sheet); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.');
+              await dropUnconfirmed(sheet.id); native.clear(); ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.');
               operation.end(); return;
             }
             ctx.toast('Project opened, but its file connection could not be confirmed. Use Save As to reconnect.'); throw error;
@@ -490,7 +531,7 @@ export function createProjectFiles(ctx, browser = window) {
           ctx.toast(`Opened “${sheet.name}” · reminders are off`);
           operation.end({ cancelled: false }); return;
         } catch (error) {
-          if (selected?.stage === 'ready' && !native.pending()?.sheet) {
+          if (selected?.stage === 'ready' && !native.pending()?.sheet && !store.suspended) {
             try { await native.release(id); native.clear(); } catch { /* retain recovery evidence */ }
           }
           throw error;
@@ -501,17 +542,23 @@ export function createProjectFiles(ctx, browser = window) {
         [handle] = await diagnostics.trace('file.open.picker', () => browser.showOpenFilePicker({ id: 'plan-projects', types: TYPES, multiple: false }), { kind: 'native' });
         file = await diagnostics.trace('file.open.getFile', () => handle.getFile());
       } else file = await diagnostics.trace('file.open.picker', fallbackOpen, { kind: 'input' });
-      if (file) { const { id, contents } = await loadFile(file); if (handle) await diagnostics.trace('file.open.connect', () => connect(store.sheet(id), handle, contents)); }
+      if (file) await loadFile(file, handle);
       operation.end({ cancelled: !file });
     } catch (e) { operation.fail(e); report('open', e); }
     finally { lock(false); diagnostics.record('file.open.controlsUnlocked'); }
   }
 
   async function writeProject(asNew = false) {
+    if (store.locked) { ctx.toast('This tab is read-only. Use Download copy to keep a portable copy.'); return; }
     if (busy) { diagnostics.record('file.save.ignored', { busy }); return; }
     const operation = diagnostics.begin('file.save', { asNew });
-    lock(true); let writable = null, closing = false;
+    lock(true); let writable = null, closing = false, fileWritten = false;
     try {
+      // Blur may submit an asynchronous cell edit. Its acknowledgement and a
+      // healthy workspace must precede both encoding and native initialization.
+      await doc.activeElement?.blur();
+      await store.whenIdle?.();
+      if (ctx.storage) await ctx.storage.barrier();
       // Snapshot before awaiting the dialog: a later tab switch must not change what is saved.
       const encode = diagnostics.begin('file.save.encode');
       let contents;
@@ -544,13 +591,14 @@ export function createProjectFiles(ctx, browser = window) {
         }
         const result = await commitFile(native, id, currentRevision, { retryOwn: !exportingStale });
         if (result.stage !== 'succeeded') await settleRejected(native, id, result, 'The project could not be saved. Check the selected file before trying again.');
+        fileWritten = true;
         if (kind === 'save_as' && !exportingStale) {
-          sheet.fileToken = result.token; store.save();
+          if (sheet.fileToken !== result.token) await bind(sheet.id, result.token);
           const attachedRevision = await ctx.storage.barrier();
           try { await attachFile(native, id, sheet.id, attachedRevision); }
           catch (error) {
             if (error.status !== 409 && error.status !== 404) throw error;
-            dropUnconfirmed(sheet); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.');
+            await dropUnconfirmed(sheet.id); native.clear(); ctx.toast('The file was saved, but its connection could not be confirmed. Use Save As to reconnect.');
             operation.end(); return;
           }
         }
@@ -575,50 +623,63 @@ export function createProjectFiles(ctx, browser = window) {
         if (record && (store.stale || sheet.readOnly)) throw new Error('The project changed in another window. Reload, or use Save As for a copy.');
         writable = await diagnostics.trace('file.save.createWritable', () => handle.createWritable());
         await diagnostics.trace('file.save.write', () => writable.write(contents)); closing = true;
-        await diagnostics.trace('file.save.close', () => writable.close()); writable = null;
-        await diagnostics.trace('file.save.connect', () => connect(sheet, handle, contents));
+        await diagnostics.trace('file.save.close', () => writable.close()); writable = null; fileWritten = true;
+        await diagnostics.trace('file.save.connect', () => connect(sheet.id, handle, contents));
         ctx.toast(`Saved ${handle.name || name}`);
       } else {
-        const url = browser.URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
-        const a = doc.createElement('a'); a.href = url; a.download = name; doc.body.appendChild(a);
-        try { a.click(); } finally { a.remove(); browser.setTimeout(() => browser.URL.revokeObjectURL(url), 4000); }
-        ctx.toast(`Download started: ${name}`);
+        download(contents, name);
+        ctx.toast(`Download started: ${name}. Check Downloads.`);
       }
       operation.end();
     } catch (e) {
       operation.fail(e);
       if (writable) { try { await writable.abort(); } catch { /* the browser may have already closed the stream */ } }
-      if (closing) ctx.toast('Could not confirm the project save. Check the selected file before trying again.');
+      if (fileWritten) ctx.toast(`The file was saved, but its connection could not be confirmed: ${e.message || e}. Use Download copy for a separate portable copy.`);
+      else if (closing) ctx.toast('Could not confirm the project save. Check the selected file before trying again. Use Download copy for a separate portable copy.');
       else report('save', e);
     } finally { lock(false); diagnostics.record('file.save.controlsUnlocked'); }
   }
 
-  let paintSequence = 0;
-  async function paintSave() {
-    if (!normalSave) return;
-    const sheet = store.sheet(), sequence = ++paintSequence;
-    let connected = !!sheet.fileToken;
+  // This rescue path never blurs an editor, awaits storage or touches native
+  // state. It remains usable even while a normal file operation is stalled.
+  function downloadCopy() {
+    const operation = diagnostics.begin('file.downloadCopy');
     try {
-      const native = await localBackend();
-      if (native) connected = typeof sheet.fileToken === 'string' && sheet.fileToken.startsWith('local-') && await native.connected(sheet.id, sheet.fileToken);
-    } catch { connected = false; }
-    if (sequence !== paintSequence || store.sheet() !== sheet) return;
+      const candidate = store.pendingCandidate;
+      const sheetId = store.pendingSheetId || candidate?.workbook.active;
+      const sheet = candidate ? candidate.workbook.sheets.find(s => s.id === sheetId) : store.sheet();
+      const contents = encodeProjectFile(store, { candidate, sheetId });
+      const name = projectFileName(candidate ? `${sheet.name} (unsaved copy)` : sheet.name);
+      download(contents, name);
+      ctx.toast(`Download started${candidate ? ' · unsaved copy' : ''}: ${name}. Check Downloads.`);
+      operation.end({ unsaved: !!candidate });
+    } catch (error) { operation.fail(error); ctx.toast(`Could not download project copy: ${error.message || error}`); }
+  }
+  function download(contents, name) {
+    const url = browser.URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+    const a = doc.createElement('a'); a.href = url; a.download = name; doc.body.appendChild(a);
+    try { a.click(); } finally { a.remove(); browser.setTimeout(() => browser.URL.revokeObjectURL(url), 4000); }
+  }
+
+  function paintSave() {
+    if (!normalSave) return;
+    const connected = !!store.sheet().fileToken;
     normalSave.querySelector('.tool-label').textContent = connected ? 'Save' : 'Save…';
     normalSave.title = connected ? 'Save changes to the connected .plan file (Ctrl/⌘+S)' : 'Choose a .plan file for this project (Ctrl/⌘+S)';
   }
-  store.on(paintSave); paintSave();
+  store.on(() => { paintSave(); paintControls(); }); paintSave(); paintControls();
   const save = () => writeProject(false), saveAs = () => writeProject(true);
   openButton.addEventListener('click', open);
   normalSave?.addEventListener('click', save);
   saveButton.addEventListener('click', saveAs);
+  copyButton?.addEventListener('click', downloadCopy);
   doc.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || !['o', 's'].includes(e.key.toLowerCase())) return;
     e.preventDefault();
-    if (doc.querySelector('.modal-back, #diagnostics-dialog[open]') || store._orig) return;
+    if (doc.querySelector('.modal-back, #diagnostics-dialog[open], .dly-pop') || store._orig || store.pending) return;
     e.stopPropagation();
-    // Commit an in-progress grid/formula edit before capturing the project.
-    doc.activeElement?.blur();
+    // Each action awaits blur-triggered edits before reading its project.
     if (e.key.toLowerCase() === 'o') void open(); else if (e.shiftKey) void saveAs(); else void save();
   }, true);
-  return { open, save, saveAs };
+  return { open, save, saveAs, downloadCopy };
 }

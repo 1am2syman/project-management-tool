@@ -37,6 +37,16 @@ try {
   await page.locator('#gbody .r[data-id="21"]').waitFor();
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
   const settle = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  // Pair each substantive input with its own database response. A pre-existing
+  // green badge or two animation frames alone cannot prove this action committed.
+  const commitAction = async (action) => {
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST'),
+      action(),
+    ]);
+    assert.equal(response.status(), 200, await response.text());
+    await saved(); await settle();
+  };
   const assertNoScroll = async (label) => {
     const m = await page.evaluate(() => {
       const dlg = document.querySelector('.modal.task-dialog'), body = dlg?.querySelector('.m-body');
@@ -78,8 +88,7 @@ try {
   assert.equal(await dlg.locator('[data-td-save]').isEnabled(), true, 'Save changes enabled when dirty');
   const cmpText = await dlg.locator('[data-td-actual-cmp]').textContent();
   assert(cmpText.includes('8d actual working days'), `Actual comparison shows 8d actual working days, got: ${cmpText}`);
-  await dlg.locator('[data-td-save]').click();
-  await settle();
+  await commitAction(() => dlg.locator('[data-td-save]').click());
   assert.equal(await dlg.locator('.td-title').textContent(), 'Wireframes & flows');
   assert.equal(await dlg.locator('[data-td-save]').isDisabled(), true, 'Save disabled after saving');
   // Grid reflects updated name & progress
@@ -114,12 +123,12 @@ try {
   await addIn.locator('[data-add-target]').selectOption('3');
   await addIn.locator('[data-add-type]').selectOption('SS');
   await addIn.locator('[data-add-lag]').fill('2');
-  await addIn.locator('[data-add-submit="in"]').click(); await settle();
+  await commitAction(() => addIn.locator('[data-add-submit="in"]').click());
   assert.equal(await dlg.locator('#td-panel-connections .td-card').nth(0).locator('.td-link-row').count(), initialInCount + 1);
   // Update lag on the newly added link
   const newRow = dlg.locator('#td-panel-connections .td-link-row', { hasText: 'Stakeholder interviews' });
   await newRow.locator('[data-link-lag]').fill('4');
-  await newRow.locator('[data-link-save]').click(); await settle();
+  await commitAction(() => newRow.locator('[data-link-save]').click());
   assert.equal(await dlg.locator('#td-panel-connections .td-link-row', { hasText: 'Stakeholder interviews' }).locator('[data-link-lag]').inputValue(), '4');
   // Jump to predecessor and come back
   await dlg.locator('#td-panel-connections .td-link-row', { hasText: 'Stakeholder interviews' }).locator('[data-td-jump]').click(); await settle();
@@ -127,7 +136,7 @@ try {
   await dlg.locator('[data-td-back]').click(); await settle();
   assert.equal(await dlg.locator('.td-title').textContent(), 'Wireframes & flows');
   // Remove the added link
-  await dlg.locator('#td-panel-connections .td-link-row', { hasText: 'Stakeholder interviews' }).locator('[data-link-del]').click(); await settle();
+  await commitAction(() => dlg.locator('#td-panel-connections .td-link-row', { hasText: 'Stakeholder interviews' }).locator('[data-link-del]').click());
   assert.equal(await dlg.locator('#td-panel-connections .td-card').nth(0).locator('.td-link-row').count(), initialInCount);
   console.log('PASS 3: Connections tab adds, updates, removes links and navigates with Back stack');
 
@@ -136,9 +145,9 @@ try {
   assert.equal(await dlg.locator('#td-panel-slack .slack-metrics section').count(), 2);
   await assertNoScroll('slack tab', baseH);
   await page.screenshot({ path: join(evidence, '03-slack.png') });
-  await dlg.locator('[data-td-slack-mode]').selectOption('all'); await settle();
+  await commitAction(() => dlg.locator('[data-td-slack-mode]').selectOption('all'));
   assert.equal(await page.evaluate(() => document.querySelectorAll('.slack-overlay .slack-item').length > 0), true, 'Slack overlay updated');
-  await dlg.locator('[data-td-slack-mode]').selectOption('selected'); await settle();
+  await commitAction(() => dlg.locator('[data-td-slack-mode]').selectOption('selected'));
   console.log('PASS 4: Slack & Path tab displays slack details and controls Gantt overlay');
 
   // ---- 5. Delays & Agreed tab (stacked modal + delay record popover + log edit) ----
@@ -151,17 +160,27 @@ try {
   assert.equal(await dlg.isVisible(), true);
   // Now actually set the agreed deadline
   await dlg.locator('[data-td-dly="agree-deadline"]').click(); await settle();
-  await page.locator('.modal-back').last().locator('[data-ok]').click(); await settle();
+  await commitAction(() => page.locator('.modal-back').last().locator('[data-ok]').click());
   assert(await dlg.locator('#td-panel-delays').textContent().then((s) => s.includes('Agreed baseline & variance')));
   // Now extend duration on Overview to trigger the delay record popover
   await dlg.locator('[data-td-tab="overview"]').click(); await settle();
+  const diskDuration = () => page.evaluate(async () => {
+    const { state } = await (await fetch('api/projects')).json();
+    return state.workbook.sheets.find((sheet) => sheet.id === state.workbook.active).data.tasks.find((task) => task.id === 8).dur;
+  });
+  const committedDuration = await diskDuration();
   await dlg.locator('input[name="dur"]').fill('10');
   await dlg.locator('[data-td-save]').click(); await settle();
-  // Task dialog should close automatically so .dly-pop is unobstructed
+  // Keep the inspector input pending until Record/Skip acknowledges the compound
+  // edit. The popover is above the inspector and remains operable.
   await page.locator('.dly-pop').waitFor();
-  assert.equal(await dlg.count(), 0, 'Task dialog closed so delay popover is unobstructed');
+  assert.equal(await dlg.count(), 1, 'Inspector stays open during the delay decision');
+  assert.equal(await dlg.getAttribute('aria-busy'), 'true');
+  assert.equal(await dlg.locator('input[name="dur"]').inputValue(), '10');
+  assert.equal(await diskDuration(), committedDuration, 'Schedule and delay decision stay uncommitted until Record/Skip');
   await page.locator('.dly-pop [data-f="cause"]').selectOption({ index: 1 });
-  await page.locator('.dly-pop [data-record]').click(); await settle();
+  await commitAction(() => page.locator('.dly-pop [data-record]').click());
+  if (await dlg.count()) { await page.keyboard.press('Escape'); await settle(); }
   // Re-open via double-click and verify Delays tab shows own delay & log entry
   await page.locator('.bar[data-id="8"]').dblclick();
   await dlg.waitFor(); await settle();
@@ -181,9 +200,9 @@ try {
   assert.equal(await dlg.locator('.td-kind.ms').textContent(), 'Milestone');
   assert.equal(await dlg.locator('[data-td-end-wrap]').isHidden(), true, 'Milestone hides Finish date');
   await dlg.locator('[data-td-tab="slack"]').click(); await settle();
-  await dlg.locator('[data-td-crittarget="set"]').click(); await settle();
+  await commitAction(() => dlg.locator('[data-td-crittarget="set"]').click());
   assert(await dlg.locator('[data-td-crittarget="clear"]').isVisible(), 'Milestone set as critical-path target');
-  await dlg.locator('[data-td-crittarget="clear"]').click(); await settle();
+  await commitAction(() => dlg.locator('[data-td-crittarget="clear"]').click());
   await page.keyboard.press('Escape'); await settle();
 
   await page.locator('.bar[data-id="6"]').dblclick();
@@ -202,7 +221,7 @@ try {
 
   // ---- 7. Read-only version preview opens dialog in inspect-only mode ----
   await page.locator('#snapshotbtn').click(); await settle();
-  await page.locator('.modal-back [data-save]').click(); await settle();
+  await commitAction(() => page.locator('.modal-back [data-save]').click());
   await page.locator('#versionbtn').click(); await settle();
   await page.locator('#versionmenu .vlist .vrow').first().click(); await settle();
   await page.locator('.bar[data-id="8"]').dblclick();

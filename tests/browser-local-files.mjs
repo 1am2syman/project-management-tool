@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const playwright = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const engine = process.env.PLAYWRIGHT_BROWSER || 'chromium';
+if (!['chromium', 'firefox', 'webkit'].includes(engine)) throw Error('Unknown PLAYWRIGHT_BROWSER: ' + engine);
+const browserType = playwright[engine];
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-local-file-browser-'));
 let server, browser, log = '';
@@ -28,7 +31,7 @@ async function stopServer() {
 }
 try {
   const url = await launchServer();
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM });
+  browser = await browserType.launch({ headless: process.env.PLAN_TEST_HEADED !== '1', executablePath: engine === 'chromium' ? process.env.PLAYWRIGHT_CHROMIUM : undefined });
   const context = await browser.newContext();
   const lost = { startBefore: true, startAfter: true, attach: true, write: true, startup: true };
   await context.route('**/*', async route => {
@@ -61,19 +64,26 @@ try {
     indexedDB.open = () => { throw new Error('IndexedDB must not run'); };
   });
   await page.goto(url);
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   const fixture = await page.evaluate(async () => {
     const { Store } = await import('./js/model.js');
     const { encodeProjectFile } = await import('./js/projectfiles.js');
     return encodeProjectFile(new Store());
   });
   await writeFile(join(temp, 'opened.plan'), fixture);
-  await page.locator('#openprojectbtn').click();
-  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Could not open'));
-  await page.locator('#openprojectbtn').click();
-  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Could not open'));
-  await page.locator('#openprojectbtn').click();
-  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Confirmed the previous project connection'));
+  // Startup, pre-send loss, lost start acknowledgement and lost attach acknowledgement
+  // are separate failures. Wait for each action to finish so an old identical error
+  // toast cannot advance the next attempt before its native request has completed.
+  let recovered = false;
+  for (let attempt = 0; attempt < 6 && !recovered; attempt++) {
+    await page.evaluate(() => { document.querySelector('#toast').textContent = ''; });
+    await page.locator('#openprojectbtn').click();
+    await page.waitForFunction(() => document.querySelector('#toast').textContent.length > 0 && !document.querySelector('#openprojectbtn').disabled, null, { polling: 100 });
+    const message = await page.locator('#toast').textContent();
+    recovered = message.includes('Confirmed the previous project connection');
+    if (!recovered) assert.match(message, /Could not open/);
+  }
+  assert(recovered, 'lost start and attach responses reconcile before accepting another Open');
   const before = await page.evaluate(async () => (await (await fetch('/api/projects')).json()).state.workbook.sheets.length);
   assert.equal(before, 2);
   await page.locator('#saveprojectbtn').click();
@@ -84,23 +94,24 @@ try {
   const snapshotWhileSwitching = page.waitForResponse(response => response.url().endsWith('/snapshot') && response.ok());
   await page.locator('#saveprojectbtn').click();
   const snapshotResponse = await snapshotWhileSwitching;
-  await page.locator('#addsheet').click();
+  const projectAdded = page.waitForResponse(response => response.url().endsWith('/api/projects/changes') && response.request().method() === 'POST' && response.ok());
+  await page.locator('#addsheet').click(); await projectAdded;
   await page.waitForFunction(() => document.querySelector('#toast').textContent === 'Saved project file');
   assert.equal(await readFile(join(temp, 'saved.plan'), 'utf8'), snapshotResponse.request().postData());
   assert.notEqual(await page.locator('#tabs .tab.on').getAttribute('data-id'), originalSheet);
   await page.locator(`#tabs .tab[data-id="${originalSheet}"]`).click();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   const staged = page.waitForResponse(response => response.url().endsWith('/snapshot') && response.request().method() === 'PUT' && response.ok());
   await page.locator('#saveprojectbtn').click();
   const stagedResponse = await staged;
   const captured = stagedResponse.request().postData();
   await page.reload();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await page.locator('#savefilebtn').click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Saved project file and restored its connection'));
   assert.equal(await readFile(join(temp, 'saved.plan'), 'utf8'), captured);
   await page.reload();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await page.locator('#savefilebtn').click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Saved project file'));
   assert.equal(JSON.parse(await readFile(join(temp, 'saved.plan'), 'utf8')).format, 'plan-project');
@@ -146,7 +157,7 @@ try {
   await page.locator('#openprojectbtn').click();
   await startedInvalid;
   await page.reload();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await page.locator('#openprojectbtn').click();
   await page.waitForFunction(() => !sessionStorage.getItem('plan-file-pending'));
   await writeFile(join(temp, 'opened.plan'), fixture);
@@ -213,16 +224,17 @@ try {
   const orphanSheet = await page.evaluate(() => JSON.parse(sessionStorage.getItem('plan-file-pending')).sheet);
   assert.ok(orphanSheet);
   await page.evaluate(async sheetId => {
-    const current = await (await fetch('/api/projects')).json();
+    const current = await (await fetch('/api/projects')).json(), before = structuredClone(current.state);
     const workbook = current.state.workbook;
     workbook.sheets = workbook.sheets.filter(sheet => sheet.id !== sheetId);
     workbook.active = workbook.sheets[0].id;
-    const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: current.revision, state: current.state }) });
+    const { changesBetween } = await import('./js/changes.js');
+    const response = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: current.revision, changes: changesBetween(before, current.state) }) });
     if (!response.ok) throw new Error('Could not remove the project for the test');
   }, orphanSheet);
   await page.unroute('**/api/file-operations/*/attach');
   await page.reload();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await page.locator('#saveprojectbtn').click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('no longer exists'));
   await page.waitForFunction(() => !sessionStorage.getItem('plan-file-pending'));
@@ -236,7 +248,7 @@ try {
   assert.equal(await launchServer(Number(new URL(url).port)), url);
   await writeFile(join(temp, 'opened.plan'), fixture);
   await page.reload();
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await page.locator('#openprojectbtn').click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Opened'));
   await page.waitForFunction(() => !sessionStorage.getItem('plan-file-pending'));
@@ -244,21 +256,22 @@ try {
   // is held, so the server refuses the held request on the revision it was authorized against. That refusal names this
   // window's own write: the operation retries on the newest revision, the connection is kept, and no stale banner appears.
   const editFirstRow = async value => {
-    const autosaved = page.waitForResponse(response => response.url().endsWith('/api/projects') && response.request().method() === 'POST' && response.ok());
+    const autosaved = page.waitForResponse(response => response.url().endsWith('/api/projects/changes') && response.request().method() === 'POST' && response.ok());
     await page.locator('#gbody .r').first().locator('[data-col=name]').dblclick();
     await page.locator('.editor').fill(value); await page.keyboard.press('Enter');
     await autosaved;
   };
   const activeToken = () => page.evaluate(async () => {
     const { state } = await (await fetch('/api/projects')).json();
-    return state.workbook.sheets.find(sheet => sheet.id === state.workbook.active)?.fileToken ?? null;
+    const active = document.querySelector('#tabs .tab.on')?.dataset.id;
+    return state.workbook.sheets.find(sheet => sheet.id === active)?.fileToken ?? null;
   });
   const savedState = async () => {
-    await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+    await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
     assert.doesNotMatch(await page.locator('#save-status').textContent(), /Changed elsewhere/);
   };
   // A. Connected Save: the commit is held while an edit autosaves.
-  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   assert.ok(await activeToken());
   let heldCommit = true;
   await page.route('**/api/file-operations/*/commit', async route => {
@@ -327,7 +340,7 @@ try {
     indexedDB.open = () => { throw new Error('IndexedDB must not run'); };
   });
   await secondPage.goto(url);
-  await secondPage.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  await secondPage.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
   await secondPage.locator('#openprojectbtn').click();
   await secondPage.waitForFunction(() => document.querySelector('#toast').textContent.includes('Opened'));
   await secondContext.close();

@@ -26,8 +26,9 @@ const $ = (s) => document.querySelector(s);
 diagnostics.record('app.start');
 const storage = await openProjectStorage();
 initDensity();
-const store = new Store(storage.initial);
-storage.attach(store);
+const committedStore = new Store(storage.initial, { disk: storage.mode() === 'disk' });
+await storage.attach(committedStore);
+const store = committedStore.presentation || committedStore;
 globalThis.PlanDiagnostics?.setStoreSummary(() => {
   const cal = store.calendar, crit = store.criticalOptions();
   const customGlobalCalendar = (cal?.workdays?.length ?? 7) !== 7 || (cal?.holidays?.length ?? 0) > 0;
@@ -73,6 +74,21 @@ globalThis.PlanDiagnostics?.setStoreSummary(() => {
 diagnostics.record('app.modelReady', { sheetCount: store.wb.sheets.length, taskCount: store.tasks.length });
 let focusOn = true; try { focusOn = appState.getItem('pm-focus') !== '0'; } catch {}
 const ui = { selId: null, col: 'name', linkId: null, focus: focusOn };
+const acceptedLayout = Object.fromEntries(['pm-focus', 'pm-density', 'pm-gridw'].map(key => [key, appState.getItem(key)]));
+function syncAcceptedLayout() {
+  if (store.pending || store.suspended) return;
+  for (const key of Object.keys(acceptedLayout)) {
+    const value = appState.getItem(key);
+    if (value === acceptedLayout[key]) continue;
+    acceptedLayout[key] = value;
+    if (key === 'pm-focus') { ui.focus = value !== '0'; $('#optFocus').checked = ui.focus; }
+    else if (key === 'pm-density') setDensity(value || 'auto', { persist: false });
+    else {
+      const width = Number(value);
+      if (Number.isFinite(width) && width > 0) document.documentElement.style.setProperty('--gridw', `${Math.max(320, Math.min(innerWidth - 320, width))}px`);
+    }
+  }
+}
 let selectionTimer = 0, queuedSelection = null;
 function readSelections() {
   try { const value = JSON.parse(appState.getItem('pm-selection') || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
@@ -131,23 +147,23 @@ grid = createGrid(ctx);
 gantt = createGantt(ctx);
 sheets = createSheets(ctx);
 createExport(ctx);
-createProjectFiles(ctx);
+ctx.files = createProjectFiles(ctx);
 createImport(ctx);
 createHistory();
 ctx.people = createPeople(ctx);
 ctx.delay = createDelayUI(ctx);
 const banner = $('#robanner');
-banner.addEventListener('click', (event) => {
+banner.addEventListener('click', async (event) => {
   if (event.target.closest('#roCopy')) {
-    store.duplicateSheet(store.wb.active);
-    ctx.toast('Editable local copy created');
+    try { await store.duplicateSheet(store.wb.active); ctx.toast('Editable local copy created'); }
+    catch (error) { ctx.toast(error.message); }
   }
 });
 function paintReadOnly() {
   const readOnly = store.readOnly;
   $('#app').classList.toggle('ro', readOnly);
   banner.hidden = !readOnly;
-  if (readOnly) setHTML(banner, '<span class="lock">Read-only local snapshot</span><span>Create a local copy to edit this older project.</span><span style="flex:1"></span><button id="roCopy">Make editable copy</button>');
+  if (readOnly) setHTML(banner, store.locked ? '<span class="lock">Read-only tab</span><span>Close the editing tab, then reload to edit fresh data.</span>' : '<span class="lock">Read-only local snapshot</span><span>Create a local copy to edit this older project.</span><span style="flex:1"></span><button id="roCopy">Make editable copy</button>');
 }
 const criticalUI = createCriticalUI(ctx, grid);
 ctx.slack = createSlackUI(ctx, grid);
@@ -191,8 +207,10 @@ function renderAll() {
   grid.render(); gantt.render(); status(); sheets.render(); paintReadOnly(); ctx.relationships.render(); ctx.slack.render();
   $('.brand b').textContent = store.sheet().name; $('.brand b').title = store.sheet().name;
   document.title = `${store.sheet().name} — Plan`;
-  $('[data-act=undo]').disabled = !store.undoStack.length;
-  $('[data-act=redo]').disabled = !store.redoStack.length;
+  const blocked = !!(store.pending || store.suspended || store.locked);
+  document.querySelectorAll('[data-act=add],[data-act=addms],[data-act=indent],[data-act=outdent],[data-act=del],[data-act=reset],#snapshotbtn,#impbtn,#settingsbtn,#addsheet,#optFocus,#density,#critmode button').forEach(button => { button.disabled = blocked; });
+  $('[data-act=undo]').disabled = blocked || !store.undoStack.length;
+  $('[data-act=redo]').disabled = blocked || !store.redoStack.length;
   {
     const mode = store.criticalMode(), cm = $('#critmode');
     cm.dataset.mode = mode;
@@ -205,10 +223,11 @@ function renderAll() {
   }
   $('#optAuto').checked = store.auto; criticalUI.render();
   // A saved version on screen is read-only: its scheduling and critical-path target are the version's own.
-  $('#optAuto').disabled = !!store.preview; $('#critical-target').disabled = !!store.preview;
+  $('#optAuto').disabled = blocked || !!store.preview; $('#critical-target').disabled = blocked || !!store.preview;
   ctx.versions.render();
 }
 store.on((kind) => {
+  syncAcceptedLayout();
   if (kind !== 'drag') diagnostics.record('model.change', { kind, taskCount: store.tasks.length, linkCount: store.links.length });
   if (kind === 'denied' && store.preview) { ctx.toast(PREVIEW_LOCK); return; }
   if (kind === 'denied') { ctx.toast('This local snapshot is read-only. Make an editable copy to change it.'); return; }
@@ -224,62 +243,57 @@ store.on((kind) => {
   } else ctx.requestRender();
 });
 
-ctx.insertTask = (ms = false, position = 'after', referenceId = ui.selId) => {
-  grid.commitEdit();
-  const result = store.insertTask(referenceId, ms, position);
-  if (result.error) { ctx.toast(result.error); return; }
-  ctx.select(result.id, 'name', true);
-  grid.startEdit(result.id, 'name');
+ctx.insertTask = async (ms = false, position = 'after', referenceId = ui.selId) => {
+  if (await grid.commitEdit() === false) return;
+  try {
+    const result = await store.insertTask(referenceId, ms, position);
+    if (result.error) { ctx.toast(result.error); return; }
+    ctx.select(result.id, 'name', true); grid.startEdit(result.id, 'name');
+  } catch (error) { ctx.toast(error.message); }
 };
+const run = async (action) => { try { await action(); } catch (error) { ctx.toast(`${error.message} Download copy is available.`); } };
 createTaskUI(ctx, grid);
 ctx.taskDialog = createTaskDialog(ctx, grid);
 ctx.calendar = createCalendarUI(ctx, grid);
 const act = {
   add: () => ctx.insertTask(),
   addms: () => ctx.insertTask(true),
-  indent: () => { grid.commitEdit(); if (ui.selId != null) { const err = store.indent(ui.selId, 1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
-  outdent: () => { grid.commitEdit(); if (ui.selId != null) { const err = store.indent(ui.selId, -1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
-  del: () => {
-    if (ui.linkId) { store.removeLink(ui.linkId); ui.linkId = null; gantt.closePop(); }
+  indent: async () => { if (await grid.commitEdit() === false) return; if (ui.selId != null) { const err = await store.indent(ui.selId, 1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
+  outdent: async () => { if (await grid.commitEdit() === false) return; if (ui.selId != null) { const err = await store.indent(ui.selId, -1); if (err) ctx.toast(err); else ctx.select(ui.selId, 'name', true); } },
+  del: async () => {
+    if (await grid.commitEdit() === false) return;
+    if (ui.linkId) { await store.removeLink(ui.linkId); ui.linkId = null; gantt.closePop(); }
     else if (ui.selId != null) {
       const id = ui.selId, rows = store.rows, i = rows.findIndex((t) => t.id === id);
       const after = () => { const n = store.rows[Math.min(i, store.rows.length - 1)]; ui.selId = n ? n.id : null; };
       // a task with an agreed date leaves the plan as an agreed omission (kept in the Delay log) or is deleted outright
-      ctx.delay.confirmDelete(id, () => { store.deleteTask(id); after(); }, after);
+      await ctx.delay.confirmDelete(id, async () => { await store.deleteTask(id); after(); }, after);
     }
   },
   undo: () => store.undo(), redo: () => store.redo(),
-  reset: () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) store.resetAll(); },
+  reset: async () => { if (window.confirm('Restore the demo workbook? All sheets will be replaced.')) await store.resetAll(); },
   zoomin: () => gantt.zoomStep(1), zoomout: () => gantt.zoomStep(-1), today: () => gantt.goToday(),
 };
-document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) act[b.dataset.act](); });
-$('#density').addEventListener('change', (e) => { setDensity(e.target.value); ctx.requestRender(); });
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b && act[b.dataset.act]) void run(act[b.dataset.act]); });
+$('#density').addEventListener('change', (e) => { const value = e.target.value; e.target.value = dims.name; void run(async () => { await setDensity(value); ctx.requestRender(); }); });
 $('#optFocus').checked = ui.focus;
-$('#optFocus').addEventListener('change', (e) => { ui.focus = e.target.checked; try { appState.setItem('pm-focus', ui.focus ? '1' : '0'); } catch {} renderAll(); });
+$('#optFocus').addEventListener('change', (e) => { const value = e.target.checked; e.target.checked = ui.focus; void run(async () => { await appState.setItem('pm-focus', value ? '1' : '0'); ui.focus = value; renderAll(); }); });
 {
   const cm = $('#critmode'), modes = ['off', 'show', 'only'];
-  cm.addEventListener('click', (e) => { const b = e.target.closest('button[data-crit]'); if (b) store.setCriticalMode(b.dataset.crit); });
+  cm.addEventListener('click', (e) => { const b = e.target.closest('button[data-crit]'); if (b) void run(() => store.setCriticalMode(b.dataset.crit)); });
   cm.addEventListener('keydown', (e) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
     e.preventDefault();
     const cur = modes.indexOf(store.criticalMode());
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? 2 : (cur + (e.key === 'ArrowRight' ? 1 : 2)) % 3;
-    store.setCriticalMode(modes[next]);
+    void run(() => store.setCriticalMode(modes[next]));
     cm.querySelector(`[data-crit="${modes[next]}"]`)?.focus();
   });
 }
-$('#optAuto').addEventListener('change', (e) => store.setPref('auto', e.target.checked));
+$('#optAuto').addEventListener('change', (e) => { const value = e.target.checked; e.target.checked = store.auto; void run(() => store.setPref('auto', value)); });
 
-// another tab saved the workbook: stop writing from this one (it would overwrite that tab's work) and offer a reload
-window.addEventListener('storage', (e) => {
-  if (e.key !== 'pm-workbook-v1' || store.stale) return;
-  store.stale = true;
-  storage.markStale();
-  const bar = document.createElement('div'); bar.className = 'robanner stale';
-  setHTML(bar, '<span class="lock">Changed in another tab</span><span>Edits here are no longer saved, to protect the other tab’s work.</span><span style="flex:1"></span><button>Reload</button>');
-  bar.querySelector('button').addEventListener('click', () => location.reload());
-  document.body.appendChild(bar);
-});
+// The canonical database Web Lock chooses the writer. Browser storage is never
+// used as a cross-tab workspace or staleness signal in SQLite mode.
 
 // keyboard
 document.addEventListener('keydown', (e) => {
@@ -289,14 +303,14 @@ document.addEventListener('keydown', (e) => {
   if (!mod && !e.altKey && e.target !== document.body && e.target.closest('button,a[href],select,summary,[role=button],[role=tab]') && !['Escape', 'Delete', 'Backspace'].includes(e.key)) return;
   if (gantt.isDragging() && e.key !== 'Escape') { if (mod || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); return; }
   if (mod && !e.altKey && e.key === 'Enter') { e.preventDefault(); ctx.insertTask(e.shiftKey); return; }
-  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) store.redo(); else store.undo(); return; }
-  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); void run(() => e.shiftKey ? store.redo() : store.undo()); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); void run(() => store.redo()); return; }
   if (e.key === 'Escape') { if (gantt.isDragging()) gantt.cancelDrag(); else if (gantt.popOpen()) gantt.closePop(); else { ui.linkId = null; ctx.select(null); } return; }
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (ui.linkId || (ui.selId != null && mod)) { e.preventDefault(); act.del(); }
+    if (ui.linkId || (ui.selId != null && mod)) { e.preventDefault(); void run(act.del); }
     else if (ui.selId != null) { // spreadsheet behaviour: clear the cell; deleting a task needs Ctrl/⌘+Delete or the toolbar button
       e.preventDefault();
-      if (['owner', 'email', 'pred'].includes(ui.col)) { const err = store.setCell(ui.selId, ui.col, ''); if (err) ctx.toast(err); }
+      if (['owner', 'email', 'pred'].includes(ui.col)) { void run(async () => { const err = await store.setCell(ui.selId, ui.col, ''); if (err) ctx.toast(err); }); }
       else ctx.toast('Ctrl/⌘+Delete removes the selected task');
     }
     return;
@@ -305,8 +319,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); const ws = store.wb.sheets, i = ws.findIndex((s) => s.id === store.wb.active), n = ws.length;
     store.switchSheet(ws[(i + (e.key === 'PageDown' ? 1 : n - 1)) % n].id); return;
   }
-  if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); act.indent(); return; }
-  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); act.outdent(); return; }
+  if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); void run(act.indent); return; }
+  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); void run(act.outdent); return; }
   if (ui.selId == null) { if (e.key.startsWith('Arrow') && (e.target === document.body || e.target.id === 'gx')) { e.preventDefault(); ctx.select(store.rows[0]?.id, 'name'); } return; }
   const mv = { ArrowDown: [1, 0], ArrowUp: [-1, 0], ArrowRight: [0, 1], ArrowLeft: [0, -1] }[e.key];
   if (mv) { e.preventDefault(); grid.moveSel(...mv); return; }
@@ -321,11 +335,17 @@ document.addEventListener('keydown', (e) => {
   const width = Number(saved);
   if (Number.isFinite(width) && width > 0) document.documentElement.style.setProperty('--gridw', `${Math.max(320, Math.min(innerWidth - 320, width))}px`);
   sp.addEventListener('pointerdown', (e) => {
+    if (store.pending || store.suspended || store.locked) return;
     sp.setPointerCapture(e.pointerId); sp.classList.add('on');
     const x0 = e.clientX, w0 = $('#left').getBoundingClientRect().width;
     let w = w0, pend = 0;
     const mv = (ev) => { w = Math.max(320, Math.min(innerWidth - 320, w0 + ev.clientX - x0)); if (!pend) pend = requestAnimationFrame(() => { pend = 0; document.documentElement.style.setProperty('--gridw', `${w}px`); gantt.render(); }); };
-    const up = () => { sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('lostpointercapture', up); try { appState.setItem('pm-gridw', Math.round(w)); } catch { /* storage blocked */ } };
+    const up = () => {
+      sp.classList.remove('on'); sp.removeEventListener('pointermove', mv); sp.removeEventListener('lostpointercapture', up);
+      if (pend) { cancelAnimationFrame(pend); pend = 0; }
+      const next = Math.round(w); document.documentElement.style.setProperty('--gridw', `${w0}px`); gantt.render();
+      void run(async () => { await appState.setItem('pm-gridw', next); document.documentElement.style.setProperty('--gridw', `${next}px`); gantt.render(); });
+    };
     sp.addEventListener('pointermove', mv); sp.addEventListener('lostpointercapture', up);
   });
 })();

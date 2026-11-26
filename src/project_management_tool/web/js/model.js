@@ -2,6 +2,7 @@
 // Durations count each task’s effective working days; computed finish dates are exclusive.
 // Milestones have dur 0.
 import { appState } from './appstate.js';
+import { CommitCoordinator, immutable, canonicalState } from './commit.js';
 import { WorkingCalendar, cleanCalendar, calendarError } from './calendar.js';
 import { latestAllowedStart } from './slack.js';
 import { cleanCriticalPath, criticalPathFields, criticalPathLabel, validCriticalPath, drivingPaths } from './criticalpath.js';
@@ -212,7 +213,7 @@ function sanitize(d) {
     const rawDuration = Math.round(Number(r.dur));
     const dur = ms ? 0 : Math.max(1, Math.min(99999999, Number.isSafeInteger(rawDuration) ? rawDuration : 1));
     const progress = Math.max(0, Math.min(100, Math.round(Number(r.progress)) || 0));
-    tasks.push({ id, name: String(r.name ?? '').slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}), ...cleanAgreed(r, ms), ...cleanActuals(r, ms), ...cleanNotes(r) });
+    tasks.push({ id, name: String(r.name ?? '').trim().slice(0, 200) || 'Untitled', level, start, dur, progress, owner: String(r.owner ?? '').slice(0, 80), email: isEmail(String(r.email ?? '').trim()) ? String(r.email).trim() : '', noRem: !!r.noRem, ms, scheduling: ['auto', 'manual', 'anchor'].includes(r.scheduling) ? r.scheduling : 'auto', ...(r.calendar && !calendarError(r.calendar) ? { calendar: cleanCalendar(r.calendar) } : {}), ...cleanAgreed(r, ms), ...cleanActuals(r, ms), ...cleanNotes(r) });
   }
   const ids = new Set(tasks.map((t) => t.id)), links = [];
   let ln = 0;
@@ -273,18 +274,19 @@ function builtins() {
 }
 
 export class Store {
-  constructor(saved) {
+  constructor(saved, { disk = false } = {}) {
+    this.disk = disk;
     this.listeners = []; this.undoStack = []; this.redoStack = []; this.hist = new Map(); this.preview = null;
     this.auto = true; this.critical = true; this.criticalOnly = false; this.criticalTargets = Object.create(null); this.criticalTargetId = null;
     try {
-      const p = saved ? saved.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
+      const p = saved || disk ? saved?.preferences || {} : JSON.parse(localStorage.getItem(`${KEY}:prefs`) || '{}');
       if ('auto' in p) this.auto = !!p.auto; if ('critical' in p) this.critical = !!p.critical; if ('criticalOnly' in p) this.criticalOnly = !!p.criticalOnly;
       if (p.criticalTargets && typeof p.criticalTargets === 'object' && !Array.isArray(p.criticalTargets)) {
         for (const [sheet, id] of Object.entries(p.criticalTargets)) if (Number.isSafeInteger(id) && id > 0) this.criticalTargets[sheet] = id;
       }
     } catch { /* corrupt prefs */ }
     this.wb = this.readWB(saved?.workbook);
-    this.templates = this.readTpl(saved ? saved.templates || [] : undefined);
+    this.templates = this.readTpl(saved || disk ? saved?.templates || [] : undefined);
     const stack = (items) => (Array.isArray(items) ? items : []).filter((item) => {
       try { const data = JSON.parse(item); return typeof item === 'string' && Array.isArray(data.tasks) && Array.isArray(data.links); } catch { return false; }
     });
@@ -293,15 +295,136 @@ export class Store {
     }
     const activeHistory = this.hist.get(this.wb.active);
     this.undoStack = activeHistory?.u || []; this.redoStack = activeHistory?.r || [];
-    this.load(this.sheet().data);
+    this._load(this.sheet().data);
+  }
+  enableCommits(persist) {
+    if (this._commits) throw new Error('Commits are already enabled');
+    if (typeof persist !== 'function') throw new TypeError('A commit transport is required');
+    this.disk = true;
+    if (!this.preview) this.sheet().data = JSON.parse(this.serialize());
+    this._committedState = immutable(canonicalState(this.savedState()));
+    this.wb = { ...this._committedState.workbook, sheets: [...this._committedState.workbook.sheets] };
+    immutable(this.tasks); immutable(this.log); immutable(this.links);
+    this._commits = new CommitCoordinator(this, persist);
+    this._collapseEpoch = 0; this._collapseChanges = new Map();
+    return this;
+  }
+  get commitsEnabled() { return !!this._commits; }
+  get pending() { return !!this._commits?.pending; }
+  get suspended() { return !!this._commits?.suspended; }
+  get pendingSheetId() { return this._commits?.draft?.wb.active || null; }
+  get pendingCandidate() { return this._commits?.candidate || null; }
+  get displayStore() { return this.decisionPreview || this.dragPreview || this.previewView || this; }
+  get presentation() {
+    if (!this._presentation) this._presentation = new Proxy(this, {
+      get: (target, key) => {
+        const source = target.isCommand(key) || PRESENTATION_LIVE.has(key) || !(key in target.displayStore) ? target : target.displayStore;
+        const value = source[key];
+        return typeof value === 'function' ? value.bind(source) : value;
+      },
+      set: (target, key, value) => { target[key] = value; return true; },
+    });
+    return this._presentation;
+  }
+  isCommand(name) { return COMMANDS.has(name) || CONTROL.has(name); }
+  commit(fn, { errorStrings = false } = {}) { return this._draft ? this.inDraft(this, () => fn(this)) : this._commits ? this._commits.run(fn, null, errorStrings) : fn(this); }
+  whenIdle() { return this._commits ? this._commits.whenIdle() : Promise.resolve(); }
+  suspend(error = new Error('Workspace editing is suspended')) {
+    if (!this._commits) throw error;
+    this._commits.suspended = true; this._commits.error = error; this.emit('suspended');
+  }
+  adoptPending(state) { return this._commits.adopt(state); }
+  inDraft(draft, fn) { return appState.withContext(draft.browserState, fn); }
+  makeDraft() {
+    const base = this._committedState;
+    const draft = Object.create(Store.prototype);
+    Object.assign(draft, { _draft: true, disk: true, _events: new Set(), _effects: [], _touched: new Set(), _undoBases: new Map(),
+      wb: { ...base.workbook, active: this.wb.active, sheets: base.workbook.sheets.map(s => ({ ...s })) },
+      templates: [...base.templates], hist: new Map(Object.entries(base.history)),
+      auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly,
+      criticalTargets: { ...this.criticalTargets }, listeners: [], preview: this.preview ? { ...this.preview } : null,
+      undoStack: [...this.undoStack], redoStack: [...this.redoStack], browserState: { ...appState.snapshot() },
+      resolvePerson: this.resolvePerson,
+    });
+    draft.appState = appState.scope(draft.browserState);
+    draft.load(JSON.parse(this.serialize()));
+    draft._baseActive = base.workbook.active;
+    draft._originSheet = this.wb.active;
+    draft._originCollapsed = new Set(this.collapsed);
+    draft._collapseEpoch = this._collapseEpoch;
+    draft._originSnap = draft.snap();
+    draft._originUndo = [...this.undoStack]; draft._originRedo = [...this.redoStack];
+    const factory = this.createDraftHook || this.hook?.forDraft;
+    if (this.hook && !factory) throw new Error('A production hook must provide forDraft(draft)');
+    if (factory) {
+      const hook = this.inDraft(draft, () => factory(draft));
+      draft.hook = hook && { before: () => draft.inDraft(draft, () => hook.before()), after: e => {
+        const effect = draft.inDraft(draft, () => hook.after(e));
+        if (effect?.then) draft._effects.push(effect); return effect;
+      } };
+    }
+    return draft;
+  }
+  async finishHooks() {
+    for (let i = 0; i < this._effects.length; i++) await this._effects[i];
+  }
+  cancel() { if (!this._draft) throw new Error('Cancel is only available on a draft'); this._cancelled = true; }
+  candidateState() {
+    this.save();
+    // Compound task commands have one undo step. Explicit undo/redo and agreed
+    // baselines retain their own history semantics.
+    if (!this._historyCommand) {
+      if (!this._undoBases.has(this._originSheet)) this._undoBases.set(this._originSheet, { before: this._originSnap, u: this._originUndo, r: this._originRedo });
+      for (const [id, history] of this._undoBases) {
+        const sheet = this.wb.sheets.find(s => s.id === id); if (!sheet) continue;
+        const changed = planText(sheet.data) !== planText(JSON.parse(history.before));
+        const stacks = changed ? { u: [...history.u, history.before].slice(-150), r: [] } : { u: history.u, r: history.r };
+        this.hist.set(id, stacks);
+        if (id === this.wb.active) { this.undoStack = stacks.u; this.redoStack = stacks.r; }
+      }
+    }
+    const state = this.savedState();
+    // Navigation is local. A deletion must still leave a valid saved active ID.
+    const savedActive = this._baseActive;
+    state.workbook = { ...state.workbook, active: state.workbook.sheets.some(s => s.id === savedActive) ? savedActive : state.workbook.active };
+    return state;
+  }
+  adoptCandidate(state, draft) {
+    const active = this.sheet(this.wb.active) && state.workbook.sheets.some(s => s.id === this.wb.active) ? this.wb.active : state.workbook.active;
+    const collapsed = new Set(this.collapsed);
+    if (draft) {
+      const before = active === draft._originSheet ? draft._originCollapsed : new Set(this.sheet(active)?.data.collapsed || []);
+      const accepted = new Set(state.workbook.sheets.find(s => s.id === active)?.data.collapsed || []);
+      for (const id of new Set([...before, ...accepted])) {
+        // Adopt command-requested folding (such as revealing an inserted child),
+        // but a user toggle after submission takes precedence, even if toggled twice.
+        const changedAt = this._collapseChanges.get(JSON.stringify([active, id])) || 0;
+        if (before.has(id) !== accepted.has(id) && changedAt <= draft._collapseEpoch) {
+          if (accepted.has(id)) collapsed.add(id); else collapsed.delete(id);
+        }
+      }
+    }
+    const view = { collapsed: [...collapsed] };
+    this._committedState = state;
+    this.wb = { ...state.workbook, active: draft && draft.wb.active !== draft._originSheet ? draft.wb.active : active, sheets: [...state.workbook.sheets] };
+    this.templates = state.templates;
+    Object.assign(this, state.preferences); this.criticalTargets = { ...state.preferences.criticalTargets };
+    this.hist = new Map(Object.entries(state.history));
+    const h = this.hist.get(this.wb.active); this.undoStack = [...(h?.u || [])]; this.redoStack = [...(h?.r || [])];
+    if (draft && !draft.preview) { this.preview = null; this.previewView = null; }
+    this._load({ ...this.sheet().data, ...(this.wb.active === active ? view : {}) });
+    immutable(this.tasks); immutable(this.log); immutable(this.links);
+    appState.adoptCommitted(state.browser);
+    if (draft) draft._acceptedCandidate = state;
+    for (const kind of draft?._events?.size ? draft._events : ['change']) this.emit(kind);
   }
   on(fn) { this.listeners.push(fn); }
-  emit(kind = 'change') { for (const f of this.listeners) { try { f(kind); } catch (e) { console.error(e); } } } // one broken listener must not stop the others (e.g. the renderer)
+  emit(kind = 'change') { if (this._draft) { this._events.add(kind); return; } for (const f of this.listeners) { try { f(kind); } catch (e) { console.error(e); } } } // one broken listener must not stop the others (e.g. the renderer)
 
   // ---- persistence ----
   readWB(saved) {
     try {
-      const w = saved ?? JSON.parse(localStorage.getItem(WB));
+      const w = saved ?? (this.disk ? null : JSON.parse(localStorage.getItem(WB)));
       if (w && Array.isArray(w.sheets) && w.sheets.length) {
         const sheets = w.sheets.filter((s) => s && typeof s.id === 'string' && s.data).map((s) => ({ id: s.id, name: String(s.name || 'Sheet').slice(0, 60), data: sanitize(s.data), ...(typeof s.fileToken === 'string' ? { fileToken: s.fileToken.slice(0, 100) } : {}), rem: cleanRem(s.rem), share: cleanShare(s.share), source: cleanSource(s.source), readOnly: !!s.readOnly && !!cleanSource(s.source), ...versionFields(s), ...criticalPathFields(s.criticalPath) }));
         if (sheets.length) {
@@ -311,20 +434,32 @@ export class Store {
       }
     } catch { /* corrupt workbook: fall through */ }
     let data = null;
-    try { data = JSON.parse(localStorage.getItem(KEY)); } catch { /* none */ }
+    try { if (!this.disk) data = JSON.parse(localStorage.getItem(KEY)); } catch { /* none */ }
     return { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(data && Array.isArray(data.tasks) ? data : demo()), rem: cleanRem() }] };
   }
   readTpl(saved) {
-    try { const t = saved ?? JSON.parse(localStorage.getItem(TPL)); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
+    try { const t = saved ?? (this.disk ? [] : JSON.parse(localStorage.getItem(TPL))); if (Array.isArray(t)) return t.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tasks)).map((x) => ({ ...x, builtin: false })); } catch { /* corrupt */ }
     return [];
   }
-  sheet(id = this.wb.active) { return this.wb.sheets.find((s) => s.id === id); }
-  load(d) {
+  sheet(id = this.wb.active) {
+    const sheet = this.wb.sheets.find((s) => s.id === id);
+    if (this._draft && sheet && !this._touched.has(id)) {
+      // Only an accessed component becomes writable. Its plan is loaded separately;
+      // old undo strings and unrelated plan/version data remain shared.
+      const copy = { ...sheet, data: structuredClone(sheet.data), ...(sheet.rem !== undefined ? { rem: structuredClone(sheet.rem) } : {}), ...(sheet.share !== undefined ? { share: structuredClone(sheet.share) } : {}), ...(sheet.source !== undefined ? { source: structuredClone(sheet.source) } : {}), ...(sheet.versions ? { versions: sheet.versions.map(v => ({ ...v })) } : {}) };
+      this.wb.sheets[this.wb.sheets.indexOf(sheet)] = copy; this._touched.add(id); return copy;
+    }
+    return sheet;
+  }
+  load(...args) { return this._load(...args); }
+  _load(d) {
     const c = sanitize(d);
     this.calendar = c.calendar; this.work = new WorkingCalendar(this.calendar);
     this.tasks = c.tasks; this.links = c.links; this.collapsed = new Set(c.collapsed); this.stars = new Set(c.stars || []); this.nextId = c.nextId; this.nextLink = c.nextLink;
     this.log = c.log || []; this.nextLog = c.nextLog || 1; this.baselined = !!c.baselined; this.agreedOrig = c.agreedOrig || null;
-    this.settle();
+    // Loading accepted disk data (startup, navigation or acknowledgement) only
+    // derives presentation. Scheduling changes belong to an explicit draft action.
+    if (this._commits && !this._draft) this._recalc(); else this._settle();
   }
   // What is stored: tasks and the user-authored fields of links (slack/violated/critical are recomputed on load).
   // Undo snapshots leave out which groups are collapsed: folding a group is a view choice, not an edit to be undone.
@@ -336,11 +471,15 @@ export class Store {
   }
   snap() { return this.serialize(false); }
   savedState() {
-    const history = Object.fromEntries([...this.hist].filter(([id]) => this.sheet(id)));
+    if (this._commits && !this._draft) return this._committedState;
+    const history = Object.fromEntries([...this.hist].filter(([id]) => this.wb.sheets.some(s => s.id === id)));
     history[this.wb.active] = { u: this.undoStack, r: this.redoStack };
-    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: { ...this.criticalTargets } }, history, browser: appState.snapshot() };
+    return { workbook: this.wb, templates: this.templates, preferences: { auto: this.auto, critical: this.critical, criticalOnly: this.criticalOnly, criticalTargets: { ...this.criticalTargets } }, history, browser: this._draft ? this.browserState : appState.snapshot() };
   }
   save() {
+    if (this._commits && !this._draft) return; // only commit() can accept substantive changes
+    if (this._draft) { if (!this.preview) this.sheet().data = JSON.parse(this.serialize()); return; }
+    if (this.disk) return;
     if (this.stale) return; // another tab changed the workbook: writing now would overwrite its work
     // While a saved version is on screen, the loaded tasks are that version: never write them over the live project.
     if (!this.preview) this.sheet().data = JSON.parse(this.serialize());
@@ -363,11 +502,12 @@ export class Store {
       } catch { /* ignore invalid stored view map */ }
     }
   }
-  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.pruneSheetMeta(); this.load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
+  resetAll() { this.preview = null; this.criticalTargets = Object.create(null); this.hist.clear(); this.undoStack = []; this.redoStack = []; this.wb = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Launch plan', data: sanitize(demo()), rem: cleanRem() }] }; this.pruneSheetMeta(); this._load(this.wb.sheets[0].data); this.save(); this.emit('sheet'); }
   criticalMode() { return !this.critical ? 'off' : this.criticalOnly ? 'only' : 'show'; }
   setCriticalMode(mode) { this.critical = mode !== 'off'; this.criticalOnly = mode === 'only'; this.save(); this.emit(); }
   setPref(k, v) {
     const catchUp = k === 'auto' && v && !this.auto, pre = catchUp ? this.hook?.before() ?? null : null;
+    if (!['auto', 'critical', 'criticalOnly'].includes(k)) return 'Unknown preference';
     this[k] = v; if (k === 'critical' && !v) this.criticalOnly = false;
     if (k === 'auto' && v) this.tx(() => {});
     if (catchUp) this.hook?.after({ id: null, kind: 'auto', pre }); // tasks that waited while Auto-schedule was off catch up now
@@ -392,7 +532,7 @@ export class Store {
     if (id === null) delete this.criticalTargets[this.wb.active];
     else this.criticalTargets[this.wb.active] = id;
     this.critical = true;
-    this.recalc(); this.save(); this.emit('critical-target');
+    this._recalc(); this.save(); this.emit('critical-target');
     return null;
   }
 
@@ -402,12 +542,12 @@ export class Store {
     if (!taken.has(b.toLowerCase())) return b;
     for (let n = 2; ; n++) { const c = `${b} (${n})`; if (!taken.has(c.toLowerCase())) return c; }
   }
-  stash() { this.save(); this.hist.set(this.wb.active, { u: this.undoStack, r: this.redoStack }); }
+  stash() { if (!this._commits) this.save(); this.hist.set(this.wb.active, { u: this.undoStack, r: this.redoStack }); }
   enter(id) {
-    this.preview = null;
+    this.preview = null; this.previewView = null;
     this.wb.active = id;
-    const h = this.hist.get(id); this.undoStack = h ? h.u : []; this.redoStack = h ? h.r : [];
-    this.load(this.sheet().data); this.save(); this.emit('sheet');
+    const h = this.hist.get(id); this.undoStack = h ? [...h.u] : []; this.redoStack = h ? [...h.r] : [];
+    this._load(this.sheet().data); if (this._commits) { immutable(this.tasks); immutable(this.log); immutable(this.links); } this.save(); this.emit('sheet');
   }
   switchSheet(id) { if (id === this.wb.active || !this.sheet(id)) return; this.stash(); this.enter(id); }
   addSheet(data, name, extra = {}) {
@@ -421,14 +561,14 @@ export class Store {
     const ex = this.wb.sheets.find((s) => s.source && s.source.driveId === source.driveId && s.source.itemId === source.itemId);
     if (ex) {
       ex.data = sanitize(data); ex.source = cleanSource(source);
-      if (ex.id === this.wb.active) { this.preview = null; this.load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
+      if (ex.id === this.wb.active) { this.preview = null; this._load(ex.data); this.save(); this.emit('sheet'); } else this.switchSheet(ex.id);
       return ex.id;
     }
     const id = this.addSheet(data, name, { readOnly: true, source: cleanSource(source) }); this.save(); this.emit('sheet'); return id;
   }
   // Legacy snapshot format: tasks, links and name only, without integration metadata.
   snapshot(id = this.wb.active) {
-    if (id === this.wb.active) this.save(); const s = this.sheet(id), data = JSON.parse(JSON.stringify(s.data));
+    const s = this.sheet(id), data = id === this.wb.active && !this.preview ? JSON.parse(this.serialize()) : structuredClone(s.data);
     for (const t of data.tasks) delete t.noRem; // omitted by the legacy snapshot format
     return { v: 1, name: s.name, data };
   }
@@ -438,9 +578,8 @@ export class Store {
     s.name = this.uniqueName(n, id); this.save(); this.emit('meta'); return true;
   }
   duplicateSheet(id) {
-    if (id === this.wb.active) this.save();
     const s = this.sheet(id); if (!s) return null;
-    return this.addSheet(JSON.parse(JSON.stringify(s.data)), `${s.name} copy`, criticalPathFields(s.criticalPath));
+    return this.addSheet(id === this.wb.active && !this.preview ? JSON.parse(this.serialize()) : structuredClone(s.data), `${s.name} copy`, criticalPathFields(s.criticalPath));
   }
   deleteSheet(id) {
     const ws = this.wb.sheets, i = ws.findIndex((s) => s.id === id);
@@ -458,7 +597,8 @@ export class Store {
   view(id) {
     const v = Object.create(Store.prototype), c = sanitize(this.sheet(id).data);
     Object.assign(v, { criticalTargetId: this.criticalTargets?.[id], criticalPathOptions: this.sheet(id).criticalPath, listeners: [], frozen: !!this.sheet(id).readOnly, auto: this.auto, critical: this.critical, calendar: c.calendar, work: new WorkingCalendar(c.calendar), tasks: c.tasks, links: c.links, collapsed: new Set(c.collapsed), nextId: c.nextId, nextLink: c.nextLink, log: c.log || [], nextLog: c.nextLog || 1, baselined: !!c.baselined, agreedOrig: c.agreedOrig || null });
-    v.settle(); return v;
+    if (this._commits && !this._draft) v._recalc(); else v.settle();
+    return v;
   }
   // Computed, frozen copy of a saved version: dates exactly as they were when it was taken.
   versionView(vid, sheetId = this.wb.active) {
@@ -474,7 +614,7 @@ export class Store {
   get previewing() { return this.preview ? this.version(this.preview.id) : null; }
   versionError() { return this.stale ? 'This project changed in another tab; reload before managing versions' : null; }
   // Canonical plan text (no view state), so equal plans compare equal regardless of how they were saved.
-  livePlan() { if (!this.preview) this.save(); return planText(this.sheet().data); }
+  livePlan() { return planText(this.preview ? this.sheet().data : JSON.parse(this.serialize())); }
   // True when the live plan matches the newest version, so another snapshot would record no change.
   unchangedSinceLatest() { const latest = this.versions().at(-1); return !!latest && planText(JSON.parse(latest.data)) === this.livePlan(); }
   // Why another version cannot be saved right now, or null.
@@ -487,7 +627,7 @@ export class Store {
   // so the undo history starts at the baseline.
   snapshotAgreed(agree, opts) {
     const error = this.snapshotError(); if (error) return { error };
-    const fail = agree(); if (fail) return { error: fail };
+    const fail = agree(this); if (fail) return { error: fail };
     const r = this.snapshotVersion(opts);
     if (r.error) { this.undo(); this.redoStack.pop(); return r; }
     this.undoStack = []; this.redoStack = []; this.save(); this.emit();
@@ -507,6 +647,7 @@ export class Store {
   updateVersion(vid, { name, note, type } = {}) {
     const error = this.versionError(); if (error) return error;
     const v = this.version(vid); if (!v) return 'That version no longer exists';
+    if (type !== undefined && type && !VERSION_TYPE_IDS.includes(type)) return 'Unknown version type';
     if (name !== undefined) { const n = String(name).trim().slice(0, 80); if (!n) return 'Give the version a name'; v.name = n; }
     if (note !== undefined) v.note = String(note).slice(0, 1000);
     if (type !== undefined) { if (type && !VERSION_TYPE_IDS.includes(type)) return 'Unknown version type'; if (type) v.type = type; else delete v.type; }
@@ -521,16 +662,23 @@ export class Store {
     this.save(); this.emit('versions'); return null;
   }
   previewVersion(vid) {
+    if (this._commits) {
+      if (this.pending || this.dragPreview) return 'Finish the pending action first';
+      const v = this.version(vid); if (!v) return 'That version no longer exists';
+      this.preview = { id: v.id, target: v.target, criticalPath: v.criticalPath };
+      this.previewView = this.versionView(vid); this.emit('version'); return null;
+    }
     if (this._orig) return 'Finish the current drag first';
     const v = this.version(vid); if (!v) return 'That version no longer exists';
     if (!this.preview) this.save();
     this.preview = { id: v.id, target: v.target, criticalPath: v.criticalPath };
-    this.load({ ...JSON.parse(v.data), collapsed: [...this.collapsed], stars: [...(this.stars || [])] });
+    this._load({ ...JSON.parse(v.data), collapsed: [...this.collapsed], stars: [...(this.stars || [])] });
     this.emit('version'); return null;
   }
   exitPreview() {
+    if (this._commits) { if (this.preview) { this.preview = null; this.previewView = null; this.emit('version'); } return; }
     if (!this.preview) return;
-    this.preview = null; this.load(this.sheet().data); this.emit('version');
+    this.preview = null; this._load(this.sheet().data); this.emit('version');
   }
   // Replaces the live plan with a version in one undoable step. Task and relationship
   // counters never move backwards, so new items cannot reuse IDs seen by later versions.
@@ -550,20 +698,21 @@ export class Store {
     });
     delete this.sheet().criticalPath; Object.assign(this.sheet(), criticalPathFields(v.criticalPath));
     if (v.target && this.byId.get(v.target)?.ms) this.criticalTargets[sheetId] = v.target; else delete this.criticalTargets[sheetId];
-    this.recalc(); this.save(); this.emit();
+    this._recalc(); this.save(); this.emit();
     return null;
   }
   copyVersionAsProject(vid) {
     const v = this.version(vid); if (!v) return { error: 'That version no longer exists' };
     if (this.stale) return { error: 'This project changed in another tab; reload before copying a version' };
     const id = this.addSheet(JSON.parse(v.data), `${this.sheet().name.slice(0, 30)} · ${v.name}`, criticalPathFields(v.criticalPath));
-    if (v.target && this.byId.get(v.target)?.ms) { this.criticalTargets[id] = v.target; this.recalc(); this.save(); this.emit('critical-target'); }
+    if (v.target && this.byId.get(v.target)?.ms) { this.criticalTargets[id] = v.target; this._recalc(); this.save(); this.emit('critical-target'); }
     return { id };
   }
 
   // ---- templates ----
   allTemplates() { return [...builtins(), ...this.templates]; }
   saveTpl() {
+    if (this.disk || this._draft || this._commits) return;
     if (this.stale) return;
     try { localStorage.setItem(TPL, JSON.stringify(this.templates)); } catch { /* storage unavailable */ }
     this.persist?.(this.savedState());
@@ -586,7 +735,7 @@ export class Store {
   instantiate(tpl, startDay, name) {
     const data = { calendar: cleanCalendar(tpl.calendar), tasks: tpl.tasks.map((t) => ({ ...withoutAgreed(t), start: t.start + startDay, progress: 0 })), links: tpl.links.map((l) => ({ ...l })), collapsed: [], nextId: tpl.nextId, nextLink: tpl.nextLink };
     const id = this.addSheet(data, name || tpl.name);
-    this.recalc(); this.propagate(); this.recalc(); this.save(); this.emit('sheet'); // always resolve links once, even with auto-schedule off
+    this._recalc(); this._propagate(); this._recalc(); this.save(); this.emit('sheet'); // always resolve links once, even with auto-schedule off
     return id;
   }
   static summaryOf(tpl) {
@@ -596,37 +745,50 @@ export class Store {
   }
 
   // ---- transactions / undo ----
-  get readOnly() { const s = this.wb && this.sheet(); return !!(s && s.readOnly) || !!this.preview; } // detached views (export) have no workbook
+  get readOnly() { const s = this.wb && this.sheet(); return !!this.locked || !!(s && s.readOnly) || !!this.preview; } // detached views (export) have no workbook
   tx(fn) {
     if (this.readOnly) { this.emit('denied'); return undefined; } // shared read-only copy
     const before = this.snap();
-    const r = fn();
-    this.settle();
+    if (this._draft && !this._undoBases.has(this.wb.active)) this._undoBases.set(this.wb.active, { before, u: [...this.undoStack], r: [...this.redoStack] });
+    const r = fn(this);
+    this._settle();
     if (this.snap() !== before) { this.undoStack.push(before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this.emit();
     return r;
   }
-  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.snap()); this.load({ ...JSON.parse(this.undoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
-  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this.load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
+  undo() { if (this._orig || this.readOnly || !this.undoStack.length) return; this.redoStack.push(this.snap()); this._load({ ...JSON.parse(this.undoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
+  redo() { if (this._orig || this.readOnly || !this.redoStack.length) return; this.undoStack.push(this.snap()); this._load({ ...JSON.parse(this.redoStack.pop()), collapsed: [...this.collapsed], stars: [...(this.stars || [])] }); this.save(); this.emit(); }
 
   // ---- drag sessions: restore originals each frame so pushed successors snap back ----
-  beginDrag() { this._pre = this.hook?.before() ?? null; this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
+  beginDrag() {
+    if (this._commits) {
+      if (this.pending || this.suspended || this.dragPreview || this.readOnly) throw new Error('Finish the pending action first');
+      this.dragPreview = this.makeDraft(); this.dragPreview.beginDrag(); return this.dragPreview;
+    }
+    this._pre = this.hook?.before() ?? null; this._before = this.snap(); this._orig = this.tasks.map((t) => ({ id: t.id, start: t.start, dur: t.dur, progress: t.progress, scheduling: t.scheduling })); }
   dragApply(fn) {
+    if (this._commits) { if (!this.dragPreview) throw new Error('No drag is active'); this.dragPreview.dragApply(fn); this.emit('drag'); return; }
     for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; }
-    fn(); this.settle(); this.emit('drag');
+    fn(this); this._settle(); this.emit('drag');
   }
   // `meta` ({ id, kind }) names the dragged task so the delay-accounting hook can offer to record a late finish.
   endDrag(commit = true, meta = null) {
+    if (this._commits) {
+      const draft = this.dragPreview; if (!draft) return Promise.resolve();
+      if (!commit) { this.dragPreview = null; this.emit('drag'); return Promise.resolve({ cancelled: true }); }
+      return this._commits.run(d => d.endDrag(true, meta), draft);
+    }
     const changed = commit && this.snap() !== this._before, pre = this._pre; this._pre = null;
     this.endDragNow(commit);
     if (changed && meta && this.hook) this.hook.after({ id: meta.id, kind: meta.kind, pre });
   }
   endDragNow(commit) {
-    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; } this.settle(); }
+    if (this._commits) return this.endDrag(commit);
+    if (!commit) { for (const o of this._orig) { const t = this.byId.get(o.id); if (!t) continue; t.start = o.start; t.dur = o.dur; t.progress = o.progress; if (o.scheduling) t.scheduling = o.scheduling; else delete t.scheduling; } this._settle(); }
     else if (this.snap() !== this._before) { this.undoStack.push(this._before); if (this.undoStack.length > 150) this.undoStack.shift(); this.redoStack = []; this.save(); }
     this._orig = null; this.emit();
   }
-  orig(id) { return this._orig.find((o) => o.id === id); }
+  orig(id) { return (this.dragPreview?._orig || this._orig || []).find((o) => o.id === id); }
 
   // ---- scheduling ----
   incoming(id) { return this._in.get(id) || []; }
@@ -726,7 +888,8 @@ export class Store {
     this.hook?.after({ id, kind: 'mode', pre });
     return null;
   }
-  propagate() {
+  propagate(...args) { return this._propagate(...args); }
+  _propagate() {
     for (const id of this.topo()) {
       const work = this.workFor(id), lb = this.lowerBound(id);
       const t = this.byId.get(id);
@@ -746,10 +909,12 @@ export class Store {
     for (const d of desc) { up.delete(d); down.delete(d); }
     return { anc, desc, up, down, upL, downL };
   }
-  settle() { this.recalc(); if (this.auto && !this.readOnly && !this.frozen) { this.propagate(); this.recalc(); } }
+  settle(...args) { return this._settle(...args); }
+  _settle() { this._recalc(); if (this.auto && !this.readOnly && !this.frozen) { this._propagate(); this._recalc(); } }
 
   // ---- derived state ----
-  recalc() {
+  recalc(...args) { return this._recalc(...args); }
+  _recalc() {
     this.rev = (this.rev || 0) + 1;
     const T = this.tasks, n = T.length;
     this.byId = new Map(T.map((t) => [t.id, t]));
@@ -863,6 +1028,7 @@ export class Store {
   // ---- structure ----
   structureError() {
     if (this.preview) return PREVIEW_LOCK;
+    if (this.pending || this.suspended || this.dragPreview) return 'Finish the pending action first';
     if (this.readOnly) return 'This project is read-only';
     if (this.stale) return 'This project changed in another tab; reload before editing';
     return null;
@@ -963,7 +1129,18 @@ export class Store {
     this.stars = new Set(this.stars || []); if (on) this.stars.add(id); else this.stars.delete(id);
     this.save(); this.emit('meta'); return true;
   }
-  toggle(id) { if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id); this.recalc(); this.save(); this.emit(); }
+  toggle(id) {
+    if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id);
+    if (this._commits) {
+      this._collapseChanges.set(JSON.stringify([this.wb.active, id]), ++this._collapseEpoch);
+      this.rows = [];
+      for (let i = 0; i < this.tasks.length; i++) {
+        const task = this.tasks[i]; this.rows.push(task);
+        if (this.collapsed.has(task.id) && this.info.get(task.id).summary) i = this.info.get(task.id).sub;
+      }
+    } else { this._recalc(); this.save(); }
+    this.emit();
+  }
   reaches(a, b, seen = new Set()) { if (a === b) return true; if (seen.has(a)) return false; seen.add(a); return this.outgoing(a).some((l) => this.reaches(l.to, b, seen)); }
   linksBetween(from, to) { return this.links.filter((l) => l.from === from && l.to === to); }
   linkConflicts() {
@@ -1023,7 +1200,7 @@ export class Store {
   clearNoRem() { this.tx(() => { for (const t of this.tasks) t.noRem = false; }); }
   setNoRem(id, v) { this.tx(() => { const t = this.byId.get(id); if (t) t.noRem = !!v; }); }
   setOwner(id, name, email) { this.tx(() => { const t = this.byId.get(id); if (t) { t.owner = String(name).slice(0, 80); t.email = isEmail(email) ? email : ''; } }); }
-  get rem() { return this.sheet().rem || (this.sheet().rem = cleanRem()); }
+  get rem() { return this.sheet().rem || cleanRem(); }
   setRem(patch) { if (this.readOnly) return; this.sheet().rem = cleanRem({ ...this.rem, ...patch }); this.save(); this.emit('meta'); }
   // Typed start / finish / duration edits tell the delay-accounting hook, which may offer to record a late finish.
   setCell(id, col, raw) {
@@ -1160,13 +1337,16 @@ export class Store {
     return null;
   }
   applyCell(id, col, raw) {
-    const t = this.byId.get(id), work = this.workFor(t), f = this.info.get(id), v = String(raw).trim();
-    if (col === 'name') { if (!v) return 'Name cannot be empty'; this.tx(() => { t.name = v; }); return null; }
+    const error = this.structureError(); if (error) { if (this.readOnly) this.emit('denied'); return error; }
+    const t = this.byId.get(id); if (!t) return 'Task no longer exists';
+    const work = this.workFor(t), f = this.info.get(id), v = String(raw).trim();
+    if (col === 'name') { if (!v) return 'Name cannot be empty'; if (v.length > 200) return 'Task name must be 200 characters or fewer'; this.tx(() => { t.name = v; }); return null; }
     if (col === 'owner') {
       const m = v.match(/^(.*?)\s*<([^<>]+)>$/); let name = v, email = '';
       if (m && isEmail(m[2].trim())) { name = m[1].trim(); email = m[2].trim(); } else if (isEmail(v)) { name = v.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()); email = v; }
       else if (name && name.toLowerCase() === (t.owner || '').toLowerCase()) email = t.email || '';
       else if (name && this.resolvePerson) { const p = this.resolvePerson(name); if (p) { name = p.name; email = p.email; } }
+      if (name.length > 80) return 'Owner name must be 80 characters or fewer';
       this.tx(() => { t.owner = name; t.email = email; }); return null;
     }
     if (col === 'email') { if (v && !isEmail(v)) return 'Not a valid email address'; this.tx(() => { t.email = v; }); return null; }
@@ -1217,4 +1397,36 @@ export class Store {
     }
     return null;
   }
+}
+
+// Dispatch before executing the body: all lookups and closures inside a command
+// consequently refer to its Store draft. Never replay a closure built on live data.
+const COMMANDS = new Set(['load', 'settle', 'propagate', 'recalc', 'pruneSheetMeta', 'resetAll', 'setCriticalMode', 'setPref', 'setCriticalTarget',
+  'addSheet', 'importShared', 'newBlank', 'renameSheet', 'duplicateSheet', 'deleteSheet', 'moveSheet',
+  'snapshotAgreed', 'snapshotVersion', 'updateVersion', 'deleteVersion', 'restoreVersion', 'copyVersionAsProject',
+  'saveTemplate', 'deleteTemplate', 'instantiate', 'tx', 'amend', 'undo', 'redo', 'setCalendar', 'setScheduling',
+  'insertTask', 'addTask', 'moveTask', 'setTaskKind', 'removeRows', 'deleteTask', 'indent', 'setKeyMilestone',
+  'addLink', 'updateLink', 'removeLink', 'setShare', 'clearNoRem', 'setNoRem', 'setOwner', 'setRem', 'setCell', 'updateTask', 'applyCell',
+  'dragMove', 'dragResize', 'dragProgress']);
+const ERROR_STRINGS = new Set(['setCriticalTarget', 'updateVersion', 'deleteVersion', 'restoreVersion', 'setCalendar', 'setScheduling', 'moveTask', 'setTaskKind', 'indent', 'addLink', 'updateLink', 'setCell', 'updateTask', 'applyCell']);
+const CONTROL = new Set(['enableCommits', 'commit', 'whenIdle', 'adoptPending', 'suspend', 'on', 'emit', 'save', 'saveTpl',
+  'beginDrag', 'dragApply', 'endDrag', 'endDragNow', 'orig', 'switchSheet', 'enter', 'stash', 'toggle', 'previewVersion', 'exitPreview', 'cancel']);
+const PRESENTATION_LIVE = new Set(['presentation', 'displayStore', 'commitsEnabled', 'pending', 'suspended', 'pendingCandidate', 'pendingSheetId',
+  'unsubmitted', 'wb', 'templates', 'hist', 'undoStack', 'redoStack', 'sheet', 'versions', 'version', 'view', 'versionView', 'allTemplates',
+  'uniqueName', 'snapshot', 'livePlan', 'unchangedSinceLatest', 'snapshotError', 'versionError',
+  'locked', 'preview', 'previewing', 'readOnly', 'structureError', 'hook', 'createDraftHook', 'persist', 'savedState']);
+for (const name of COMMANDS) {
+  const body = Store.prototype[name];
+  Store.prototype[name] = function (...args) {
+    if (this._commits) {
+      // Primitive drag calls are safe only on the isolated preview.
+      if (this.dragPreview && ['dragMove', 'dragResize', 'dragProgress'].includes(name)) return this.dragPreview[name](...args);
+      return this.commit(draft => draft[name](...args), { errorStrings: ERROR_STRINGS.has(name) });
+    }
+    const invoke = () => {
+      if (this._draft && ['undo', 'redo', 'snapshotAgreed', 'resetAll'].includes(name)) this._historyCommand = true;
+      return body.apply(this, args);
+    };
+    return this._draft ? this.inDraft(this, invoke) : invoke();
+  };
 }

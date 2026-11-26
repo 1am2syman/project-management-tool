@@ -132,7 +132,7 @@ export function createAnalysis(ctx) {
   };
   function plans() {
     const list = store.versions().map((v) => ({ id: v.id, short: `v${v.n}`, label: `v${v.n} · ${v.name}`, at: v.at, by: v.by, note: v.note, view: viewOf(v) })).filter((p) => p.view);
-    if (!state.current) { if (!store.preview) store.save(); state.current = store.view(store.wb.active); }
+    if (!state.current) state.current = store.view(store.wb.active);
     list.push({ id: '', short: 'Now', label: 'Current plan', at: Date.now(), view: state.current });
     return list;
   }

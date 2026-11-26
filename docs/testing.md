@@ -86,7 +86,7 @@ All suites start their own server on an available local port, use a temporary SQ
 
 ### Browser and Python selection
 
-Set `PLAYWRIGHT_CHROMIUM` to an installed Chromium executable to test with that browser instead of Playwright's bundled build. Set `PYTHON` to a Python executable if `python3` is unavailable, as is common on Windows. Set `PLAN_TEST_HEADED=1` for the diagnostics suite to show the browser; remote Windows runs must launch it in the logged-in console session rather than SSH session 0.
+Set `PLAYWRIGHT_CHROMIUM` to an installed Chromium executable to test with that browser instead of Playwright's bundled build. Set `PYTHON` to a Python executable if `python3` is unavailable, as is common on Windows. Set `PLAN_TEST_HEADED=1` for the diagnostics, local-files, durability and durability-actions suites to show the browser; remote Windows runs must launch it in the logged-in console session rather than SSH session 0.
 
 For example, in PowerShell:
 
@@ -106,6 +106,8 @@ node tests/browser-versions.mjs
 ### Visual rendering checks
 
 When changing Gantt positioning or styling, also review the chart at 100%, 150% and 200% display scaling in both Compact and Adaptive density. Include task bars with internal and external labels, parent summaries, milestones, critical paths and rounded dependency connectors. Check Fit and timeline zoom, then move and resize a bar and cancel a drag with Escape. Labels should remain centered, bar edges should stay defined, and connectors should meet their bars.
+
+Grid scroll smoothness is not covered by an automated test (frame timing is machine-dependent). When changing row, sticky-column, Focus or `.dim` styles, load a project of several hundred tasks, scroll the task grid by mouse wheel both on a fresh page and after selecting a task (Focus dimming), and look for frames well over 50 ms in a Performance trace. Two rules keep it smooth: each `.r` row is its own stacking context (`position:relative;z-index:0`) so its sticky frozen cells do not force a full re-layerize on every frame, and Focus dimming of links fades `stroke-opacity`/`fill-opacity` on the strokes instead of group `opacity` on each `<g class="lk">` (and dimmed rows do not animate opacity). Measured in headless Chromium 158 with software rendering, 300 tasks by 6 projects: 49 to 84 slow frames of about 200 before, 0 to 1 after; headed Chrome/Edge, momentum scrolling and Firefox were not measured.
 
 Display scaling changes the browser's device pixel ratio; this is separate from the CSS zoom exercised by `browser-fit.mjs`. The suite checks layout and interactions, but does not automatically judge visual sharpness.
 
@@ -142,6 +144,41 @@ These optional outputs can be deleted after review. Generated screenshots, logs,
 
 For a clean folder copy to another user, use GitHub's repository ZIP or `git archive --format=zip --output=../plan.zip HEAD` from the committed checkout. Both include the bundled Windows runtime and maintained tests while excluding ignored local caches, virtual environments, agent notes and validation output. When cleaning a working checkout, stop any processes using its virtual environment before removing `.venv`; remove generated `__pycache__`, `.ruff_cache`, `.pytest_cache` and completed local validation output as needed. Keep the entire `runtime/windows-x64` directory, its license, manifest and SPDX metadata together.
 
+## Commit-before-acceptance durability checks
+
+Current results and remaining rollout requirements are recorded in [durability-verification.md](durability-verification.md).
+
+The SQLite app prepares each substantive action in an isolated candidate and accepts it after the server commits. Browser tests must wait for the specific `POST /api/projects/changes` response and the resulting UI state before starting the next command. Cosmetic project selection does not persist `workbook.active`; assertions should locate the displayed project or select the imported project explicitly after reloading. Seed an isolated database through conditional bootstrap or a revision-checked patch rather than `localStorage`, which production startup deliberately ignores.
+
+`tests/test_durability.py` covers strict patches and changed-record validation, transaction rollback including a real SQLite COMMIT failure, process death before and after commit, revision contention, historical replay, exact escaped subtree ranges, splice hash reuse, logical byte accounting and upgrade rollback. Guards reject decoding or hashing retained undo entries and unrelated project bodies; a one-field edit is compared with 1 and 100 projects. These counters measure logical backend work rather than SQLite internal I/O or Windows latency. A separate VM-instruction regression detects full `current` scans when only unrelated rows grow; the old query scans on some SQLite builds and already indexes on others. `ServerBurstTests` in `test_storage.py` queues real module connections before starting acceptance, then checks every response body, covering the server's explicit listen backlog.
+
+`tests/commit.test.mjs`, `tests/storage-barrier.test.mjs` and `tests/projectfiles.test.mjs` cover deferred acceptance, candidate isolation, compound delay decisions, exact-state retry, startup identity/locking failures, bootstrap lock release, read-only file refusal, and Download copy independence. The two browser durability suites run against isolated databases and profiles:
+
+```sh
+node tests/browser-durability.mjs
+node tests/browser-durability-actions.mjs
+```
+
+Use the same `PLAYWRIGHT_MODULE`, `PLAYWRIGHT_CHROMIUM` and `PYTHON` overrides as the maintained suites. The fault suite exercises held/lost acknowledgements, actual SQLite rejection, independent-profile conflicts, read-only tabs and Download copy with Python stopped. The action suite exercises compound actions and rejection through the rendered UI. Browser assertions and injected file handles do not establish actual Windows chooser behavior.
+
+The fault, action, local-files and diagnostics suites also accept `PLAYWRIGHT_BROWSER=firefox` or `webkit` (default `chromium`). Install that Playwright browser first; `PLAYWRIGHT_CHROMIUM` applies only to the Chromium engine. For example, on Linux:
+
+```sh
+npx playwright install firefox
+PLAYWRIGHT_BROWSER=firefox node tests/browser-durability.mjs
+PLAYWRIGHT_BROWSER=firefox node tests/browser-durability-actions.mjs
+PLAYWRIGHT_BROWSER=firefox node tests/browser-local-files.mjs
+PLAYWRIGHT_BROWSER=firefox node tests/browser-diagnostics.mjs
+```
+
+Chrome 158 and Firefox 155 each completed 40 isolated Linux cold starts during the durability follow-up. These results establish coverage for those environments, not Windows chooser behavior or an untested WebKit build. See [durability-verification.md](durability-verification.md) for current findings and remaining Windows/network-share checks.
+
+On Windows, set `PLAYWRIGHT_MODULE` to a `file://` URL (for example `([System.Uri]"$env:USERPROFILE\node_modules\playwright\index.mjs").AbsoluteUri`), `PLAYWRIGHT_CHROMIUM` to `msedge.exe` and `PYTHON` to `runtime\windows-x64\python.exe`. Headless suites can run over SSH; anything that shows a chooser or a headed browser must be launched in the logged-in console session, for example from an interactive scheduled task registered with the current `WindowsIdentity` name. Drive the dialog from a separate process: find the `#32770` window owned by the Python server, read its z-order beside the Edge window, fill the file-name edit (`1148`/`1001`) with `WM_SETTEXT` and post `BM_CLICK` to the control with ID 1 (Open/Save) or 2 (Cancel). Arm the foreground lock with a `SendInput` mouse nudge from a separate process before each dialog. Run the server with a throwaway `LOCALAPPDATA` and `--data-dir`, keep sample files under Documents and confirm the real `%LOCALAPPDATA%\Plan` stays untouched.
+
+Before rollout, close editing tabs and restart Python, then verify the real Windows chooser procedure below and measure typical and large Windows workspaces. Record action-to-ack latency, request bytes, nodes visited/hashed/written, undo/history costs, and a comparison that increases only unrelated projects/history. Keep large affected-project costs separate. Correlate each substantive, non-no-op measured edit with exactly one successful commit and its returned revision; cosmetic/no-op input correctly produces no commit and must not be reported using an absent or stale resource entry. Report revision-50 checkpoint rows separately from ordinary edits, include a full 150-entry undo-stack phase and serialize timing runs on a quiet machine. Time the database context's exit so COMMIT is included; `_finish` alone excludes it. Label headless/headed mode and distinguish acknowledgement, adoption and later frame observations. Linux tests do not satisfy these Windows release requirements.
+
+For an intermittent startup failure, attach failed-request and page-error listeners before the first navigation and retain the failing attempt before reloading. Success requires the current navigation's `app.ready`, hidden startup error and expected storage state; the saved badge alone can appear before mounting. On Chromium, capture CDP loading failures and an isolated browser netlog to identify the first failed dependency and distinguish connection refusal/reset from HTTP, MIME or parse/link failures. Compare old/new backlog conditions without silently retrying failed navigations. The Linux connection-burst regression alone does not establish Windows causality. Subsequent Windows experiments reproduced refused dependency connections and the same import error with backlog 5, with no such failures at 128; [durability-verification.md](durability-verification.md) records both matched series and their limits. Network-share `.plan` checks require an existing designated scratch destination; keep the authoritative `plan.db` local. The Windows follow-up exercised the existing same-machine `Users` share through its UNC path with actual native Open/Save and connected Save. That loopback SMB result does not establish separate-host/NAS or network-loss behavior. Pending input and an unconfirmed candidate remain in memory only; Download copy offers a portable project copy rather than whole-workspace recovery.
+
 ## Isolated file-access tests
 
 Automated suites never open the native chooser or read the real `%LOCALAPPDATA%` registry. Python test servers either pass `native_files=False` to `create_server` and then inject a test service with `use_file_service(...)` (see `tests/file_api_browser_server.py` and `tests/test_file_api.py`), or start `start.py` with `--file-access off`, which the browser suites use. The `off` mode keeps the browser fallback, so picker-mocking suites exercise the same frontend path. The default `--file-access native` is production behavior.
@@ -155,7 +192,7 @@ New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
 runtime\windows-x64\python.exe -B start.py --port 5174 --no-open --data-dir (Join-Path $work "data")
 ```
 
-Open `http://127.0.0.1:5174/` in Chrome, Edge and Firefox, each with a fresh profile, for example `chrome.exe --user-data-dir="$work\chrome-profile" http://127.0.0.1:5174/`. Use only sample `.plan` files stored under `$work`. Afterward, confirm that the registry is under `$work\localappdata\Plan\file-access` and that nothing changed under your real `%LOCALAPPDATA%\Plan`, then stop the server and delete `$work`.
+Open `http://127.0.0.1:5174/` in Chrome, Edge and Firefox, each with a fresh profile, for example `chrome.exe --user-data-dir="$work\chrome-profile" http://127.0.0.1:5174/`. Keep sample `.plan` files in a separate throwaway folder under Documents, for example `Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'plan-chooser-samples'`. Chrome and Edge reject browser-picker paths under `%TEMP%` and `AppData`; the isolated app data and browser profiles may remain under `$work`. Afterward, confirm that the registry is under `$work\localappdata\Plan\file-access` and that nothing changed under your real `%LOCALAPPDATA%\Plan`, then stop the server and delete `$work`.
 ## Local-only scope checks
 
 Microsoft 365, native mail workers and cloud sharing are removed. There are no tenant, login, mail-delivery or scheduled-task release gates. Local compatibility unit tests (`people.test.mjs` and `test_storage.py`) retain coverage that older reminder/sharing metadata stays inert and local owner lookup makes no network calls; every browser suite blocks external requests.

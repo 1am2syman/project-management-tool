@@ -3,6 +3,7 @@ import copy
 import json
 import queue
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -32,6 +33,41 @@ def http_request(port, path="/api/projects", body=None, headers=None):
         connection.request("POST" if body is not None else "GET", path, body=body, headers=headers or {})
         response = connection.getresponse()
         return response.status, response.headers, response.read()
+
+
+class ServerBurstTests(unittest.TestCase):
+    def test_cold_module_connections_queue_while_accept_loop_is_busy(self):
+        # Hold the accept loop until an entire cold-start burst has connected.
+        # With TCPServer's default backlog=5 the seventh connection times out.
+        # This exercises the real listening socket, not just the class setting.
+        with tempfile.TemporaryDirectory(prefix='Plan startup burst ') as directory:
+            server = create_server(0, directory, native_files=False)
+            connections = []
+            serving = None
+            try:
+                for _ in range(32):
+                    connections.append(socket.create_connection(('127.0.0.1', server.server_port), timeout=1))
+                serving = threading.Thread(target=server.serve_forever, daemon=True)
+                serving.start()
+                for connection in connections:
+                    connection.sendall(f'GET /js/main.js HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n\r\n'.encode())
+                expected = (ROOT / 'src/project_management_tool/web/js/main.js').read_bytes()
+                for connection in connections:
+                    connection.settimeout(5)
+                    response = bytearray()
+                    while chunk := connection.recv(65536):
+                        response.extend(chunk)
+                    headers, body = response.split(b'\r\n\r\n', 1)
+                    self.assertIn(b' 200 ', headers.split(b'\r\n', 1)[0])
+                    self.assertEqual(body, expected)
+            finally:
+                for connection in connections:
+                    connection.close()
+                if serving is not None:
+                    server.shutdown()
+                server.server_close()
+                if serving is not None:
+                    serving.join(timeout=5)
 
 
 class StorageTests(unittest.TestCase):
@@ -123,7 +159,9 @@ class StorageTests(unittest.TestCase):
         state["history"]["s1"]["u"] = [snapshot, snapshot]
         _, first = self.request({"revision": None, "state": state})
         state["workbook"]["sheets"][0]["name"] = "Changed"
-        self.assertEqual(self.request({**first, "state": state})[0], 200)
+        self.assertEqual(self.request({"revision": first["revision"], "changes": [
+            {"op": "set", "path": ["workbook", "sheets", 0, "name"], "value": "Changed"}
+        ]}, path="/api/projects/changes")[0], 200)
         self.assertEqual([path.name for path in self.directory.iterdir()], ["plan.db"])
         with closing(sqlite3.connect(self.directory / "plan.db")) as db, db:
             self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "delete")
@@ -249,7 +287,8 @@ except ConflictError:
             self.assertEqual(self.request()[1]["state"], STATE)
         self.assertEqual(self.request({**saved, "state": STATE}, headers={"Content-Type": "text/plain"})[0], 415)
         self.assertEqual(self.request({**saved, "state": STATE}, headers={"Origin": "https://unrelated.example"})[0], 403)
-        self.assertEqual(self.request({**saved, "state": STATE}, headers={"Origin": self.url})[0], 200)
+        self.assertEqual(self.request({"revision": saved["revision"], "changes": []},
+                                      headers={"Origin": self.url}, path="/api/projects/changes")[0], 200)
 
     def test_corrupt_file_is_not_replaced(self):
         self.directory.mkdir()
@@ -275,12 +314,15 @@ except ConflictError:
             db.execute("CREATE TRIGGER fail_save BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT,'Simulated write failure'); END")
         changed = copy.deepcopy(STATE)
         changed["workbook"]["sheets"][0]["name"] = "Must roll back"
-        self.assertEqual(self.request({**saved, "state": changed})[0], 503)
+        changes = {"revision": saved["revision"], "changes": [
+            {"op": "set", "path": ["workbook", "sheets", 0, "name"], "value": "Must roll back"}
+        ]}
+        self.assertEqual(self.request(changes, path="/api/projects/changes")[0], 503)
         self.assertEqual(self.request()[1]["state"], STATE)
         self.assertEqual(self.request(path="/api/history")[1]["entries"][0]["revision"], saved["revision"])
         with closing(sqlite3.connect(self.directory / "plan.db")) as db, db:
             db.execute("DROP TRIGGER fail_save")
-        self.assertEqual(self.request({**saved, "state": changed})[0], 200)
+        self.assertEqual(self.request(changes, path="/api/projects/changes")[0], 200)
 
     def test_parameterized_values_cannot_become_sql(self):
         state = copy.deepcopy(STATE)

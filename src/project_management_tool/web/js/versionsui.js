@@ -12,6 +12,15 @@ export function createVersionsUI(ctx) {
   const $ = (s) => document.querySelector(s);
   const pick = $('#versionbtn'), label = $('#versionlbl'), snapBtn = $('#snapshotbtn'), analyzeBtn = $('#analysisbtn');
   const menu = $('#versionmenu'), banner = $('#verbanner'), app = $('#app');
+  let pending = false;
+  async function action(dialog, errorBox, command) {
+    if (blocked()) return;
+    pending = true; dialog?.setPending(true); render();
+    try { return await command(); }
+    catch (error) { if (errorBox) errorBox.textContent = error.message || String(error); else ctx.toast(error.message || String(error)); }
+    finally { pending = false; dialog?.setPending(false); render(); }
+  }
+  const blocked = () => pending || store.stale || store.pending || store.suspended || store.locked;
   const summaries = new Map();
   // Version data never changes, so its computed finish date is cached per version.
   function summary(v) {
@@ -25,7 +34,7 @@ export function createVersionsUI(ctx) {
     label.textContent = v ? versionLabel(v) : 'Current';
     pick.classList.toggle('previewing', !!v);
     pick.title = v ? `Viewing ${versionLabel(v)} (read-only). Choose another version or Current.` : `Current plan · ${list.length} saved version${list.length === 1 ? '' : 's'}`;
-    snapBtn.disabled = !!store.stale;
+    snapBtn.disabled = !!blocked();
     app.classList.toggle('previewing', !!v);
     banner.hidden = !v;
     if (v && banner._key !== `${v.id}|${v.name}|${v.note}|${v.type}`) {
@@ -38,6 +47,10 @@ export function createVersionsUI(ctx) {
         `<button data-vb="restore"${ro ? ' disabled title="Shared read-only projects cannot be restored"' : ''}>Restore…</button>` +
         `<button data-vb="copy">Copy as new project</button><button data-vb="exit" class="vb-exit">Back to current</button>`);
     }
+    if (v) {
+      banner.querySelector('[data-vb=restore]').disabled = !!(blocked() || store.sheet().readOnly);
+      banner.querySelector('[data-vb=copy]').disabled = !!blocked();
+    }
     if (!v) banner._key = '';
     if (!menu.hidden) fill();
   }
@@ -48,12 +61,12 @@ export function createVersionsUI(ctx) {
     const row = (v) => {
       const m = summary(v);
       return `<div class="vrow-wrap${v.id === current ? ' on' : ''}"><button class="vrow" role="menuitemradio" aria-checked="${v.id === current}" data-v="${esc(v.id)}"><b>${esc(versionLabel(v))}</b>${ctx.delay.typeChip(v)}<span>${esc(when(v.at))}${m ? ` · finish ${esc(fmtDay(m.finish))}` : ''}${v.by ? ` · ${esc(v.by)}` : ''}</span>${v.note ? `<em>${esc(v.note)}</em>` : ''}</button>` +
-        `<button class="vx" data-edit="${esc(v.id)}" title="Rename or edit note" aria-label="Rename ${esc(versionLabel(v))}">✎</button><button class="vx del" data-del="${esc(v.id)}" title="Delete version" aria-label="Delete ${esc(versionLabel(v))}">✕</button></div>`;
+        `<button class="vx" data-edit="${esc(v.id)}"${blocked() ? ' disabled' : ''} title="Rename or edit note" aria-label="Rename ${esc(versionLabel(v))}">✎</button><button class="vx del" data-del="${esc(v.id)}"${blocked() ? ' disabled' : ''} title="Delete version" aria-label="Delete ${esc(versionLabel(v))}">✕</button></div>`;
     };
     setHTML(menu, `<div class="ttl">Versions · ${esc(store.sheet().name)}</div>` +
       `<div class="vrow-wrap${current ? '' : ' on'}"><button class="vrow" role="menuitemradio" aria-checked="${!current}" data-v=""><b>Current plan</b><span>Live and editable</span></button></div>` +
       `<div class="vlist">${list.length ? [...list].reverse().map(row).join('') : '<p class="vempty">No versions yet. <b>Snapshot</b> saves the current plan so you can view, restore and compare it later.</p>'}</div>` +
-      `<div class="vfoot"><button data-vm="snap"${store.stale ? ' disabled' : ''}>Take snapshot…</button><button data-vm="analyze">Version analysis…</button></div>`);
+      `<div class="vfoot"><button data-vm="snap"${blocked() ? ' disabled' : ''}>Take snapshot…</button><button data-vm="analyze">Version analysis…</button></div>`);
   }
   function openMenu() {
     fill(); menu.hidden = false; pick.setAttribute('aria-expanded', 'true');
@@ -89,6 +102,7 @@ export function createVersionsUI(ctx) {
     else diagnostics.record('version.preview', { active: true });
   }
   function snapshot() {
+    if (blocked()) return;
     if (store.stale) { ctx.toast(store.versionError()); return; }
     const n = Math.max(store.sheet().nextVersion || 1, (store.versions().at(-1)?.n || 0) + 1), latest = store.versions().at(-1);
     const same = latest && store.unchangedSinceLatest();
@@ -103,20 +117,22 @@ export function createVersionsUI(ctx) {
     const body = dialog.body, name = body.querySelector('#vname'), err = body.querySelector('.set-err');
     setTimeout(() => { name.focus(); name.select(); }, 0);
     ctx.delay.bindTypeField(body);
-    const save = () => {
+    const save = () => action(dialog, err, async () => {
       const type = ctx.delay.readType(body);
       const opts = { name: name.value, note: body.querySelector('#vnote').value, by: '', type };
       // An Agreed baseline agrees the dates and saves the version as one step; the agreed dates are part of the saved plan.
-      const r = type === 'baseline' ? store.snapshotAgreed(() => ctx.delay.agreeOnSave(body), opts) : store.snapshotVersion(opts);
+      const r = await (type === 'baseline' ? store.snapshotAgreed((draft) => ctx.delay.agreeOnSave(body, draft), opts) : store.snapshotVersion(opts));
+      if (r.cancelled) return;
       if (r.error) { err.textContent = r.error; return; }
       diagnostics.record('version.snapshot', { type: type || 'none', versionCount: store.versions().length });
-      dialog.close(); ctx.toast(type === 'baseline' ? `Saved ${versionLabel(r.version)} · undo history starts here` : `Saved ${versionLabel(r.version)}`);
-    };
+      dialog.setPending(false); dialog.close(); ctx.toast(type === 'baseline' ? `Saved ${versionLabel(r.version)} · undo history starts here` : `Saved ${versionLabel(r.version)}`);
+    });
     body.querySelector('[data-save]').addEventListener('click', save);
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
     name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
   }
   function edit(vid) {
+    if (blocked()) return;
     const v = store.version(vid); if (!v) return;
     const dialog = openModal(`Edit ${versionLabel(v)}`, `
       <label class="fld"><span>Version name</span><input id="vname" maxlength="80" value="${esc(v.name)}"></label>
@@ -126,19 +142,28 @@ export function createVersionsUI(ctx) {
       <p class="set-err" role="alert"></p>
       <div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-save>Save</button></div>`);
     const body = dialog.body, err = body.querySelector('.set-err');
-    const save = () => { const e = store.updateVersion(vid, { name: body.querySelector('#vname').value, note: body.querySelector('#vnote').value, type: ctx.delay.readType(body) }); if (e) err.textContent = e; else dialog.close(); };
+    const save = () => action(dialog, err, async () => {
+      const e = await store.updateVersion(vid, { name: body.querySelector('#vname').value, note: body.querySelector('#vnote').value, type: ctx.delay.readType(body) });
+      if (e?.cancelled) return;
+      if (e) err.textContent = e;
+      else { dialog.setPending(false); dialog.close(); }
+    });
     body.querySelector('[data-save]').addEventListener('click', save);
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
     body.querySelector('#vname').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
   }
   function remove(vid) {
+    if (blocked()) return;
     const v = store.version(vid); if (!v) return;
     if (!window.confirm(`Delete ${versionLabel(v)}? This cannot be undone.`)) return;
-    const e = store.deleteVersion(vid);
-    if (!e) diagnostics.record('version.delete', { versionCount: store.versions().length });
-    ctx.toast(e || `Deleted ${versionLabel(v)}`);
+    return action(null, null, async () => {
+      const e = await store.deleteVersion(vid);
+      if (!e) diagnostics.record('version.delete', { versionCount: store.versions().length });
+      ctx.toast(e || `Deleted ${versionLabel(v)}`);
+    });
   }
   function restore(vid) {
+    if (blocked()) return;
     const v = store.version(vid); if (!v) return;
     if (store.sheet().readOnly) { ctx.toast('Shared read-only projects cannot be restored'); return; }
     const same = store.unchangedSinceLatest(), autoNote = store.auto && !v.auto;
@@ -150,22 +175,33 @@ export function createVersionsUI(ctx) {
       <div class="rem-actions"><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-restore>Restore version</button></div>`);
     const body = dialog.body;
     body.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
-    body.querySelector('[data-restore]').addEventListener('click', () => {
+    body.querySelector('[data-restore]').addEventListener('click', () => action(dialog, body.querySelector('.set-err'), async () => {
       const savedCurrent = body.querySelector('#vkeep').checked;
-      if (savedCurrent) {
-        const r = store.snapshotVersion({ name: `Before restoring v${v.n}`, by: '' });
-        if (r.error) { body.querySelector('.set-err').textContent = r.error; return; }
-      }
-      const e = store.restoreVersion(vid);
+      const e = await store.commit((draft) => {
+        const version = draft.version(vid);
+        if (!version) throw new Error('That version no longer exists');
+        if (savedCurrent) {
+          const r = draft.snapshotVersion({ name: `Before restoring v${version.n}`, by: '' });
+          if (r.error) throw new Error(r.error);
+        }
+        const error = draft.restoreVersion(vid);
+        if (error) throw new Error(error);
+        return null;
+      });
+      if (e?.cancelled) return;
       if (e) { body.querySelector('.set-err').textContent = e; return; }
       diagnostics.record('version.restore', { savedCurrent });
-      dialog.close(); ctx.toast(`Restored ${versionLabel(v)} · Undo reverses it`);
-    });
+      dialog.setPending(false); dialog.close(); ctx.toast(`Restored ${versionLabel(v)} · Undo reverses it`);
+    }));
   }
   function copy(vid) {
-    const r = store.copyVersionAsProject(vid);
-    if (!r.error) diagnostics.record('version.copy');
-    ctx.toast(r.error || `Created “${store.sheet().name}” from the version`);
+    if (blocked()) return;
+    return action(null, null, async () => {
+      const r = await store.copyVersionAsProject(vid);
+      if (r.cancelled) return;
+      if (!r.error) diagnostics.record('version.copy');
+      ctx.toast(r.error || `Created “${store.sheet(r.id)?.name || 'project'}” from the version`);
+    });
   }
 
   snapBtn.addEventListener('click', snapshot);

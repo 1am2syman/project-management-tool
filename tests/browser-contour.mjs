@@ -36,6 +36,7 @@ try {
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(url); await page.locator('#gbody .r').first().waitFor();
     await page.waitForFunction(() => document.fonts.status === 'loaded');
+    await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
     return { context, page };
   }
   const canvases = (page) => page.locator('.contour-canvas');
@@ -57,7 +58,7 @@ try {
     const a = el.getBoundingClientRect(), b = c.getBoundingClientRect();
     return { on: el.classList.contains('contour-on'), dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top), dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height), events: getComputedStyle(c).pointerEvents };
   });
-  const settle = (page, ms = 200) => page.evaluate((t) => new Promise((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(done)), t)), ms);
+  const settle = async (page, ms = 200) => { await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved'); return page.evaluate((t) => new Promise((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(done)), t)), ms); };
   const aligned = (r, what) => { assert(r, `${what}: a canvas sits directly behind the surface`); assert(r.on, `${what}: surface is transparent over the canvas`); assert(r.dx < 1.5 && r.dy < 1.5 && r.dw < 1.5 && r.dh < 1.5, `${what}: canvas covers the surface exactly ${JSON.stringify(r)}`); assert.equal(r.events, 'none', `${what}: canvas ignores the pointer`); };
 
   // ---------- fonts and tokens ----------
@@ -255,16 +256,46 @@ try {
   const idleA = await corner(data); await settle(data, 500); const idleB = await corner(data);
   assert.notEqual(idleA.sum, idleB.sum, 'the corner drifts while the page is idle');
   // The corner hears the pointer anywhere on the page: far from the corner (top-right) the lines change faster than when the pointer rests there.
-  const churn = (ms, act) => data.evaluate(async ({ ms, run }) => {
-    const c = document.querySelector('.contour-ambient'), grab = () => c.getContext('2d').getImageData(0, 0, c.width, c.height).data, wait = (t) => new Promise((r) => setTimeout(r, t));
-    const frames = []; const end = performance.now() + ms; while (performance.now() < end) { frames.push(Uint8ClampedArray.from(grab())); await wait(90); }
-    let total = 0; for (let f = 1; f < frames.length; f++) for (let k = 3; k < frames[f].length; k += 16) total += Math.abs(frames[f][k] - frames[f - 1][k]);
-    return total;
-  }, { ms, run: act });
-  await data.mouse.move(1300, 150); await settle(data, 1500); // park the pointer far from the corner and let everything calm down
-  const calm = await churn(900);
-  const moving = data.mouse.move(1300, 150).then(async () => { for (let k = 0; k < 40; k++) { await data.mouse.move(1000 + (k % 2 ? 300 : 0), 120 + (k % 5) * 40, { steps: 3 }); await data.waitForTimeout(20); } });
-  const lively = await churn(900); await moving;
+  // Sample an equal number of actual draws. The old wall-clock window could
+  // collect fewer moving frames under load and mistake that for less response.
+  // Observe clearRect only; production timers and animation scheduling stay live.
+  const churn = async moving => {
+    await data.evaluate(() => {
+      const canvas = document.querySelector('.contour-ambient'), ctx = canvas.getContext('2d');
+      window.contourSamples = [];
+      window.contourClear = ctx.clearRect;
+      ctx.clearRect = function (...args) {
+        window.contourClear.apply(this, args);
+        queueMicrotask(() => {
+          if (window.contourSamples.length < 13) window.contourSamples.push(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+        });
+      };
+    });
+    try {
+      const sampled = data.waitForFunction(() => window.contourSamples.length === 13);
+      if (moving) {
+        const travel = (async () => {
+          for (let frame = 0; frame < 20; frame++) {
+            await data.mouse.move(1000 + (frame % 2 ? 300 : 0), 120 + (frame % 5) * 40, { steps: 3 });
+            await data.evaluate(() => new Promise(requestAnimationFrame));
+          }
+        })();
+        await Promise.all([sampled, travel]);
+      } else await sampled;
+      return await data.evaluate(() => {
+        const frames = window.contourSamples; let total = 0;
+        for (let f = 1; f < frames.length; f++) for (let k = 3; k < frames[f].length; k += 16) total += Math.abs(frames[f][k] - frames[f - 1][k]);
+        return total;
+      });
+    } finally {
+      await data.evaluate(() => {
+        document.querySelector('.contour-ambient').getContext('2d').clearRect = window.contourClear;
+        delete window.contourClear; delete window.contourSamples;
+      });
+    }
+  };
+  await data.mouse.move(1300, 150); await settle(data, 2500);
+  const calm = await churn(false), lively = await churn(true);
   assert(lively > calm * 1.3, `moving the pointer far from the corner stirs the lines (${lively} vs ${calm} when it rests)`);
   await settle(data, 1200);
   await data.locator('#settingsbtn').click(); await data.locator('.modal').waitFor(); await settle(data, 400);

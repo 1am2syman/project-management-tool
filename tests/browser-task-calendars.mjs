@@ -28,8 +28,18 @@ try {
   const start = Date.parse('2026-11-06T00:00:00Z') / 86400000;
   const task = (id, name, extra = {}) => ({ id, name, level: 0, start, dur: 1, progress: 0, owner: '', email: '', ms: false, ...extra });
   const initial = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Mixed calendars', data: { calendar: { workdays: [1,2,3,4,5], holidays: [] }, tasks: [task(1, 'Delivery group'), task(2, 'A: Friday finish', { level: 1 }), task(3, 'B: Custom crew', { level: 1, dur: 2 }), task(4, 'Global only'), task(5, 'Crew milestone', { ms: true, dur: 0 })], links: [{ id: 'l1', from: 2, to: 3, type: 'FS', lag: 2 }], collapsed: [], nextId: 6, nextLink: 2 } }] };
-  await page.addInitScript((wb) => { if (!localStorage.getItem('pm-workbook-v1')) { localStorage.setItem('pm-workbook-v1', JSON.stringify(wb)); localStorage.setItem('pm-proto-v2:prefs', JSON.stringify({ auto: true, critical: true })); } }, initial);
   await page.goto(url); await page.locator('#gbody .r[data-id="5"]').waitFor();
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  // Production deliberately ignores browser workspaces. Seed only this isolated
+  // database with a revision-conditional patch, then load through normal startup.
+  await page.evaluate(async (workbook) => {
+    const { changesBetween } = await import('/js/changes.js');
+    const { state, revision } = await (await fetch('/api/projects')).json();
+    const next = { ...state, workbook, preferences: { ...state.preferences, auto: true, critical: true } };
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, changes: changesBetween(state, next) }) });
+    if (!result.ok) throw new Error(await result.text());
+  }, initial);
+  await page.reload(); await page.locator('#gbody .r[data-id="5"]').waitFor();
   async function state(p = page) {
     await p.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
     return p.evaluate(async () => (await (await fetch('/api/projects')).json()).state);
@@ -37,9 +47,16 @@ try {
   const data = async (p = page) => { const s = await state(p); return s.workbook.sheets.find((sheet) => sheet.id === s.workbook.active).data; };
   const row = (id, p = page) => p.locator(`#gbody .r[data-id="${id}"]`);
   const dialog = page.getByRole('dialog');
+  const commitAction = async (action) => {
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST'), action(),
+    ]);
+    assert.equal(response.status(), 200, await response.text());
+    await state();
+  };
   async function openTask(id) { await row(id).locator('[data-col=name]').click({ button: 'right' }); await page.getByRole('menuitem', { name: 'Task calendar…', exact: true }).click(); }
   async function tasksTab() { await dialog.getByRole('tab', { name: 'Task calendars', exact: true }).click(); }
-  async function apply() { await dialog.locator('[data-calendar-apply]').click(); await dialog.waitFor({ state: 'detached' }); await state(); }
+  async function apply() { await commitAction(() => dialog.locator('[data-calendar-apply]').click()); await dialog.waitFor({ state: 'detached' }); await state(); }
   await page.locator('#calendarbtn').click(); await tasksTab();
   assert.match(await dialog.textContent(), /No task calendars/); await page.keyboard.press('Escape');
   await row(1).locator('[data-col=name]').click({ button: 'right' }); assert(await page.getByRole('menuitem', { name: 'Task calendar…' }).isDisabled()); await page.keyboard.press('Escape');
@@ -57,8 +74,8 @@ try {
   assert.equal(await row(3).locator('[data-col=start]').textContent(), 'Nov 10'); assert.equal(await row(3).locator('[data-col=end]').textContent(), 'Nov 12');
   assert.equal(await row(3).getByRole('img', { name: 'Custom task calendar active' }).count(), 1); assert.equal(await row(4).locator('.task-calendar-marker').count(), 0);
   await page.screenshot({ path: join(evidence, 'task-marker.png') });
-  await page.keyboard.press('Control+z'); assert.equal((await data()).tasks.find((t) => t.id === 3).calendar, undefined);
-  await page.keyboard.press('Control+Shift+z'); assert.deepEqual((await data()).tasks.find((t) => t.id === 3).calendar, d.tasks.find((t) => t.id === 3).calendar);
+  await commitAction(() => page.keyboard.press('Control+z')); assert.equal((await data()).tasks.find((t) => t.id === 3).calendar, undefined);
+  await commitAction(() => page.keyboard.press('Control+Shift+z')); assert.deepEqual((await data()).tasks.find((t) => t.id === 3).calendar, d.tasks.find((t) => t.id === 3).calendar);
   await page.locator('#calendarbtn').click(); await tasksTab();
   assert.equal(await dialog.locator('tbody tr').count(), 1); assert.match(await dialog.locator('tbody').textContent(), /B: Custom crew/); assert.doesNotMatch(await dialog.locator('tbody').textContent(), /Global only/);
   await dialog.locator('details summary').click(); assert.match(await dialog.locator('details').textContent(), /Crew closure/);
@@ -91,7 +108,7 @@ try {
   assert((await data()).tasks.find((t) => t.id === 3).calendar);
   await page.locator('#calendarbtn').click(); await tasksTab(); await dialog.locator('tbody tr').filter({ hasText: 'B: Custom crew' }).getByRole('button', { name: 'Use global', exact: true }).click(); await apply();
   assert.equal((await data()).tasks.find((t) => t.id === 3).calendar, undefined); assert.equal(await row(3).locator('.task-calendar-marker').count(), 0);
-  await page.keyboard.press('Control+z'); await state(); assert.equal(await row(3).locator('.task-calendar-marker').count(), 1);
+  await commitAction(() => page.keyboard.press('Control+z')); await state(); assert.equal(await row(3).locator('.task-calendar-marker').count(), 1);
   await page.reload(); await row(5).waitFor(); assert.equal(await row(3).locator('.task-calendar-marker').count(), 1);
   await row(3).locator('[data-col=name]').click(); await page.keyboard.press('Shift+F10'); await page.getByRole('menuitem', { name: 'Task calendar…' }).click();
   const tab = dialog.getByRole('tab', { name: 'Task calendars', exact: true }); await tab.focus(); await page.keyboard.press('ArrowLeft'); assert.equal(await dialog.getByRole('tab', { name: 'Global', exact: true }).getAttribute('aria-selected'), 'true'); await page.keyboard.press('ArrowRight');
@@ -100,9 +117,10 @@ try {
   await fresh.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
   const restored = await fresh.newPage(); restored.on('pageerror', (error) => errors.push(error.message)); await restored.goto(url); await row(5, restored).waitFor(); assert.equal(await row(3, restored).locator('.task-calendar-marker').count(), 1);
   await restored.evaluate(async () => {
-    const response = await (await fetch('/api/projects')).json(), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
+    const response = await (await fetch('/api/projects')).json(), before = structuredClone(response.state), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
     sheet.readOnly = true; sheet.source = { driveId: 'fixture', itemId: 'fixture', by: 'Test', byEmail: '', fetchedAt: 0 };
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) }); if (!result.ok) throw new Error('Read-only fixture failed');
+    const { changesBetween } = await import('/js/changes.js');
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(before, response.state) }) }); if (!result.ok) throw new Error('Read-only fixture failed: ' + await result.text());
   });
   await restored.reload(); await row(5, restored).waitFor(); const locked = await data(restored);
   await row(3, restored).locator('[data-col=name]').click({ button: 'right' }); await restored.getByRole('menuitem', { name: 'Task calendar…', exact: true }).click();
@@ -116,10 +134,11 @@ try {
 
   // Regression for the laptop dialog: long previews must never push actions off-screen.
   await page.evaluate(async (start) => {
-    const response = await (await fetch('/api/projects')).json(), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
+    const response = await (await fetch('/api/projects')).json(), before = structuredClone(response.state), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
     sheet.readOnly = false; delete sheet.source;
     sheet.data = { calendar: { workdays: [1,2,3,4,5], holidays: [...Array.from({ length: 8 }, (_, i) => ({ date: `2026-12-${16 + i}`, name: `Global closure ${i + 1}` })), { date: '2026-12-25', name: 'Christmas' }] }, tasks: Array.from({ length: 18 }, (_, i) => ({ id: i + 1, name: i === 0 ? 'Custom crew — extended delivery calendar for regional production and installation teams' : `Successor ${i}`, level: 0, start, dur: 2, progress: 0, owner: '', email: '', noRem: false, scheduling: 'auto', ms: false, ...(i === 0 ? { calendar: { workdays: [0,1,2,3,4], holidays: [{ date: '2026-11-11', name: 'Crew closure' }, ...Array.from({ length: 8 }, (_, j) => ({ date: `2026-12-0${j + 1}`, name: `Crew holiday ${j + 1} with a long description of the planned regional office closure` }))] } } : {}) })), links: Array.from({ length: 17 }, (_, i) => ({ id: `l${i + 1}`, from: i + 1, to: i + 2, type: 'FS', lag: 0 })), collapsed: [], nextId: 19, nextLink: 18 };
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) }); if (!result.ok) throw new Error('Laptop fixture failed');
+    const { changesBetween } = await import('/js/changes.js');
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(before, response.state) }) }); if (!result.ok) throw new Error('Laptop fixture failed: ' + await result.text());
   }, start);
   await page.reload(); await row(18).waitFor();
   async function captureLaptop(label) {

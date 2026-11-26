@@ -41,10 +41,12 @@ try {
     const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
   });
   await page.locator('#openprojectbtn').click(); await page.locator('#gbody .r[data-id="10"] [data-col=name] .t').filter({ hasText: 'FG Production Readiness' }).waitFor();
+  let fixtureId = await page.locator('#tabs .tab.on').getAttribute('data-id');
+  const selectFixture = async (target = page) => { await target.locator(`#tabs .tab[data-id="${fixtureId}"]`).click(); };
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
-  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === s.workbook.active).data; }); };
+  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === document.querySelector('#tabs .tab.on').dataset.id).data; }); };
   const row = (id) => page.locator(`#gbody .r[data-id="${id}"]`);
-  async function settle() { await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))); }
+  async function settle() { await saved(); await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))); }
   async function fitAndMeasure() {
     await page.locator('[data-fit]').click(); await settle();
     const bounds = await page.evaluate(() => {
@@ -65,7 +67,7 @@ try {
   await row(2).locator('.tog:not(.sp)').click(); await settle(); const collapsed = await geometry(); assert(collapsed.row > g.row); await row(2).locator('.tog:not(.sp)').click();
   const density = page.getByRole('combobox', { name: 'Row density' });
   await density.selectOption('compact'); await settle(); assert.equal((await geometry()).row, 24);
-  await density.selectOption('auto');
+  await density.selectOption('auto'); await saved();
   console.log('PASS Fit includes actual bar/summary/milestone labels; header/footer and adaptive geometry resize and collapse correctly');
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto paused');
   const paused = (await data()).tasks.find((t) => t.id === 5).start;
@@ -81,17 +83,17 @@ try {
   await row(3).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-11-20'); await page.keyboard.press('Enter');
   assert.equal((await data()).tasks.find((t) => t.id === 5).start, calculated + 7, 'Auto follows a later predecessor');
   await row(3).locator('[data-col=name]').click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click(); await settle();
   assert.equal(await row(3).locator('.schedule-badge').getAttribute('aria-label'), 'Auto', 'a root can return to Auto without predecessors');
   await page.locator('.bar[data-id="5"]').click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Use date anchor', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Use date anchor', exact: true }).click(); await settle();
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Date anchor');
-  await row(5).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-12-20'); await page.keyboard.press('Enter');
+  await row(5).locator('[data-col=start]').dblclick(); await page.locator('.editor').fill('2026-12-20'); await page.keyboard.press('Enter'); await settle();
   await page.locator('.bar[data-id="5"]').click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Auto-calculate from connections', exact: true }).click(); await settle();
   assert.equal((await data()).tasks.find((t) => t.id === 5).start, (await data()).tasks.find((t) => t.id === 3).start + 1);
   assert.equal(await row(5).locator('.schedule-badge').getAttribute('aria-label'), 'Auto');
-  await row(6).locator('[data-col=name]').click({ button: 'right' }); await page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click();
+  await row(6).locator('[data-col=name]').click({ button: 'right' }); await page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click(); await settle();
   assert.equal(await row(6).locator('.schedule-badge').getAttribute('aria-label'), 'Manual'); assert.equal(await page.locator('.bar[data-id="6"]').getAttribute('data-scheduling'), null);
   await page.keyboard.press('Control+z'); assert.equal((await data()).tasks.find((t) => t.id === 6).scheduling, 'auto'); await page.keyboard.press('Control+Shift+z');
   await fitAndMeasure(); await page.setViewportSize({ width: 1280, height: 800 }); await settle(); await fitAndMeasure();
@@ -101,7 +103,7 @@ try {
   await row(5).locator('[data-col=name]').dblclick(); await page.locator('.editor').fill('Saved during edit'); await page.keyboard.press('Control+s');
   await page.waitForFunction(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan')).getFile()).text().then((s) => s.includes('Saved during edit')));
   assert.equal(await page.evaluate(() => window.filePicks), 0); await saved();
-  await settle(); await saved(); await page.reload(); await row(5).waitFor(); await saved();
+  await settle(); await saved(); await page.reload(); await selectFixture(); await row(5).waitFor(); await saved();
   await row(5).locator('[data-col=name]').dblclick(); await page.locator('.editor').fill('Saved after refresh'); await page.keyboard.press('Control+s');
   await page.waitForFunction(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('fixture.plan')).getFile()).text().then((s) => s.includes('Saved after refresh')));
   assert.equal(await page.evaluate(() => window.filePicks), 0);
@@ -185,6 +187,7 @@ try {
     const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
   });
   await page.locator('#openprojectbtn').click(); await page.locator('.bar[data-id="1"]').filter({ hasText: 'Start gate' }).waitFor();
+  fixtureId = await page.locator('#tabs .tab.on').getAttribute('data-id');
   for (const mode of ['compact', 'auto']) {
     await density.selectOption(mode); await fitAndMeasure();
     const linkBounds = await page.locator('.lk[data-id="l1"] .vis').evaluate((path) => {
@@ -215,6 +218,7 @@ try {
     const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
   });
   await page.locator('#openprojectbtn').click(); await row(3).filter({ hasText: 'FG Production Readiness' }).waitFor();
+  fixtureId = await page.locator('#tabs .tab.on').getAttribute('data-id');
   await fitAndMeasure();
   const beforeTarget = await data();
   const criticalIds = async () => { await settle(); return page.locator('.bar.critical:not(.summary)').evaluateAll((bars) => bars.map((b) => Number(b.dataset.id)).sort((a, b) => a - b)); };
@@ -234,7 +238,7 @@ try {
     const { Store } = await import('./js/model.js'), { buildXlsx } = await import('./js/xlsx.js');
     const { readSpreadsheet } = await import('./js/xlsxread.js'), { mapSheet } = await import('./js/import.js');
     const { buildPdf } = await import('./js/pdf.js');
-    const disk = (await (await fetch('/api/projects')).json()).state, s = new Store(disk), view = s.view(s.wb.active);
+    const disk = (await (await fetch('/api/projects')).json()).state, s = new Store(disk), view = s.view(document.querySelector('#tabs .tab.on').dataset.id);
     const sheets = await readSpreadsheet(new File([await buildXlsx([{ name: 'Targeted plan', store: view }])], 'targeted.xlsx'));
     const rows = sheets[0].rows, mapped = mapSheet(sheets[0]);
     return { label: rows[0][13], target: rows[0][14], productionCritical: rows.find((r) => r[1] === 'Production setup')[9], licenceCritical: rows.find((r) => r[1] === 'Licence processing')[9], licenceFloat: rows.find((r) => r[1] === 'Licence processing')[7], importedNames: mapped.data.tasks.map((t) => t.name), pdfLabeled: (await buildPdf([{ name: 'Targeted plan', store: view }]).text()).includes('Critical-path target: FG Production Readiness') };
@@ -245,13 +249,13 @@ try {
   console.log('PASS PDF/Excel label the selected target; exported critical/float values match the view and Excel re-import preserves task rows');
   for (const mode of ['compact', 'auto']) { await density.selectOption(mode); await responsiveLayout(1630); }
   await page.screenshot({ path: join(evidence, 'critical-target-selected.png') });
-  await saved(); await page.reload(); await row(3).waitFor(); await saved();
+  await saved(); await page.reload(); await selectFixture(); await row(3).waitFor(); await saved();
   assert.deepEqual(await criticalIds(), [1, 2, 3]);
   assert((await targetButton.getAttribute('aria-label')).includes('FG Production Readiness'));
   // A second profile reads the saved choice from SQLite, with no localStorage migration.
   const freshContext = await browser.newContext({ viewport: { width: 1920, height: 900 } });
   await freshContext.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
-  const freshPage = await freshContext.newPage(); await freshPage.goto(url);
+  const freshPage = await freshContext.newPage(); await freshPage.goto(url); await selectFixture(freshPage);
   await freshPage.locator('#gbody .r[data-id="3"]').waitFor();
   assert((await freshPage.locator('#critical-target').getAttribute('aria-label')).includes('FG Production Readiness'));
   assert.deepEqual(await freshPage.locator('.bar.critical:not(.summary)').evaluateAll((bars) => bars.map((b) => Number(b.dataset.id)).sort((a, b) => a - b)), [1, 2, 3]);

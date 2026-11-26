@@ -9,17 +9,18 @@ export function createTaskUI(ctx, grid) {
   const marker = document.createElement('div'); marker.className = 'row-drop'; marker.hidden = true;
   const announcement = document.createElement('div'); announcement.className = 'sr-only'; announcement.setAttribute('role', 'status');
   document.body.append(menu, marker, announcement);
-  let menuId = null, drag = null, frame = 0, suppressClick = false;
-  const editable = () => !store.structureError();
+  let menuId = null, drag = null, frame = 0, suppressClick = false, pending = false, pointerStart = null;
+  const editable = () => !pending && !store.pending && !store.suspended && !store.structureError();
   // A scroll event queued by the click that opened the menu (selecting a far column scrolls the sheet) must not close it:
   // only a real change of position does.
   let openPos = '';
   const scrollPos = () => `${gx.scrollLeft}/${gx.scrollTop}/${document.querySelector('#gb').scrollTop}`;
   const scrolled = () => { if (!menu.hidden && scrollPos() !== openPos) closeMenu(); };
   function closeMenu(focus = false) { menu.hidden = true; if (focus) gx.focus({ preventScroll: true }); }
-  function openMenu(id, x, y) {
-    if (drag) return;
-    grid.commitEdit();
+  async function openMenu(id, x, y) {
+    if (drag || pending) return;
+    try { if (await grid.commitEdit() === false) return; } catch (error) { ctx.toast(error.message || String(error)); return; }
+    if (drag || pending || (id != null && !store.byId.has(id))) return;
     if (id != null) ctx.select(id, 'name');
     menuId = id;
     const item = (label, action, error, shortcut = '') => `<button role="menuitem" data-task-action="${action}"${error ? ` disabled title="${esc(error)}"` : ''}><span>${label}</span><kbd>${shortcut}</kbd></button>`;
@@ -61,26 +62,33 @@ export function createTaskUI(ctx, grid) {
     e.preventDefault(); openMenu(+bar.dataset.id, e.clientX, e.clientY);
   });
   document.querySelector('#gb').addEventListener('scroll', scrolled, { passive: true });
-  menu.addEventListener('click', (e) => {
-    const button = e.target.closest('button[data-task-action]'); if (!button || button.disabled) return;
-    const action = button.dataset.taskAction; closeMenu(true);
-    if (action === 'calendar') { ctx.calendar.open(menuId);
-    } else if (action === 'slack') { ctx.slack.open(menuId);
-    } else if (action.startsWith('dly-')) { ctx.delay.menuAction(action.slice(4), menuId);
-    } else if (action.startsWith('critical-')) {
-      const error = store.setCriticalTarget(action === 'critical-project' ? null : menuId); if (error) ctx.toast(error);
-    } else if (action.startsWith('schedule-')) {
-      const error = store.setScheduling(menuId, action.slice(9)); if (error) ctx.toast(error);
-      else { ctx.select(menuId, 'name', true); if (action === 'schedule-auto' && !store.auto) ctx.toast('Calculated from connections. Enable Auto-schedule for live updates.'); }
-    } else if (action === 'convert') {
-      const error = store.setTaskKind(menuId, !store.byId.get(menuId).ms); if (error) ctx.toast(error);
-      else ctx.select(menuId, 'name', true);
-    } else if (action === 'indent' || action === 'outdent') {
-      const error = store.indent(menuId, action === 'indent' ? 1 : -1); if (error) ctx.toast(error);
-      else ctx.select(menuId, 'name', true);
-    } else {
-      const [kind, position] = action.split('-'); ctx.insertTask(kind === 'ms', position, menuId);
-    }
+  menu.addEventListener('click', async (e) => {
+    const button = e.target.closest('button[data-task-action]'); if (!button || button.disabled || pending) return;
+    const action = button.dataset.taskAction, id = menuId;
+    pending = true; menu.setAttribute('aria-busy', 'true');
+    try {
+      if (action === 'calendar') { await ctx.calendar.open(id);
+      } else if (action === 'slack') { await ctx.slack.open(id);
+      } else if (action.startsWith('dly-')) { await ctx.delay.menuAction(action.slice(4), id);
+      } else if (action.startsWith('critical-')) {
+        const error = await store.setCriticalTarget(action === 'critical-project' ? null : id); if (error?.cancelled) return; if (error) ctx.toast(error);
+      } else if (action.startsWith('schedule-')) {
+        const error = await store.setScheduling(id, action.slice(9)); if (error?.cancelled) return; if (error) ctx.toast(error);
+        else { ctx.select(id, 'name', true); if (action === 'schedule-auto' && !store.auto) ctx.toast('Calculated from connections. Enable Auto-schedule for live updates.'); }
+      } else if (action === 'convert') {
+        const error = await store.setTaskKind(id, !store.byId.get(id).ms); if (error?.cancelled) return; if (error) ctx.toast(error);
+        else ctx.select(id, 'name', true);
+      } else if (action === 'indent' || action === 'outdent') {
+        const error = await store.indent(id, action === 'indent' ? 1 : -1); if (error?.cancelled) return; if (error) ctx.toast(error);
+        else ctx.select(id, 'name', true);
+      } else {
+        const [kind, position] = action.split('-'); await ctx.insertTask(kind === 'ms', position, id);
+        closeMenu(); // insertion owns focus on its new inline editor
+        return;
+      }
+      closeMenu(true);
+    } catch (error) { ctx.toast(error.message || String(error)); }
+    finally { pending = false; menu.removeAttribute('aria-busy'); }
   });
   document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); }, true);
   gx.addEventListener('scroll', scrolled, { passive: true });
@@ -158,12 +166,15 @@ export function createTaskUI(ctx, grid) {
     }
     frame = requestAnimationFrame(scrollFrame);
   }
-  gx.addEventListener('pointerdown', (e) => {
+  gx.addEventListener('pointerdown', async (e) => {
     const handle = e.target.closest('.row-handle'); if (!handle || e.button !== 0 || drag) return;
     e.preventDefault();
-    if (!editable()) { ctx.toast(store.structureError()); return; }
-    grid.commitEdit(); closeMenu();
-    const id = +handle.closest('.r[data-id]').dataset.id;
+    if (!editable()) { ctx.toast(store.structureError() || 'Wait for the pending change'); return; }
+    const id = +handle.closest('.r[data-id]').dataset.id, sheetId = store.wb.active;
+    pointerStart = e.pointerId;
+    try { if (await grid.commitEdit() === false) return; } catch (error) { pointerStart = null; ctx.toast(error.message || String(error)); return; }
+    if (pointerStart !== e.pointerId || !editable() || store.wb.active !== sheetId || !store.byId.has(id)) return;
+    pointerStart = null; closeMenu();
     ctx.select(id, 'name'); gx.focus({ preventScroll: true });
     drag = { id, pointerId: e.pointerId, sheetId: store.wb.active, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, active: false, target: null };
     gx.setPointerCapture(e.pointerId);
@@ -180,16 +191,22 @@ export function createTaskUI(ctx, grid) {
     }
     preview();
   });
-  gx.addEventListener('pointerup', (e) => {
+  document.addEventListener('pointerup', () => { pointerStart = null; }, true);
+  document.addEventListener('pointercancel', () => { pointerStart = null; }, true);
+  gx.addEventListener('pointerup', async (e) => {
     if (!drag || drag.pointerId !== e.pointerId) return;
     if (drag.active) preview();
     const previous = clearDrag();
-    if (previous.active && previous.target && previous.sheetId === store.wb.active) {
-      const error = store.moveTask(previous.id, previous.target.targetId, previous.target.position);
-      if (error) ctx.toast(error);
-      else { ctx.select(previous.id, 'name', true); announcement.textContent = 'Cascade moved'; }
-    }
     setTimeout(() => { suppressClick = false; }, 0);
+    if (previous.active && previous.target && previous.sheetId === store.wb.active) {
+      pending = true; announcement.textContent = 'Pending row move';
+      try {
+        const error = await store.moveTask(previous.id, previous.target.targetId, previous.target.position);
+        if (error?.cancelled) return; if (error) ctx.toast(error);
+        else { ctx.select(previous.id, 'name', true); announcement.textContent = 'Cascade moved'; }
+      } catch (error) { ctx.toast(error.message || String(error)); announcement.textContent = 'Row move was not accepted'; }
+      finally { pending = false; }
+    }
   });
   gx.addEventListener('pointercancel', cancelDrag);
   gx.addEventListener('lostpointercapture', () => { if (drag) cancelDrag(); });

@@ -196,6 +196,15 @@ export function mapSheet(sh, calendar) {
   return { ok: !issues.some((x) => x.lv === 'error'), name: sh.name, data: { calendar: cleanCalendar(calendar), tasks, links, collapsed: [], nextId: tasks.length + 1, nextLink: nl }, stats, issues, cols, missing };
 }
 
+// One user import is one acceptance boundary, including every selected sheet.
+export function importSheets(store, sheets) {
+  const apply = draft => sheets.map(s => {
+    const name = (s.title || s.src || 'Imported project').trim().slice(0, 60) || 'Imported project';
+    return draft.addSheet(s.data, name);
+  });
+  return store.commit ? store.commit(apply) : apply(store);
+}
+
 export function createImport(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#impbtn');
@@ -216,6 +225,7 @@ export function createImport(ctx) {
   }
 
   function open(file) {
+    if (state.committing) return;
     if (dlg) { dlg.close(); }
     dlg = openModal('Import from Excel', '<div id="imBody"></div>', { wide: true, onClose: () => { dlg = null; } });
     const root = dlg.body.querySelector('#imBody');
@@ -237,6 +247,7 @@ export function createImport(ctx) {
   let state = { file: null, sheets: [], busy: false, error: '' };
 
   async function load(file) {
+    if (state.committing) return;
     if (!dlg) open();
     state = { file, sheets: [], busy: true, error: '' }; paint();
     const ext = (file?.name || '').match(/\.(xlsx|xlsm|csv|tsv|txt)$/i)?.[0]?.toLowerCase() || 'other';
@@ -286,17 +297,22 @@ export function createImport(ctx) {
     dlg.body.scrollTop = scroll;
   }
 
-  function commit() {
+  async function commit() {
+    if (state.committing) return;
     const pick = state.sheets.filter((s) => s.ok && s.on); if (!pick.length) return;
-    let n = 0, last = '';
-    for (const s of pick) {
-      const name = (s.title || s.src || 'Imported project').trim().slice(0, 60) || 'Imported project';
-      store.addSheet(s.data, name); n += 1; last = name;
-    }
-    diagnostics.record('import.commit', { sheetCount: n, rowCount: pick.reduce((sum, s) => sum + s.data.tasks.length, 0) });
-    dlg.close(); ctx.requestRender();
-    ctx.toast(n === 1 ? `Imported “${last}”` : `Imported ${n} projects`);
-    requestAnimationFrame(() => document.querySelector('[data-fit]')?.click());
+    const dialog = dlg;
+    state.committing = true; dialog.setPending(true);
+    try {
+      await importSheets(store, pick);
+      diagnostics.record('import.commit', { sheetCount: pick.length, rowCount: pick.reduce((sum, s) => sum + s.data.tasks.length, 0) });
+      dialog.setPending(false); dialog.close(); ctx.requestRender();
+      const last = (pick[0].title || pick[0].src || 'Imported project').trim().slice(0, 60) || 'Imported project';
+      ctx.toast(pick.length === 1 ? `Imported “${last}”` : `Imported ${pick.length} projects`);
+      requestAnimationFrame(() => document.querySelector('[data-fit]')?.click());
+    } catch (error) {
+      diagnostics.record('import.commit.failure', { error }, 'error');
+      ctx.toast(`Import not confirmed: ${error.message || error}. Your selection is still available. Use Download copy for the staged project.`);
+    } finally { state.committing = false; dialog.setPending(false); }
   }
 
   btn.addEventListener('click', () => open());

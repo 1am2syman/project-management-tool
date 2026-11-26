@@ -33,7 +33,7 @@ try {
   await page.goto(url);
   await page.locator('#gbody .r[data-id="21"]').waitFor();
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
-  const settle = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const settle = async () => { await saved(); return page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))); };
   await saved(); await settle();
 
   // ---- 1. Today vertical line and vertical calendar lines removed from Gantt canvas; date axis marker kept ----
@@ -150,6 +150,7 @@ try {
   await page.locator('#critmode [data-crit=off]').click(); await settle();
   assert.equal(await critMode(), 'off');
   assert.equal(await page.locator('#app').evaluate((el) => el.classList.contains('crit-on')), false);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.bar.critical:not(.summary):not(.ms)')).backgroundColor !== 'rgb(244, 63, 94)');
   const critBarOffColor = await page.locator('.bar.critical:not(.summary):not(.ms)').first().evaluate((el) => getComputedStyle(el).backgroundColor);
   assert.notEqual(critBarOffColor, 'rgb(244, 63, 94)', 'critical bar is not red when off');
   // Switch to SHOW
@@ -313,7 +314,9 @@ try {
       }
     }
     // Moving mouse away hides all end dates again
-    await page.mouse.move(10, 10); await page.waitForTimeout(220);
+    await page.locator('.brand').hover();
+    await page.waitForFunction(() => !document.querySelector('.bar:hover'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.bar .edate')].every(ed => getComputedStyle(ed).opacity === '0'));
     const allHiddenAgain = await page.evaluate(() => [...document.querySelectorAll('.bar .edate')].every((ed) => getComputedStyle(ed).opacity === '0'));
     assert.equal(allHiddenAgain, true, `${densityLabel}: end dates hide again after mouse leaves`);
   }

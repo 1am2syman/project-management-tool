@@ -186,6 +186,12 @@ A selected milestone critical-path target is an app view preference saved separa
 - `subject` and `body`: message strings of at most 200 and 4,000 characters, respectively. Empty or whitespace-only messages use the app's defaults on load.
 - `muted`: up to 500 valid email addresses. The app normalizes their case and removes duplicates on load.
 
+## Workspace acceptance and independent copies
+
+Normal Save and Save As finish submitted editor input, wait for workspace acknowledgement, and verify the database identity before encoding the committed project or starting a chooser. An unavailable workspace leaves the input/candidate available and offers Download copy. File-token attach/drop changes use the same workspace commit boundary; a written file and an unconfirmed connection have separate outcomes.
+
+**Download copy** uses a Blob from the loaded tab without contacting Python, opening a chooser, waiting for a workspace barrier or polling an earlier file operation. If a workspace action is unconfirmed, it encodes that frozen candidate with its candidate delay causes and labels the file as an unsaved copy. It neither writes a connected file nor clears an operation journal. The browser reports Download started; check Downloads. Unapplied/invalid controls are separate input, and the `.plan` still contains one portable project rather than a whole-workspace restore image.
+
 ## Data kept outside project files
 
 Project files include task owners, contact email addresses, saved project versions and inert legacy reminder metadata. They exclude browser-local file handles and file connection tokens, legacy cloud sharing links and permissions, queued-message records, credentials, undo/redo history, templates, other project tabs, milestone critical-path target choices and app layout settings. The app's `plan.db` backup remains the way to transfer the entire saved workspace and its history.

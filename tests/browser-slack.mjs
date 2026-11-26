@@ -39,10 +39,12 @@ try {
     const writable = await handle.createWritable(); await writable.write(encodeProjectFile(s)); await writable.close();
   });
   await page.locator('#openprojectbtn').click(); await page.getByText('Prepare components', { exact: true }).first().waitFor();
+  const fixtureId = await page.locator('#tabs .tab.on').getAttribute('data-id');
+  const selectFixture = target => target.locator(`#tabs .tab[data-id="${fixtureId}"]`).click();
   const row = (id) => page.locator(`#gbody .r[data-id="${id}"]`);
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
-  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === s.workbook.active).data; }); };
-  const settle = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === document.querySelector('#tabs .tab.on').dataset.id).data; }); };
+  const settle = async () => { await saved(); return page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))); };
   const dialog = page.getByRole('dialog', { name: 'Task slack', exact: true });
   await row(3).locator('[data-col=name]').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Use as critical-path target', exact: true }).click();
@@ -63,7 +65,7 @@ try {
   await row(4).locator('[data-col=float]').click(); assert((await dialog.textContent()).includes('Outside selected target')); await page.keyboard.press('Escape');
   await row(10).locator('[data-col=freeFloat]').click(); assert((await dialog.textContent()).includes('Not calculated for summary')); await page.keyboard.press('Escape');
   await row(1).locator('[data-col=name]').click(); await page.locator('#slackbtn').click();
-  await dialog.getByLabel('Show slack on Gantt').selectOption('all'); await page.keyboard.press('Escape'); await settle();
+  await dialog.getByLabel('Show slack on Gantt').selectOption('all'); await saved(); await page.keyboard.press('Escape'); await settle();
   assert((await page.locator('.slack-item').count()) > 1); assert.equal(await page.locator('.slack-overlay text').count(), 1);
   await page.locator('[data-fit]').click(); await settle();
   const fitted = await page.locator('.slack-item').evaluateAll((els) => {
@@ -71,14 +73,14 @@ try {
     return els.map((el) => { const r = el.getBoundingClientRect(); return { left: r.left - pane.left, right: r.right - pane.left, width: document.querySelector('#gb').clientWidth }; });
   });
   for (const bound of fitted) { assert(bound.left >= -1, JSON.stringify(bound)); assert(bound.right <= bound.width - 8, JSON.stringify(bound)); }
-  await page.locator('#slackbtn').click(); await dialog.getByLabel('Show slack on Gantt').selectOption('off'); await page.keyboard.press('Escape'); await settle();
+  await page.locator('#slackbtn').click(); await dialog.getByLabel('Show slack on Gantt').selectOption('off'); await saved(); await page.keyboard.press('Escape'); await settle();
   assert.equal(await page.locator('.slack-item').count(), 0);
-  await page.locator('#slackbtn').click(); await dialog.getByLabel('Show slack on Gantt').selectOption('selected'); await page.keyboard.press('Escape');
+  await page.locator('#slackbtn').click(); await dialog.getByLabel('Show slack on Gantt').selectOption('selected'); await saved(); await page.keyboard.press('Escape');
   assert.deepEqual(await data(), before);
-  await page.reload(); await row(1).waitFor(); await page.locator('#slackbtn').click();
+  await page.reload(); await selectFixture(page); await row(1).waitFor(); await page.locator('#slackbtn').click();
   assert.equal(await dialog.getByLabel('Show slack on Gantt').inputValue(), 'selected'); await page.keyboard.press('Escape');
   // Slack guides never intercept a bar move; Escape restores original dates.
-  await page.getByRole('combobox', { name: 'Row density' }).selectOption('compact');
+  await page.getByRole('combobox', { name: 'Row density' }).selectOption('compact'); await saved();
   await page.locator('#zoomseg [data-zoom="16"]').click(); await row(1).locator('[data-col=name]').click(); await settle();
   const bar = page.locator('.bar[data-id="1"]'), box = await bar.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 32, box.y + box.height / 2, { steps: 5 });
@@ -90,7 +92,7 @@ try {
   const exports = await page.evaluate(async () => {
     const { Store } = await import('./js/model.js'), { buildXlsx } = await import('./js/xlsx.js'), { buildPdf } = await import('./js/pdf.js');
     const { readSpreadsheet } = await import('./js/xlsxread.js'), { mapSheet } = await import('./js/import.js');
-    const state = (await (await fetch('/api/projects')).json()).state, s = new Store(state), view = s.view(s.wb.active), projects = [{ name: 'Slack fixture', store: view }];
+    const state = (await (await fetch('/api/projects')).json()).state, s = new Store(state), view = s.view(document.querySelector('#tabs .tab.on').dataset.id), projects = [{ name: 'Slack fixture', store: view }];
     const sheets = await readSpreadsheet(new File([await buildXlsx(projects)], 'slack.xlsx'));
     const rows = sheets[0].rows, headings = rows[0], a = rows.find((r) => r[1] === 'Prepare components');
     const pdf = await buildPdf(projects, { slack: true }).text(), plainPdf = await buildPdf(projects).text();
@@ -104,10 +106,10 @@ try {
   assert.deepEqual(errors, []); await saved(); await context.close();
   // Fresh profiles prove database restoration and exercise actual device pixel ratios.
   for (const scale of [1, 1.5, 2]) {
-    const scaledContext = await newContext(scale), scaled = await scaledContext.newPage(); await scaled.goto(url); await scaled.locator('#gbody .r[data-id="1"]').waitFor();
+    const scaledContext = await newContext(scale), scaled = await scaledContext.newPage(); await scaled.goto(url); await selectFixture(scaled); await scaled.locator('#gbody .r[data-id="1"]').waitFor();
     await scaled.locator('#gbody .r[data-id="1"] [data-col=name]').click();
     for (const density of ['compact', 'auto']) {
-      await scaled.getByRole('combobox', { name: 'Row density' }).selectOption(density);
+      await scaled.getByRole('combobox', { name: 'Row density' }).selectOption(density); await scaled.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
       await scaled.locator('[data-fit]').click();
       await scaled.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
       assert.equal(await scaled.locator('.slack-item').count(), 1);
@@ -120,15 +122,16 @@ try {
     }
     await scaled.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved'); await scaledContext.close();
   }
-  const lastContext = await newContext(), last = await lastContext.newPage(); await last.goto(url); await last.locator('#gbody .r[data-id="1"]').waitFor();
+  const lastContext = await newContext(), last = await lastContext.newPage(); await last.goto(url); await selectFixture(last); await last.locator('#gbody .r[data-id="1"]').waitFor();
   await last.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
   await last.evaluate(async () => {
-    const response = await (await fetch('/api/projects')).json(), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
+    const { changesBetween } = await import('./js/changes.js');
+    const response = await (await fetch('/api/projects')).json(), original = structuredClone(response.state), sheet = response.state.workbook.sheets.find((s) => s.id === document.querySelector('#tabs .tab.on').dataset.id);
     sheet.readOnly = true; sheet.source = { driveId: 'fixture', itemId: 'fixture', by: 'Browser test', byEmail: '', fetchedAt: 0 };
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(original, response.state) }) });
     if (!result.ok) throw new Error('Cannot prepare read-only fixture');
   });
-  await last.reload(); await last.locator('#gbody .r[data-id="1"] [data-col=float]').click();
+  await last.reload(); await selectFixture(last); await last.locator('#gbody .r[data-id="1"] [data-col=float]').click();
   assert((await last.getByRole('dialog', { name: 'Task slack', exact: true }).textContent()).includes('5 working days'));
   await last.keyboard.press('Escape');
   await last.setViewportSize({ width: 760, height: 780 }); await last.locator('#slackbtn').click();
@@ -137,27 +140,29 @@ try {
   // An inconsistent manual schedule must show the negative local allowance and warning.
   await last.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
   await last.evaluate(async () => {
-    const response = await (await fetch('/api/projects')).json(), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
+    const { changesBetween } = await import('./js/changes.js');
+    const response = await (await fetch('/api/projects')).json(), original = structuredClone(response.state), sheet = response.state.workbook.sheets.find((s) => s.id === document.querySelector('#tabs .tab.on').dataset.id);
     sheet.data.tasks.find((t) => t.id === 2).start = sheet.data.tasks.find((t) => t.id === 1).start;
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(original, response.state) }) });
     if (!result.ok) throw new Error('Cannot prepare violated fixture');
   });
-  await last.reload(); await last.locator('#gbody .r[data-id="1"] [data-col=freeFloat]').click();
+  await last.reload(); await selectFixture(last); await last.locator('#gbody .r[data-id="1"] [data-col=freeFloat]').click();
   const lastDialog = last.getByRole('dialog', { name: 'Task slack', exact: true });
   assert((await lastDialog.textContent()).includes('-2 working days')); assert((await lastDialog.textContent()).includes('violated dependency'));
   await last.screenshot({ path: join(evidence, 'slack-conflict-details.png') }); await last.keyboard.press('Escape');
   await last.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
   await last.evaluate(async () => {
     const { D } = await import('./js/model.js');
-    const response = await (await fetch('/api/projects')).json(), sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
+    const { changesBetween } = await import('./js/changes.js');
+    const response = await (await fetch('/api/projects')).json(), original = structuredClone(response.state), sheet = response.state.workbook.sheets.find((s) => s.id === document.querySelector('#tabs .tab.on').dataset.id);
     const first = sheet.data.tasks.find((t) => t.id === 1), milestone = sheet.data.tasks.find((t) => t.id === 3);
     sheet.data.tasks = [{ ...first, level: 0, start: D('2026-11-06'), dur: 3 }, { ...milestone, start: D('2026-11-20') }];
     sheet.data.links = [{ id: 'l1', from: 1, to: 3, type: 'FS', lag: 0 }];
     sheet.data.calendar = { workdays: [1, 2, 3, 4, 5], holidays: [{ date: '2026-11-09', name: 'Closure' }] };
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(original, response.state) }) });
     if (!result.ok) throw new Error('Cannot prepare working-calendar fixture');
   });
-  await last.reload(); await last.locator('#gbody .r[data-id="1"] [data-col=float]').click();
+  await last.reload(); await selectFixture(last); await last.locator('#gbody .r[data-id="1"] [data-col=float]').click();
   assert((await lastDialog.textContent()).includes('6 working days')); assert((await lastDialog.textContent()).includes('2026-11-17 → 2026-11-19'));
   await last.screenshot({ path: join(evidence, 'slack-workday-details.png') }); await last.keyboard.press('Escape');
   await last.locator('[data-fit]').click();

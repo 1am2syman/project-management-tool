@@ -5,7 +5,10 @@ import { mkdtemp, readFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const playwright = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const engine = process.env.PLAYWRIGHT_BROWSER || 'chromium';
+if (!['chromium', 'firefox', 'webkit'].includes(engine)) throw Error('Unknown PLAYWRIGHT_BROWSER: ' + engine);
+const browserType = playwright[engine];
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'plan-diagnostics-ui-'));
 const server = spawn(process.env.PYTHON || 'python3', ['-B', 'start.py', '--port', '0', '--data-dir', temp, '--no-open', '--file-access', 'off'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -17,7 +20,7 @@ try {
     server.once('exit', (code) => { clearTimeout(timer); no(new Error(`Server ${code}: ${log}`)); });
     server.stdout.on('data', (b) => { log += b; const m = log.match(/Plan is running: (http:\/\/127\.0\.0\.1:\d+\/)/); if (m) { clearTimeout(timer); yes(m[1]); } });
   });
-  browser = await chromium.launch({ headless: process.env.PLAN_TEST_HEADED !== '1', executablePath: process.env.PLAYWRIGHT_CHROMIUM });
+  browser = await browserType.launch({ headless: process.env.PLAN_TEST_HEADED !== '1', executablePath: engine === 'chromium' ? process.env.PLAYWRIGHT_CHROMIUM : undefined });
   async function fresh() {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1000 }, acceptDownloads: true });
     await context.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
@@ -52,8 +55,11 @@ try {
   const downloadPromise = page.waitForEvent('download'); await dialog.getByRole('button', { name: 'Download log' }).click();
   const download = await downloadPromise, raw = await readFile(await download.path(), 'utf8'), report = JSON.parse(raw);
   assert.match(download.suggestedFilename(), /^plan-diagnostics-.*\.json$/);
-  assert.equal(report.format, 'plan-diagnostics'); assert.match(report.setup.browser.userAgent, /Chrom/);
-  assert(report.setup.browserVersion.fullVersionList.some((v) => /^\d+\./.test(v.version)));
+  assert.equal(report.format, 'plan-diagnostics');
+  assert.equal(report.setup.browser.userAgent, await page.evaluate(() => navigator.userAgent));
+  if (await page.evaluate(() => !!navigator.userAgentData?.getHighEntropyValues)) {
+    assert(report.setup.browserVersion.fullVersionList.some((v) => /^\d+\./.test(v.version)));
+  } else assert.equal(report.setup.browserVersion.supported, false);
   assert.match(report.setup.server.sourceFingerprint, /^[a-f0-9]{64}$/);
   assert(report.setup.server.python.version); assert(report.setup.server.operatingSystem.system);
   assert.equal(report.setup.indexedDB.available, true); assert.equal(report.setup.cookieSupport.writable, true);
@@ -66,10 +72,13 @@ try {
   assert.equal(typeof report.app.fitMode, 'boolean');
   assert.equal(typeof report.app.slackMode, 'string');
   assert.equal(typeof report.app.density, 'string');
-  for (const event of ['app.ready', 'storage.save.end', 'javascript.error', 'javascript.unhandledrejection', 'console.warn', 'console.error', 'network.xhr.end', 'network.fetch.end', 'diagnostics.download']) assert(report.entries.some((e) => e.event === event), event);
+  for (const event of ['app.ready', 'storage.commit.end', 'javascript.error', 'javascript.unhandledrejection', 'console.warn', 'console.error', 'network.xhr.end', 'network.fetch.end', 'diagnostics.download']) assert(report.entries.some((e) => e.event === event), event);
   for (const secret of ['COOKIE_SECRET_SENTINEL', 'CREDENTIAL_SECRET_SENTINEL', 'PASSWORD_SECRET_SENTINEL', 'QUERY_SECRET_SENTINEL', 'PRIVATE_TASK_SENTINEL', 'CONSOLE_PROJECT_SECRET_SENTINEL', 'NETWORK_SECRET_SENTINEL', 'XHR_SECRET_SENTINEL']) assert(!raw.includes(secret), secret);
   assert(raw.includes('diagnostic uncaught control'), 'positive control proves errors are actually exported');
   const dataBefore = (await (await page.request.get(url + 'api/projects')).json()).state;
+  // Enter can activate the focused Download button in Firefox. Test shortcut
+  // isolation from a harmless focused control, without starting another download.
+  await dialog.getByRole('button', { name: 'Refresh setup', exact: true }).focus();
   await page.keyboard.press('Delete'); await page.keyboard.press('Control+Enter');
   assert.equal((await (await page.request.get(url + 'api/projects')).json()).state.workbook.sheets[0].data.tasks.length, 21, 'log keyboard shortcuts cannot edit the sheet behind the dialog');
   await page.keyboard.press('Escape'); await page.reload();

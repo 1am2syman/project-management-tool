@@ -32,9 +32,32 @@ function calendarSummary(cal) {
 export function createTaskDialog(ctx, grid) {
   const { store, ui } = ctx;
   let dialog = null, taskId = null, tab = 'overview', navStack = [], sheetId = null;
-  let dirty = false, peopleCleanup = null;
+  let dirty = false, peopleCleanup = null, pending = false;
+
+  async function mutate(command) {
+    if (pending) throw new Error('Wait for the pending change');
+    const current = dialog;
+    pending = true; current?.setPending(true);
+    const state = current?.el.querySelector('[data-td-dirty]');
+    if (state) state.textContent = 'Pending…';
+    try {
+      const result = await command();
+      if (result?.cancelled) throw new Error('Action cancelled; edits have not been saved');
+      return result;
+    }
+    finally {
+      pending = false; current?.setPending(false);
+      if (state) state.textContent = dirty ? 'Unsaved edits' : '';
+    }
+  }
+  function showFailure(error, selector = '[data-td-err]') {
+    const box = dialog?.body.querySelector(selector);
+    if (box) box.textContent = error.message || String(error);
+    else ctx.toast(error.message || String(error));
+  }
 
   function close() {
+    if (pending) return;
     peopleCleanup?.(); peopleCleanup = null;
     const active = dialog; dialog = null; taskId = null; navStack = []; dirty = false;
     active?.close();
@@ -68,9 +91,10 @@ export function createTaskDialog(ctx, grid) {
     };
   }
 
-  function open(id, initialTab = 'overview', { pushHistory = false } = {}) {
-    if (!store.byId.has(id)) return;
-    grid.commitEdit();
+  async function open(id, initialTab = 'overview', { pushHistory = false } = {}) {
+    if (pending) return;
+    try { if (await grid.commitEdit() === false) return; } catch (error) { ctx.toast(error.message || String(error)); return; }
+    if (pending || !store.byId.has(id)) return;
     if (ui.selId !== id || ui.linkId) ctx.select(id, ui.col);
     if (dialog) {
       if (pushHistory && taskId != null && taskId !== id) navStack.push(taskId);
@@ -103,7 +127,7 @@ export function createTaskDialog(ctx, grid) {
     footer.className = 'td-footer rem-actions';
     modal.appendChild(footer);
 
-    bindModalEvents(modal, current.body, footer);
+    bindModalEvents(modal, current.body);
     const openedTask = store.byId.get(id), openedInfo = store.info.get(id);
     diagnostics.record('taskDialog.open', { kind: openedInfo?.summary ? 'summary' : openedTask?.ms ? 'milestone' : 'task', readOnly: !!store.structureError() });
     renderAll();
@@ -223,8 +247,8 @@ export function createTaskDialog(ctx, grid) {
     setHTML(box, items.join(''));
   }
 
-  function saveOverview() {
-    if (!dialog || !taskId) return false;
+  async function saveOverview() {
+    if (pending || !dialog || taskId == null) return false;
     const body = dialog.body, errBox = body.querySelector('[data-td-err]');
     const t = store.byId.get(taskId), f = store.info.get(taskId);
     if (!t || !f) return false;
@@ -259,7 +283,9 @@ export function createTaskDialog(ctx, grid) {
       if (!v.ms && (v.actualEnd ?? null) !== (t.actualEnd ?? null)) patch.actualEnd = v.actualEnd;
     }
 
-    const err = store.updateTask(taskId, patch);
+    let err;
+    try { err = await mutate(() => store.updateTask(taskId, patch)); }
+    catch (error) { showFailure(error); return false; }
     if (err) {
       diagnostics.record('taskDialog.save', { ok: false });
       if (errBox) errBox.textContent = err;
@@ -804,7 +830,8 @@ export function createTaskDialog(ctx, grid) {
   }
 
   function renderAll(preserveOverview = false) {
-    if (!dialog || taskId == null || !store.byId.has(taskId)) return;
+    if (pending || !dialog || taskId == null || !store.byId.has(taskId)) return;
+    if (store.wb.active !== sheetId) { close(); return; }
     const modal = dialog.el.querySelector('.task-dialog');
     renderHead(modal);
     renderTabsAndBody(preserveOverview);
@@ -834,7 +861,7 @@ export function createTaskDialog(ctx, grid) {
     open(otherId, tab, { pushHistory: true });
   }
 
-  function bindModalEvents(modal, body, footer) {
+  function bindModalEvents(modal, body) {
     // Tab keyboard navigation + Ctrl/Cmd+Enter save + Enter in single-line Overview inputs
     modal.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !store.structureError()) {
@@ -907,12 +934,14 @@ export function createTaskDialog(ctx, grid) {
       syncDirtyUI();
     });
 
-    body.addEventListener('change', (e) => {
+    body.addEventListener('change', async (e) => {
+      if (pending) return;
       const target = e.target;
       if (target.matches('[data-td-slack-mode]')) {
-        ui.slackMode = target.value;
-        appState.setItem('pm-slack-mode', ui.slackMode);
-        ctx.requestRender();
+        const mode = target.value, previous = ui.slackMode;
+        target.value = previous;
+        try { await mutate(() => appState.setItem('pm-slack-mode', mode)); ui.slackMode = mode; target.value = mode; ctx.requestRender(); }
+        catch (error) { target.value = previous; showFailure(error); }
         return;
       }
       if (target.closest('.td-link-row')) {
@@ -948,130 +977,136 @@ export function createTaskDialog(ctx, grid) {
     });
 
     // Click handler across head, body, and footer
-    modal.addEventListener('click', (e) => {
+    modal.addEventListener('click', async (e) => {
+      if (pending) return;
       const btn = e.target.closest('button');
       if (!btn || btn.disabled) return;
+      try {
 
-      if (btn.hasAttribute('data-td-close')) { close(); return; }
-      if (btn.hasAttribute('data-td-back')) {
-        if (dirty) { ctx.toast('Save or reset unsaved edits before going back'); return; }
-        const prev = navStack.pop();
-        if (prev != null && store.byId.has(prev)) open(prev, tab);
-        return;
-      }
-      if (btn.dataset.tdTab) { switchTab(btn.dataset.tdTab); return; }
-      if (btn.dataset.tdJump) { jumpTo(+btn.dataset.tdJump); return; }
-      if (btn.hasAttribute('data-td-save')) { saveOverview(); return; }
-      if (btn.hasAttribute('data-td-reset')) { dirty = false; renderAll(); return; }
-      if (btn.hasAttribute('data-td-reveal')) { ctx.select(taskId, ui.col, true); return; }
-      if (btn.hasAttribute('data-td-calendar')) { ctx.calendar.open(taskId); return; }
-
-      if (btn.hasAttribute('data-td-delete')) {
-        const id = taskId, name = store.byId.get(id)?.name || 'Item';
-        const done = () => { close(); };
-        ctx.delay.confirmDelete(id, () => { store.deleteTask(id); ctx.toast(`Deleted “${name}”`); done(); }, done);
-        return;
-      }
-
-      if (btn.dataset.tdPct != null) {
-        const val = +btn.dataset.tdPct;
-        const r = body.querySelector('[name=progressRange]'), n = body.querySelector('[name=progress]');
-        if (r) r.value = String(val);
-        if (n) n.value = String(val);
-        body.querySelectorAll('[data-td-pct]').forEach((b) => b.classList.toggle('on', +b.dataset.tdPct === val));
-        syncDirtyUI();
-        return;
-      }
-
-      if (btn.dataset.tdFill) {
-        const [field, what] = btn.dataset.tdFill.split(':');
-        const inp = body.querySelector(`[name="${field}"]`);
-        const f = store.info.get(taskId);
-        if (!inp || !f) return;
-        if (what === 'clear') inp.value = '';
-        else if (what === 'today') inp.value = fmtISO(today);
-        else if (what === 'plan') {
-          const s = parseDate(body.querySelector('[name=start]')?.value, f.start) ?? f.start;
-          const eDay = parseDate(body.querySelector('[name=end]')?.value, f.end - 1) ?? (f.end - 1);
-          inp.value = fmtISO(field === 'actualStart' ? s : eDay);
+        if (btn.hasAttribute('data-td-close')) { close(); return; }
+        if (btn.hasAttribute('data-td-back')) {
+          if (dirty) { ctx.toast('Save or reset unsaved edits before going back'); return; }
+          const prev = navStack.pop();
+          if (prev != null && store.byId.has(prev)) open(prev, tab);
+          return;
         }
-        updateActualsComparison(body);
-        syncDirtyUI();
-        return;
-      }
+        if (btn.dataset.tdTab) { switchTab(btn.dataset.tdTab); return; }
+        if (btn.dataset.tdJump) { jumpTo(+btn.dataset.tdJump); return; }
+        if (btn.hasAttribute('data-td-save')) { saveOverview(); return; }
+        if (btn.hasAttribute('data-td-reset')) { dirty = false; renderAll(); return; }
+        if (btn.hasAttribute('data-td-reveal')) { ctx.select(taskId, ui.col, true); return; }
+        if (btn.hasAttribute('data-td-calendar')) { ctx.calendar.open(taskId); return; }
 
-      if (btn.dataset.tdAddChild) {
-        const res = store.insertTask(taskId, btn.dataset.tdAddChild === 'ms', 'child');
-        if (res.error) { ctx.toast(res.error); return; }
-        ctx.toast(`Added child ${btn.dataset.tdAddChild === 'ms' ? 'milestone' : 'task'}`);
-        open(res.id, 'overview', { pushHistory: true });
-        return;
-      }
+        if (btn.hasAttribute('data-td-delete')) {
+          const id = taskId, name = store.byId.get(id)?.name || 'Item';
+          const done = () => { close(); };
+          await ctx.delay.confirmDelete(id, async () => { await mutate(() => store.deleteTask(id)); ctx.toast(`Deleted “${name}”`); done(); }, done);
+          return;
+        }
 
-      if (btn.dataset.tdIndent) {
-        const err = store.indent(taskId, +btn.dataset.tdIndent);
-        if (err) ctx.toast(err);
-        else renderAll(dirty);
-        return;
-      }
+        if (btn.dataset.tdPct != null) {
+          const val = +btn.dataset.tdPct;
+          const r = body.querySelector('[name=progressRange]'), n = body.querySelector('[name=progress]');
+          if (r) r.value = String(val);
+          if (n) n.value = String(val);
+          body.querySelectorAll('[data-td-pct]').forEach((b) => b.classList.toggle('on', +b.dataset.tdPct === val));
+          syncDirtyUI();
+          return;
+        }
 
-      if (btn.dataset.linkSave) {
-        const row = btn.closest('.td-link-row'), errBox = body.querySelector('[data-td-conn-err]');
-        const type = row.querySelector('[data-link-type]').value, lag = Number(row.querySelector('[data-link-lag]').value);
-        const err = store.updateLink(btn.dataset.linkSave, { type, lag });
-        if (err) { if (errBox) errBox.textContent = err; return; }
-        if (ctx.delay?.popOpen?.()) { close(); return; }
-        ctx.toast('Connection updated');
-        renderAll(dirty);
-        return;
-      }
+        if (btn.dataset.tdFill) {
+          const [field, what] = btn.dataset.tdFill.split(':');
+          const inp = body.querySelector(`[name="${field}"]`);
+          const f = store.info.get(taskId);
+          if (!inp || !f) return;
+          if (what === 'clear') inp.value = '';
+          else if (what === 'today') inp.value = fmtISO(today);
+          else if (what === 'plan') {
+            const s = parseDate(body.querySelector('[name=start]')?.value, f.start) ?? f.start;
+            const eDay = parseDate(body.querySelector('[name=end]')?.value, f.end - 1) ?? (f.end - 1);
+            inp.value = fmtISO(field === 'actualStart' ? s : eDay);
+          }
+          updateActualsComparison(body);
+          syncDirtyUI();
+          return;
+        }
 
-      if (btn.dataset.linkDel) {
-        store.removeLink(btn.dataset.linkDel);
-        ctx.toast('Connection removed');
-        renderAll(dirty);
-        return;
-      }
+        if (btn.dataset.tdAddChild) {
+          if (dirty) { ctx.toast('Save or reset unsaved edits before adding a child'); return; }
+          const res = await mutate(() => store.insertTask(taskId, btn.dataset.tdAddChild === 'ms', 'child'));
+          if (res.error) { ctx.toast(res.error); return; }
+          ctx.toast(`Added child ${btn.dataset.tdAddChild === 'ms' ? 'milestone' : 'task'}`);
+          open(res.id, 'overview', { pushHistory: true });
+          return;
+        }
 
-      if (btn.dataset.addSubmit) {
-        const dir = btn.dataset.addSubmit, box = btn.closest('[data-add-link]'), errBox = body.querySelector('[data-td-conn-err]');
-        const other = +box.querySelector('[data-add-target]').value;
-        const type = box.querySelector('[data-add-type]').value;
-        const lag = Number(box.querySelector('[data-add-lag]').value || 0);
-        if (!other) { if (errBox) errBox.textContent = `Choose a ${dir === 'in' ? 'predecessor' : 'successor'} first.`; return; }
-        const fromId = dir === 'in' ? other : taskId, toId = dir === 'in' ? taskId : other;
-        const err = store.addLink(fromId, type[0].toLowerCase(), toId, type[1].toLowerCase(), lag);
-        if (err) { if (errBox) errBox.textContent = err; return; }
-        if (ctx.delay?.popOpen?.()) { close(); return; }
-        ctx.toast('Connection added');
-        renderAll(dirty);
-        return;
-      }
+        if (btn.dataset.tdIndent) {
+          const err = await mutate(() => store.indent(taskId, +btn.dataset.tdIndent));
+          if (err) ctx.toast(err);
+          else renderAll(dirty);
+          return;
+        }
 
-      if (btn.dataset.tdCrittarget) {
-        const err = store.setCriticalTarget(btn.dataset.tdCrittarget === 'clear' ? null : taskId);
-        if (err) ctx.toast(err);
-        else renderAll(dirty);
-        return;
-      }
+        if (btn.dataset.linkSave) {
+          const row = btn.closest('.td-link-row'), errBox = body.querySelector('[data-td-conn-err]');
+          const type = row.querySelector('[data-link-type]').value, lag = Number(row.querySelector('[data-link-lag]').value);
+          const err = await mutate(() => store.updateLink(btn.dataset.linkSave, { type, lag }));
+          if (err) { if (errBox) errBox.textContent = err; return; }
+          if (ctx.delay?.popOpen?.()) { close(); return; }
+          ctx.toast('Connection updated');
+          renderAll(dirty);
+          return;
+        }
 
-      if (btn.dataset.tdDly) {
-        const a = btn.dataset.tdDly, id = taskId;
-        if (a === 'overdue') { close(); ctx.delay.openOverdue(id); }
-        else if (a === 'record-missing') { close(); ctx.delay.recordMissing(id); }
-        else ctx.delay.menuAction(a, id);
-        return;
-      }
+        if (btn.dataset.linkDel) {
+          const err = await mutate(() => store.removeLink(btn.dataset.linkDel));
+          if (err) { showFailure(new Error(err), '[data-td-conn-err]'); return; }
+          ctx.toast('Connection removed');
+          renderAll(dirty);
+          return;
+        }
 
-      if (btn.dataset.tdEditLog) {
-        ctx.delay.editRecord(taskId, +btn.dataset.tdEditLog, () => renderAll(dirty));
-        return;
-      }
+        if (btn.dataset.addSubmit) {
+          const dir = btn.dataset.addSubmit, box = btn.closest('[data-add-link]'), errBox = body.querySelector('[data-td-conn-err]');
+          const other = +box.querySelector('[data-add-target]').value;
+          const type = box.querySelector('[data-add-type]').value;
+          const lag = Number(box.querySelector('[data-add-lag]').value || 0);
+          if (!other) { if (errBox) errBox.textContent = `Choose a ${dir === 'in' ? 'predecessor' : 'successor'} first.`; return; }
+          const fromId = dir === 'in' ? other : taskId, toId = dir === 'in' ? taskId : other;
+          const err = await mutate(() => store.addLink(fromId, type[0].toLowerCase(), toId, type[1].toLowerCase(), lag));
+          if (err) { if (errBox) errBox.textContent = err; return; }
+          if (ctx.delay?.popOpen?.()) { close(); return; }
+          ctx.toast('Connection added');
+          renderAll(dirty);
+          return;
+        }
+
+        if (btn.dataset.tdCrittarget) {
+          const err = await mutate(() => store.setCriticalTarget(btn.dataset.tdCrittarget === 'clear' ? null : taskId));
+          if (err) ctx.toast(err);
+          else renderAll(dirty);
+          return;
+        }
+
+        if (btn.dataset.tdDly) {
+          const a = btn.dataset.tdDly, id = taskId;
+          if (dirty && (a === 'overdue' || a === 'record-missing')) { ctx.toast('Save or reset unsaved edits before recording a delay'); return; }
+          if (a === 'overdue') { close(); ctx.delay.openOverdue(id); }
+          else if (a === 'record-missing') { close(); ctx.delay.recordMissing(id); }
+          else ctx.delay.menuAction(a, id);
+          return;
+        }
+
+        if (btn.dataset.tdEditLog) {
+          ctx.delay.editRecord(taskId, +btn.dataset.tdEditLog, () => renderAll(dirty));
+          return;
+        }
+      } catch (error) { showFailure(error, btn.dataset.linkSave || btn.dataset.linkDel || btn.dataset.addSubmit ? '[data-td-conn-err]' : '[data-td-err]'); }
     });
   }
 
   store.on((kind) => {
-    if (!dialog) return;
+    if (!dialog || pending) return;
     if (kind === 'sheet' || kind === 'version' || store.wb.active !== sheetId) { close(); return; }
     if (!store.byId.has(taskId)) { close(); return; }
     if (kind === 'drag') return;

@@ -38,17 +38,24 @@ try {
   const cell = (id, col) => row(id).locator(`[data-col=${col}]`);
   const settle = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  const commitAction = async (action) => {
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST'), action(),
+    ]);
+    assert.equal(response.status(), 200, await response.text());
+    await saved(); await settle();
+  };
   const server_ = async () => { await saved(); return page.evaluate(async () => (await (await fetch('/api/projects')).json()).state); };
-  const active = async () => { const s = await server_(); return s.workbook.sheets.find((x) => x.id === s.workbook.active); };
+  const active = async () => { const s = await server_(), id = await page.locator('.tab.on').getAttribute('data-id'); return s.workbook.sheets.find((x) => x.id === id); };
   const toast = async (text) => page.waitForFunction((t) => document.querySelector('#toast').textContent.includes(t), text);
-  const edit = async (id, col, value) => { await cell(id, col).dblclick(); await page.locator('.editor').fill(value); await page.keyboard.press('Enter'); await settle(); };
+  const edit = async (id, col, value) => { await cell(id, col).dblclick(); await page.locator('.editor').fill(value); await commitAction(() => page.keyboard.press('Enter')); };
   const menu = page.locator('#versionmenu'), banner = page.locator('#verbanner');
   const pick = async (label) => { await page.locator('#versionbtn').click(); await menu.waitFor(); await menu.locator('.vrow', { hasText: label }).first().click(); await settle(); };
   const snapshot = async (name, note = '') => {
     await page.locator('#snapshotbtn').click();
     const dialog = page.getByRole('dialog', { name: 'Save version' }); await dialog.waitFor();
     await dialog.locator('#vname').fill(name); if (note) await dialog.locator('#vnote').fill(note);
-    await dialog.getByRole('button', { name: 'Save version' }).click(); await dialog.waitFor({ state: 'detached' });
+    await commitAction(() => dialog.getByRole('button', { name: 'Save version' }).click()); await dialog.waitFor({ state: 'detached' });
   };
 
   // ---------- snapshot ----------
@@ -101,21 +108,21 @@ try {
   const restore = page.getByRole('dialog', { name: 'Restore v1 · Baseline' }); await restore.waitFor();
   assert.equal(await restore.locator('#vkeep').isChecked(), false, 'the current plan already matches the latest version');
   await restore.locator('#vkeep').check();
-  await restore.getByRole('button', { name: 'Restore version' }).click(); await toast('Restored v1 · Baseline');
+  await commitAction(() => restore.getByRole('button', { name: 'Restore version' }).click()); await toast('Restored v1 · Baseline');
   assert(await banner.isHidden()); assert.equal(await cell(13, 'dur').textContent(), '16');
   sheet = await active();
   assert.deepEqual(sheet.versions.map((v) => v.name), ['Baseline', 'Frontend +6d', 'Before restoring v1']);
   assert.equal(sheet.data.tasks.find((t) => t.id === 13).dur, 16);
-  await page.locator('#gx').focus(); await page.keyboard.press('Control+z'); await settle();
+  await page.locator('#gx').focus(); await commitAction(() => page.keyboard.press('Control+z'));
   assert.equal(await cell(13, 'dur').textContent(), '22', 'undo reverses the restore in one step');
-  await page.keyboard.press('Control+Shift+z'); await settle(); assert.equal(await cell(13, 'dur').textContent(), '16');
-  await page.keyboard.press('Control+z'); await settle();
+  await commitAction(() => page.keyboard.press('Control+Shift+z')); assert.equal(await cell(13, 'dur').textContent(), '16');
+  await commitAction(() => page.keyboard.press('Control+z'));
 
   // ---------- rename and delete ----------
   await page.locator('#versionbtn').click(); await menu.locator('[data-edit="v2"]').click();
   const rename = page.getByRole('dialog', { name: 'Edit v2 · Frontend +6d' }); await rename.waitFor();
-  await rename.locator('#vname').fill('Frontend slip'); await rename.getByRole('button', { name: 'Save' }).click();
-  await page.locator('#versionbtn').click(); await menu.locator('[data-del="v3"]').click(); await toast('Deleted v3');
+  await rename.locator('#vname').fill('Frontend slip'); await commitAction(() => rename.getByRole('button', { name: 'Save' }).click());
+  await page.locator('#versionbtn').click(); await commitAction(() => menu.locator('[data-del="v3"]').click()); await toast('Deleted v3');
   assert.match(confirms.at(-1), /Delete v3 · Before restoring v1\?/);
   sheet = await active();
   assert.deepEqual(sheet.versions.map((v) => [v.id, v.name]), [['v1', 'Baseline'], ['v2', 'Frontend slip']]);
@@ -197,7 +204,7 @@ try {
   // ---------- export shows the version on screen; copy as a new project ----------
   const pdfDownload = page.waitForEvent('download'); await page.locator('#expbtn').click(); await page.getByRole('button', { name: 'PDF · this sheet' }).click();
   assert.match((await pdfDownload).suggestedFilename(), /^Launch-plan-v1-/);
-  await banner.getByRole('button', { name: 'Copy as new project' }).click(); await settle();
+  await commitAction(() => banner.getByRole('button', { name: 'Copy as new project' }).click());
   assert.equal(await page.locator('.brand b').textContent(), 'Launch plan · Baseline');
   assert(await banner.isHidden()); assert.equal(await cell(13, 'dur').textContent(), '16');
   await page.locator('#versionbtn').click(); assert((await menu.textContent()).includes('No versions yet')); await page.keyboard.press('Escape');
@@ -223,6 +230,7 @@ try {
 
   // ---------- persistence across reload ----------
   await saved(); await page.reload(); await row(21).waitFor();
+  await page.locator('.tab', { hasText: /^Launch plan$/ }).click(); await settle();
   assert.equal(await page.locator('#versionlbl').textContent(), 'Current', 'a reload always opens the current plan');
   await page.locator('#versionbtn').click();
   assert.equal(await menu.locator('.vrow').count(), 3); await page.keyboard.press('Escape');
@@ -250,7 +258,7 @@ try {
   await page.keyboard.press('Escape');
 
   // ---------- empty state and narrow layout ----------
-  await page.locator('#addsheet').click(); await settle();
+  await commitAction(() => page.locator('#addsheet').click());
   await page.locator('#analysisbtn').click(); await overlay.locator('.an-empty').waitFor();
   assert(await overlay.locator('[data-an=pdf]').isDisabled());
   await overlay.getByRole('button', { name: 'Take snapshot…' }).click();
@@ -276,6 +284,7 @@ try {
     const scaledPage = await scaled.newPage();
     await scaledPage.route('**/*', (route) => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
     await scaledPage.goto(url); await scaledPage.locator('#gbody .r[data-id]').first().waitFor();
+    await scaledPage.locator('.tab', { hasText: /^Launch plan$/ }).click();
     await scaledPage.locator('#analysisbtn').click(); await scaledPage.locator('#an-a').selectOption('v1');
     await scaledPage.locator('[data-go=gantt]').click(); await scaledPage.waitForTimeout(450);
     await scaledPage.screenshot({ path: join(evidence, `waterfall-1366-scale-${scale}.png`) });
@@ -331,17 +340,18 @@ try {
   // Dense comparisons retain both endpoints; full names and compact controls remain usable.
   await densePage.evaluate(async () => {
     const { Store, D } = await import('/js/model.js');
-    const { encodeProjectFile } = await import('/js/projectfiles.js');
+    const { changesBetween } = await import('/js/changes.js');
     const tasks = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: `Regional stakeholder consultation and requirements validation ${i + 1}`, start: D('2026-11-02'), dur: 5, level: 0, progress: 0, ms: false }));
     const links = tasks.slice(1).map((t, i) => ({ id: `l${i + 1}`, from: i + 1, to: t.id, type: 'FS', lag: 0 }));
     const store = new Store({ workbook: { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'International platform transformation programme', data: { tasks, links, nextId: 13, nextLink: 12 } }] }, preferences: { auto: true } });
     store.save = () => { store.sheet().data = JSON.parse(store.serialize()); };
     store.snapshotVersion({ name: 'Steering committee approved delivery baseline' });
     const changed = JSON.parse(store.serialize()); changed.tasks.forEach((task, i) => { task.dur += i % 2 ? 2 : -1; }); store.load(changed); store.save();
-    const handle = await (await navigator.storage.getDirectory()).getFileHandle('dense.plan', { create: true });
-    const writer = await handle.createWritable(); await writer.write(encodeProjectFile(store)); await writer.close(); window.showOpenFilePicker = async () => [handle];
+    const current = await (await fetch('/api/projects')).json();
+    const response = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: current.revision, changes: changesBetween(current.state, store.savedState()) }) });
+    if (!response.ok) throw Error(await response.text());
   });
-  await densePage.locator('#openprojectbtn').click();
+  await densePage.reload();
   await densePage.waitForFunction(() => document.querySelector('.brand b').textContent === 'International platform transformation programme');
   await densePage.locator('#analysisbtn').click(); await denseOverlay.locator('.wf-chart').waitFor();
   assert.equal(await denseOverlay.locator('.wf-step').count(), 12);

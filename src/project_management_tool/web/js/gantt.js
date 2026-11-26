@@ -451,7 +451,7 @@ export function createGantt(ctx) {
     const id = +bar.dataset.id;
     if (ui.selId !== id || ui.linkId) ctx.select(id, ui.col);
     if (store.stale) { ctx.toast('This project changed in another window; reload before editing.'); return; }
-    if (store.readOnly) { store.emit('denied'); return; } // viewers can look, not touch
+    if (store.readOnly || store.pending || store.suspended) { store.emit('denied'); return; } // viewers can look, not touch
     gb.setPointerCapture(e.pointerId);
     if (dot) { drag = { kind: 'link', id, end: dot.classList.contains('f') ? 'f' : 's', moved: true, lastX: e.clientX, lastY: e.clientY, target: null }; root.classList.add('linking'); e.preventDefault(); return; }
     store.beginDrag();
@@ -488,13 +488,13 @@ export function createGantt(ctx) {
     const cx = contentX(drag.lastX);
     if (kind === 'prog') {
       const f = store.info.get(id), x1 = xOf(f.start), w = xOf(f.end) - x1;
-      store.dragApply(() => store.dragProgress(id, ((cx - x1) / w) * 100));
+      store.dragApply(draft => draft.dragProgress(id, ((cx - x1) / w) * 100));
     } else {
       const rawD = (cx - drag.cx0) / ppd, delta = Math.round(rawD);
       drag.frac = rawD - delta;
       if (delta === drag.delta) { nudge(); dragTip(); return; }
       drag.delta = delta;
-      store.dragApply(() => { if (kind === 'move') store.dragMove(id, delta); else store.dragResize(id, kind === 'rl' ? 'l' : 'r', delta); });
+      store.dragApply(draft => { if (kind === 'move') draft.dragMove(id, delta); else draft.dragResize(id, kind === 'rl' ? 'l' : 'r', delta); });
     }
     dragTip();
   }
@@ -521,10 +521,11 @@ export function createGantt(ctx) {
     setSVG(linkdrag, `<path d="M${sx} ${ay} C${mx} ${ay} ${mx} ${ey} ${ex} ${ey}" stroke="${col}" stroke-width="2" stroke-dasharray="5 4" fill="none"/><circle cx="${ex}" cy="${ey}" r="4.5" fill="${col}" stroke="none"/>`);
   }
 
-  function finish(commit) {
+  async function finish(commit) {
     if (!drag) return;
     const d = drag; drag = null; if (raf) { cancelAnimationFrame(raf); raf = 0; }
     gb.classList.remove('panning'); root.classList.remove('linking'); hideTip();
+    try {
     if (d.kind === 'pan') { if (!d.moved) { ctx.select(null); } }
     else if (d.kind === 'link') {
       setSVG(linkdrag, '');
@@ -537,11 +538,12 @@ export function createGantt(ctx) {
           if (existing.length === 1 && link.type === type) ctx.selectLink(link.id);
           else openPop(link.id, type);
         } else {
-          const err = store.addLink(d.id, d.end, d.target.id, d.target.end); if (err) ctx.toast(err);
+          const err = await store.addLink(d.id, d.end, d.target.id, d.target.end); if (err && !err.cancelled) ctx.toast(err);
         }
       }
       else if (commit && d.moved) { const ri = Math.floor(contentY(d.lastY) / dims.row), t = store.rows[ri]; if (t && t.id !== d.id) { const err = store.canLink(d.id, t.id); if (err) ctx.toast(err); } }
-    } else store.endDrag(commit && d.moved, { id: d.id, kind: d.kind });
+    } else await store.endDrag(commit && d.moved, { id: d.id, kind: d.kind });
+    } catch (error) { ctx.toast(`${error.message} Download copy is available.`); }
     ctx.requestRender(); queueView(); flushView();
   }
   gb.addEventListener('pointerup', () => finish(true));

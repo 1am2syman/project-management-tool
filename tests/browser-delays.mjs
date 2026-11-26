@@ -48,16 +48,23 @@ try {
   const settle = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const toast = (text) => page.waitForFunction((t) => document.querySelector('#toast').textContent.includes(t), text);
   const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
-  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === s.workbook.active).data; }); };
+  const commitAction = async (action) => {
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST'), action(),
+    ]);
+    assert.equal(response.status(), 200, await response.text()); await saved(); await settle();
+  };
+  const data = async () => { await saved(); return page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state; return s.workbook.sheets.find((x) => x.id === document.querySelector('.tab.on').dataset.id).data; }); };
   const row = (id) => page.locator(`#gbody .r[data-id="${id}"]`);
   const cell = (id, col) => row(id).locator(`[data-col=${col}]`);
   const text = async (id, col) => (await cell(id, col).textContent()).replace(/\s+/g, ' ').trim();
   const pop = page.locator('.dly-pop');
   const headers = () => page.$$eval('#ghead .c', (cells) => cells.map((c) => c.textContent.trim()));
-  const edit = async (id, col, value) => { await cell(id, col).dblclick(); await page.locator('.editor').fill(value); await page.keyboard.press('Enter'); await settle(); };
+  const edit = async (id, col, value) => { await cell(id, col).dblclick(); await page.locator('.editor').fill(value); await page.keyboard.press('Enter');
+    await page.waitForFunction(() => !document.querySelector('.editor') || !!document.querySelector('.dly-pop'), null, { polling: 100 }); await settle(); };
   const dialogOf = (name) => page.getByRole('dialog', { name, exact: true });
   const fits = async (ids) => page.evaluate((cols) => { const gx = document.querySelector('#gx').getBoundingClientRect(); return cols.map((c) => { const h = [...document.querySelectorAll('#ghead .c')].find((x) => x.textContent.trim() === c); const r = h?.getBoundingClientRect(); return [c, !!r && r.left >= gx.left && r.right <= gx.right + 1]; }); }, ids);
-  const undo = async () => { await page.locator('#gx').focus().catch(() => {}); await page.keyboard.press('Control+z'); await settle(); };
+  const undo = async (noop = false) => { await page.locator('#gx').focus().catch(() => {}); if (noop) { await page.keyboard.press('Control+z'); await settle(); } else await commitAction(() => page.keyboard.press('Control+z')); };
 
   // ---------- nothing is agreed yet: no delay columns, no project agreed date ----------
   assert(!(await headers()).includes('Agreed'));
@@ -106,7 +113,7 @@ try {
   assert(await page.evaluate(() => { const h = [...document.querySelectorAll('#ghead .c')].find((x) => x.textContent.trim() === 'Own / Inherited').getBoundingClientRect(); return h.left < document.querySelector('#gx').getBoundingClientRect().right - 100; }), 'Own / Inherited is at least mostly visible');
   assert.equal(await page.locator('#gx').evaluate((el) => el.scrollLeft), 0);
   await page.screenshot({ path: join(evidence, 'baseline-1920.png') });
-  await undo(); // the agreement cannot be undone on its own
+  await undo(true); // the agreement cannot be undone on its own
   assert.notEqual(await text(1, 'agreed'), '·', 'Ctrl+Z does not remove the agreed dates of a saved baseline');
   await page.locator('#versionbtn').click();
   assert((await page.locator('.vrow', { hasText: 'Baseline' }).first().textContent()).includes('Agreed baseline'));
@@ -141,13 +148,17 @@ try {
   await cancelBtn.click(); await pop.waitFor({ state: 'detached' }); await settle();
   assert.equal(await text(7, 'dur'), '4', 'Cancel reverts the drag');
 
-  // ---------- Cancel takes back only the popover's own edit ----------
+  // ---------- a pending decision blocks another command; Cancel writes neither ----------
+  const beforePending = await data();
+  const revisionBeforePending = await page.evaluate(async () => (await (await fetch('/api/projects')).json()).revision);
   await edit(7, 'dur', '6'); await open();
-  await edit(5, 'name', 'Side work renamed');
+  await cell(5, 'name').dblclick({ force: true });
+  assert.equal(await row(5).locator('.editor').count(), 0, 'a second edit cannot start while a delay decision is pending');
+  assert.equal(await page.evaluate(async () => (await (await fetch('/api/projects')).json()).revision), revisionBeforePending, 'pending decisions make no database write');
   await cancelBtn.click(); await pop.waitFor({ state: 'detached' }); await settle();
-  assert((await text(5, 'name')).startsWith('Side work renamed'), 'a later rename is not undone by Cancel');
-  assert.equal(await text(7, 'dur'), '6', 'the popover edit stays when something else changed since');
-  await edit(5, 'name', 'Side work');
+  assert.deepEqual(await data(), beforePending, 'Cancel discards the whole staged action');
+  assert.equal(await cell(5, 'name').locator('.t').textContent(), beforePending.tasks.find(t => t.id === 5).name, 'the blocked rename is never accepted');
+  assert.equal(await text(7, 'dur'), '4', 'the pending duration is discarded');
 
   // ---------- outcomes: Record, Skip reason, Revision ----------
   await edit(2, 'dur', '14'); await open();
@@ -166,7 +177,7 @@ try {
   await undo(); // one step takes back the edit and its record together
   assert.equal(await text(2, 'dur'), '10'); assert.equal(await text(2, 'var'), '0');
   assert.equal((await data()).log.filter((e) => e.type === 'delay').length, 0);
-  await page.keyboard.press('Control+y'); await settle();
+  await commitAction(() => page.keyboard.press('Control+y'));
   assert.equal(await text(2, 'dur'), '14'); assert.equal(await text(2, 'var'), '+4');
 
   await edit(7, 'dur', '7'); await open();                                     // Docs: Skip reason
@@ -248,7 +259,7 @@ try {
 
   // ---------- pending inclusion ----------
   await cell(7, 'name').click({ button: 'right' });
-  await page.getByRole('menuitem', { name: /^Insert task below/  }).click(); await settle();
+  await commitAction(() => page.getByRole('menuitem', { name: /^Insert task below/  }).click());
   assert.equal(await page.locator('.dly-chip.pend', { hasText: 'Inclusion' }).count(), 1);
   const added = await page.locator('#gbody .r:has(.dly-chip.pend)').first().getAttribute('data-id');
   await cell(added, 'start').click(); await cell(added, 'name').click({ button: 'right' });
@@ -287,21 +298,23 @@ try {
   dlg = dialogOf('Settings'); await dlg.waitFor();
   const causeRow = (name) => dlg.locator('.dly-cause-row', { hasText: name });
   assert((await causeRow('Resource availability').textContent()).includes('Used by 1 delay'), 'a delay is counted once, not once per saved version');
-  await dlg.locator('#dly-new').fill('Weather'); await dlg.locator('#dly-add').click();
+  await dlg.locator('#dly-new').fill('Weather'); await commitAction(() => dlg.locator('#dly-add').click());
   assert((await causeRow('Weather').textContent()).includes('Not used'));
-  await causeRow('Weather').locator('[data-rename]').click(); await page.keyboard.press('Control+a'); await page.keyboard.type('Bad weather'); await page.keyboard.press('Enter');
+  await causeRow('Weather').locator('[data-rename]').click(); await page.keyboard.press('Control+a'); await page.keyboard.type('Bad weather'); await commitAction(() => page.keyboard.press('Enter'));
   await causeRow('Bad weather').waitFor();
-  await causeRow('Resource availability').getByRole('button', { name: /Retire/ }).click();
+  await commitAction(() => causeRow('Resource availability').getByRole('button', { name: /Retire/ }).click());
   assert((await causeRow('Resource availability').textContent()).includes('Retired'), 'a cause that is in use is retired, not removed');
   await page.screenshot({ path: join(evidence, 'settings-causes.png') });
   await page.keyboard.press('Escape'); await dlg.waitFor({ state: 'detached' }).catch(() => {});
   await saved();
   await page.reload(); await page.locator('#gbody .r').first().waitFor();
+  await page.locator('.tab', { hasText: /^Delay plan$/ }).click(); await settle();
   await page.locator('#settingsbtn').click(); dlg = dialogOf('Settings'); await dlg.waitFor();
   await causeRow('Bad weather').waitFor(); assert((await causeRow('Resource availability').textContent()).includes('Retired'));
   await page.keyboard.press('Escape');
   const fresh = await newContext(), freshPage = await fresh.newPage();
   await freshPage.goto(url); await freshPage.locator('#gbody .r').first().waitFor();
+  await freshPage.locator('.tab', { hasText: /^Delay plan$/ }).click();
   await freshPage.locator('#settingsbtn').click();
   await freshPage.getByRole('dialog', { name: 'Settings', exact: true }).locator('.dly-cause-row', { hasText: 'Bad weather' }).waitFor();
   await fresh.close();
@@ -327,7 +340,7 @@ try {
   sums = await gridSums(); assert(sums.ok, 'all columns add up with every milestone shown');
   await an.locator('[data-dly-showall]').click(); await settle();
   const star = an.locator('[data-dly-star]').first(), starId = +(await star.getAttribute('data-dly-star'));
-  await star.click(); await settle();
+  await commitAction(() => star.click());
   assert((await heads()).length === keyHeads.length + 1, 'starring a milestone adds its column');
   assert.deepEqual((await data()).stars, [starId], 'key milestones are saved with the project');
   const revisions = (await an.locator('#an-dmil thead th').allInnerTexts()).includes('Revisions');
@@ -388,7 +401,7 @@ try {
   await page.locator('#impbtn').click(); const im = page.getByRole('dialog', { name: 'Import from Excel' }); await im.waitFor();
   const chooser = page.waitForEvent('filechooser'); await im.locator('[data-im=pick]').click(); await (await chooser).setFiles(sheetXlsx);
   await im.locator('[data-im=go]').waitFor(); await im.locator('[data-im=go]').click(); await settle(); await saved();
-  const imported = await page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state.workbook; return { sheets: s.sheets.length, tasks: s.sheets.find((x) => x.id === s.active).data.tasks.map((t) => t.name) }; });
+  const imported = await page.evaluate(async () => { const s = (await (await fetch('/api/projects')).json()).state.workbook; return { sheets: s.sheets.length, tasks: s.sheets.find((x) => x.id === document.querySelector('.tab.on').dataset.id).data.tasks.map((t) => t.name) }; });
   assert.equal(imported.sheets, before + 1, 'the sheet export imports as a new sheet');
   assert.equal(imported.tasks.length, taskCount, `re-import brings back exactly the tasks, no Delay log rows: ${imported.tasks}`);
   await page.locator('.tab', { hasText: 'Delay plan' }).first().click().catch(() => {}); await settle();
@@ -415,7 +428,8 @@ try {
   await page.screenshot({ path: join(evidence, 'preview.png') });
 
   // ---------- Agreed baseline: a soft notice for delays without a cause, never a block ----------
-  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  await page.reload(); await page.locator('#gbody .r').first().waitFor();
+  await page.locator('.tab', { hasText: /^Delay plan$/ }).click(); await settle(); await settle();
   assert((await text(7, 'cause')).includes('Unclassified'));
   const openSave = async (type) => { await page.locator('#snapshotbtn').click(); const d = page.getByRole('dialog', { name: 'Save version' }); await d.waitFor(); if (type) await d.locator('#vtype').selectOption(type); return d; };
   const notice = (d) => d.locator('.dly-nocause:visible');
@@ -467,9 +481,10 @@ try {
   await page.setViewportSize({ width: 1920, height: 1000 }); await settle();
 
   // ---------- edge cases: a delay on an already manual task (F1) and a delay recorded from a lag edit (F2) ----------
-  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  await page.reload(); await page.locator('#gbody .r').first().waitFor();
+  await page.locator('.tab', { hasText: /^Delay plan$/ }).click(); await settle(); await settle();
   await cell(5, 'name').click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click(); await settle();
+  await commitAction(() => page.getByRole('menuitem', { name: 'Use manual dates', exact: true }).click());
   await edit(5, 'pred', '4'); await settle();                                  // Test (row 4) now precedes the manual Side work, which ignores it
   assert.equal(await pop.count(), 0, 'a link into a manual task moves nothing');
   const sideStart = iso(B + 10);                                               // before Test finishes: a wrongly anchored task would jump behind it
@@ -478,7 +493,7 @@ try {
   await pop.locator('[data-skip]').click(); await pop.waitFor({ state: 'detached' }); await settle();
   assert.equal((await data()).tasks.find((t) => t.id === 5).scheduling, 'manual', 'Record keeps a manual task manual');
   assert((await text(5, 'start')).length && (await cell(5, 'start').textContent()).trim() !== '', 'the start is shown');
-  assert.equal(await page.evaluate(async (id) => { const s = (await (await fetch('/api/projects')).json()).state, d = s.workbook.sheets.find((x) => x.id === s.workbook.active).data; return d.tasks.find((t) => t.id === id).start; }, 5), B + 10, 'the dates are the ones that were typed');
+  assert.equal(await page.evaluate(async (id) => { const s = (await (await fetch('/api/projects')).json()).state, d = s.workbook.sheets.find((x) => x.id === document.querySelector('.tab.on').dataset.id).data; return d.tasks.find((t) => t.id === id).start; }, 5), B + 10, 'the dates are the ones that were typed');
   assert((await text(5, 'origin')).includes('Own'), 'the move shows as Own');
   await cell(3, 'pred').scrollIntoViewIfNeeded();
   await edit(3, 'pred', '3+3'); await open();                                 // F2: a lag typed on Test (after Build)
@@ -496,7 +511,7 @@ try {
 
   // F4: a duplicate keeps the agreed dates and the log but no versions; the delay analysis must still be reachable.
   await page.locator('.tab.on').first().click({ button: 'right' });
-  await page.locator('button[data-a=dup]').click(); await settle();
+  await commitAction(() => page.locator('button[data-a=dup]').click());
   await page.locator('#analysisbtn').click(); await an.locator('.an-empty').waitFor(); await settle();
   assert(/No versions yet/.test(await an.locator('.an-empty').innerText()), 'the duplicate has no versions');
   for (const id of ['dmil', 'dimp', 'dexp', 'down', 'dlog']) assert(await an.locator(`#an-${id}`).count(), `the duplicate's analysis has ${id}`);
@@ -518,7 +533,11 @@ try {
   await addHoliday(); await open();
   assert(/Finish .* → /.test(await pop.locator('[data-head]').innerText()), 'a holiday that pushes an agreed task opens the record popover');
   await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
-  assert.equal(await holidays(), holidaysBefore, 'Cancel undoes the calendar change');
+  assert.equal(await holidays(), holidaysBefore, 'Cancel discards the uncommitted calendar change');
+  const retainedCalendar = page.getByRole('dialog', { name: /Project calendar/ });
+  assert(await retainedCalendar.isVisible(), 'cancelling the delay decision retains the calendar dialog for correction');
+  assert.equal(await retainedCalendar.locator('[data-holiday-remove]').count(), holidaysBefore + 1, 'the staged holiday remains available to correct');
+  await page.keyboard.press('Escape'); await retainedCalendar.waitFor({ state: 'detached' });
   await addHoliday(); await open();
   await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
   await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
@@ -546,43 +565,57 @@ try {
   await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
   await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle();
   assert.match(await text(2, 'cause'), /Client \/ approver/, 'the recorded cause shows in the Cause cell');
-  await page.keyboard.press('Control+z'); await settle();
+  await commitAction(() => page.keyboard.press('Control+z'));
   assert.match(await text(2, 'cause'), /Not recorded/, 'Undo takes the record back');
   await row(2).click({ button: 'right' }); await page.locator('button[data-task-action="dly-record-missing"]').click(); await open();
   await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
 
-  // F7: causes added elsewhere (another tab, an opened file) reach the popover list without a reload.
+  // F7: accepted cause changes reach the popover without a browser storage event or reload.
   const causeNames = async () => pop.locator('[data-f=cause] option').allTextContents();
-  await page.evaluate(async () => { const { loadCauses, saveCauses } = await import('./js/causes.js'), c = loadCauses(); c.list.push({ id: 'cz1', name: 'Neighbour dispute' }, { id: 'cz2', name: 'A very long cause name that keeps going and going '.repeat(3).trim() }); saveCauses(c); window.dispatchEvent(new StorageEvent('storage', { key: 'pm-delay-causes', newValue: localStorage.getItem('pm-delay-causes') })); });
+  await page.locator('#settingsbtn').click();
+  const causeSettings = dialogOf('Settings'); await causeSettings.waitFor();
+  for (const name of ['Neighbour dispute', 'A very long cause name for regional stakeholders and approvals']) {
+    await causeSettings.locator('#dly-new').fill(name);
+    await commitAction(() => causeSettings.locator('#dly-add').click());
+  }
+  await page.keyboard.press('Escape'); await causeSettings.waitFor({ state: 'detached' });
   await cell(2, 'cause').dblclick(); await open();
-  assert((await causeNames()).includes('Neighbour dispute'), `a cause added in another tab is offered at once: ${await causeNames()}`);
+  assert((await causeNames()).includes('Neighbour dispute'), `an acknowledged cause is offered at once: ${await causeNames()}`);
   const box = await pop.boundingBox(), party = await pop.locator('[data-f=party]').boundingBox();
   assert(party.x + party.width <= box.x + box.width + 1, 'a long cause name does not push the Party field out of the popover');
   await pop.locator('[data-cancel]').first().click(); await pop.waitFor({ state: 'detached' }); await settle();
 
-  // F8: a tab that went stale while the popover was open must not report a record it cannot save.
+  // F8: a separate-profile writer changes the revision while a decision is open.
+  // Same-profile tabs are read-only now; a storage-event stale banner is no longer used.
   await edit(1, 'dur', '7'); await open();
-  const other = await context.newPage(); await other.goto(url); await other.locator('#gbody .r').first().waitFor();
-  await other.locator('#gbody .r').first().locator('[data-col=name]').dblclick(); await other.locator('.editor').fill('Renamed elsewhere'); await other.keyboard.press('Enter');
-  await page.locator('.robanner.stale').waitFor();
+  const otherContext = await newContext(), other = await otherContext.newPage();
+  await other.goto(url); await other.locator('#gbody .r').first().waitFor();
+  await other.locator('.tab', { hasText: /^Unrecorded plan$/ }).click();
+  await other.locator('#gbody .r').first().locator('[data-col=name]').dblclick(); await other.locator('.editor').fill('Renamed elsewhere');
+  const otherAck = other.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST');
+  await other.keyboard.press('Enter'); assert.equal((await otherAck).status(), 200);
   await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' });
-  await pop.locator('[data-record]').click(); await settle();
-  assert.match(await pop.locator('.set-err').innerText(), /changed in another tab/i, 'Record in a stale tab says so');
-  assert(await pop.isVisible(), 'and the popover stays open');
-  await pop.locator('[data-skip]').click(); await settle();
-  assert.match(await pop.locator('.set-err').innerText(), /changed in another tab/i, 'Skip reason too');
-  await other.close();
+  const conflictAck = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/projects/changes' && r.request().method() === 'POST');
+  await pop.locator('[data-record]').click(); assert.equal((await conflictAck).status(), 409);
+  await page.waitForFunction(() => !!document.querySelector('.dly-pop .set-err')?.textContent, null, { polling: 100 });
+  assert.match(await pop.locator('.set-err').innerText(), /changed|revision|conflict/i, 'Record cannot accept a stale candidate');
+  assert(await pop.isVisible(), 'the failed candidate and reason remain available');
+  assert(await pop.locator('[data-skip]').isDisabled(), 'Skip cannot replay a candidate after an uncertain/conflicting outcome');
+  assert.equal(await page.locator('#save-status').getAttribute('data-state'), 'error');
+  assert(await page.locator('#snapshotbtn').isDisabled(), 'suspension prevents another substantive command');
+  await otherContext.close();
 
   // F12: converting between task and milestone is a recorded move too.
-  await page.reload(); await page.locator('#gbody .r').first().waitFor(); await settle();
+  await page.reload(); await page.locator('#gbody .r').first().waitFor();
+  await page.locator('.tab', { hasText: /^Unrecorded plan$/ }).click(); await settle(); await settle();
   for (const id of [1, 2]) if (/Not recorded/.test(await text(id, 'cause'))) { await cell(id, 'cause').dblclick(); await open(); await pop.locator('[data-f=cause]').selectOption({ label: 'Client / approver' }); await pop.locator('[data-record]').click(); await pop.waitFor({ state: 'detached' }); await settle(); }
   const unexplainedNow = async () => { await page.locator('#analysisbtn').click(); await an.locator('#an-dmil').waitFor(); await settle(); const t = await an.locator('#an-dmil tbody tr').evaluateAll((rows) => rows.map((r) => r.textContent)); await an.locator('[data-an=close]').click(); await settle(); return t.filter((x) => /Other \/ unexplained/.test(x)); };
   assert.deepEqual(await unexplainedNow(), [], 'nothing unexplained before the conversion');
   await row(2).click({ button: 'right' }); await page.locator('button[data-task-action=convert]').click(); await settle();
   assert.deepEqual(await unexplainedNow(), [], 'converting a task to a milestone is a recorded recovery, not unexplained');
-  await page.keyboard.press('Control+z'); await settle();
+  await commitAction(() => page.keyboard.press('Control+z'));
   assert.deepEqual(await unexplainedNow(), [], 'and one Undo restores it');
-  const setAuto = (v) => page.evaluate((on) => { const e = document.querySelector('#optAuto'); e.checked = on; e.dispatchEvent(new Event('change', { bubbles: true })); }, v);
+  const setAuto = (v) => commitAction(() => page.evaluate((on) => { const e = document.querySelector('#optAuto'); e.checked = on; e.dispatchEvent(new Event('change', { bubbles: true })); }, v));
   // F12: with Auto-schedule off a recorded delay stays on its task; turning Auto on again explains the catch-up downstream.
   await setAuto(false); await settle();
   await edit(1, 'dur', String(+(await text(1, 'dur')) + 2)); await open();

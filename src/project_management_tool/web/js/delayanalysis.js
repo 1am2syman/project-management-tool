@@ -146,11 +146,17 @@ export function createDelayAnalysis(ctx, { onEdited } = {}) {
     const milestoneSection = () => sec('dmil', 'Milestone table', milestoneTable(), 'Agreed, delay and expected for every milestone');
     const impactSection = () => sec('dimp', 'Impact grid', impactGrid(), 'Which change moved which milestone');
     const trendSection = () => sec('dtrd', 'Agreed vs expected', `<div class="dly-tools"><button class="dly-sw${ui.showTrend ? ' on' : ''}" data-dly-showtrend role="switch" aria-checked="${ui.showTrend}"><i></i>Show all milestones</button><span>${ui.showTrend ? 'All milestones' : 'Key milestones (★) and Project completion'}.</span></div><div class="dly-trend"><svg class="an-chart" role="img" aria-label="Agreed and expected dates across versions"></svg><div class="dly-legend"></div></div>`);
-    root.addEventListener('click', (e) => {
+    root.addEventListener('click', async (e) => {
       const edit = e.target.closest('[data-dly-edit]');
       if (edit) { ctx.delay.editRecord(null, +edit.dataset.dlyEdit, onEdited); return; }
       const star = e.target.closest('[data-dly-star]');
-      if (star) { const id = +star.dataset.dlyStar; store.setKeyMilestone(id, !ui.stars.has(id)); ui.stars = new Set(store.keyMilestones()); refresh(['dmil', 'dimp', 'dtrd']); root.querySelector(`[data-dly-star="${id}"]`)?.focus({ preventScroll: true }); return; }
+      if (star) {
+        const id = +star.dataset.dlyStar; star.disabled = true;
+        try { await store.setKeyMilestone(id, !ui.stars.has(id)); ui.stars = new Set(store.keyMilestones()); refresh(['dmil', 'dimp', 'dtrd']); root.querySelector(`[data-dly-star="${id}"]`)?.focus({ preventScroll: true }); }
+        catch (error) { ctx.toast(error.message); }
+        finally { star.disabled = false; }
+        return;
+      }
       if (e.target.closest('[data-dly-showtrend]')) { ui.showTrend = !ui.showTrend; refresh(['dtrd']); root.querySelector('[data-dly-showtrend]')?.focus({ preventScroll: true }); return; }
       if (e.target.closest('[data-dly-showall]')) { ui.showAll = !ui.showAll; refresh(['dimp']); root.querySelector('[data-dly-showall]')?.focus({ preventScroll: true }); return; }
       const step = e.target.closest('[data-dwf-step],[data-dwf-select]');

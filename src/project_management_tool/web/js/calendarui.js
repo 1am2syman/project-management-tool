@@ -16,10 +16,11 @@ const date = (day, year = false) => `<time datetime="${fmtISO(day)}" title="${fm
 const shiftLabel = (days) => days ? `${days > 0 ? '+' : '−'}${Math.abs(days)}d` : '—';
 export function createCalendarUI(ctx, grid) {
   const { store } = ctx;
-  let dialog = null;
-  function open(taskId = null, reset = false) {
+  let dialog = null, pending = false;
+  async function open(taskId = null, reset = false) {
     if (dialog) return;
-    grid.commitEdit();
+    try { if (await grid.commitEdit() === false) return; } catch (error) { ctx.toast(error.message || String(error)); return; }
+    if (dialog) return;
     const sheetId = store.wb.active, readonly = !!store.structureError(), drafts = new Map();
     let target = taskId, tab = taskId == null ? 'global' : 'tasks', useGlobal = reset;
     const title = taskId == null ? `Project calendar · ${store.sheet().name}` : `Task calendar · ${store.byId.get(taskId)?.name || 'Task'}`;
@@ -91,7 +92,8 @@ export function createCalendarUI(ctx, grid) {
       tab = e.key === 'Home' ? 'global' : e.key === 'End' ? 'tasks' : tab === 'global' ? 'tasks' : 'global';
       target = null; useGlobal = false; render(); body.querySelector(`[data-calendar-tab="${tab}"]`).focus();
     });
-    modal.addEventListener('click', (e) => {
+    modal.addEventListener('click', async (e) => {
+      if (pending) return;
       const button = e.target.closest('button'); if (!button || button.disabled) return;
       if (button.hasAttribute('data-calendar-cancel')) { dialog.close(); return; }
       if (store.wb.active !== sheetId) { dialog.close(); return; }
@@ -116,10 +118,16 @@ export function createCalendarUI(ctx, grid) {
         value.holidays.push({ date: dateInput.value, name: nameInput.value.trim() }); dateInput.value = ''; nameInput.value = ''; holidays(); preview();
       } else if (button.dataset.holidayRemove != null) { draft().holidays.splice(+button.dataset.holidayRemove, 1); holidays(); preview(); }
       else if (button.hasAttribute('data-calendar-apply')) {
-        readWeek(); const applied = useGlobal ? null : draft(); const error = store.setCalendar(applied, target);
-        if (error) { errorBox.textContent = error; return; }
-        diagnostics.record('calendar.apply', { scope: target == null ? 'global' : 'task', reset: useGlobal, workdays: applied ? applied.workdays.length : store.calendar.workdays.length, holidayCount: applied ? applied.holidays.length : store.calendar.holidays.length });
-        dialog.close(); ctx.toast(target == null ? 'Global calendar applied' : useGlobal ? 'Task now uses the global calendar' : 'Task calendar applied');
+        readWeek(); const applied = useGlobal ? null : draft();
+        const current = dialog; pending = true; current.setPending(true);
+        try {
+          const error = await store.setCalendar(applied, target);
+          if (error?.cancelled) return;
+          if (error) { errorBox.textContent = error; return; }
+          diagnostics.record('calendar.apply', { scope: target == null ? 'global' : 'task', reset: useGlobal, workdays: applied ? applied.workdays.length : store.calendar.workdays.length, holidayCount: applied ? applied.holidays.length : store.calendar.holidays.length });
+          current.setPending(false); current.close(); ctx.toast(target == null ? 'Global calendar applied' : useGlobal ? 'Task now uses the global calendar' : 'Task calendar applied');
+        } catch (error) { errorBox.textContent = error.message || String(error); }
+        finally { pending = false; current.setPending(false); }
       }
     });
     render();

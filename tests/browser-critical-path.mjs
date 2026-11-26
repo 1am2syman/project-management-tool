@@ -24,15 +24,20 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await context.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
   await page.goto(url); await page.locator('#gbody .r[data-id="21"]').waitFor();
-  const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+  const saved = () => page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
+  const commitAction = async action => {
+    const response = page.waitForResponse(r => r.url().endsWith('/api/projects/changes') && r.request().method() === 'POST');
+    await action(); const ack = await response; assert.equal(ack.status(), 200, await ack.text()); await saved();
+  };
   await saved();
   await page.evaluate(async () => {
     const { Store, D } = await import('./js/model.js');
+    const { changesBetween } = await import('./js/changes.js');
     const response = await (await fetch('/api/projects')).json(), s = new Store(response.state);
     const task = (id, name, dur, calendar) => ({ id, name, dur, calendar, start: D('2026-11-02'), ms: dur === 0, progress: 0, level: 0 });
     s.auto = true;
     s.load({ calendar: { workdays: [1, 2, 3, 4, 5], holidays: [] }, tasks: [task(1, 'Site work', 5, { workdays: [0, 1, 2, 3, 4, 5, 6], holidays: [] }), task(2, 'Office review', 2), task(3, 'Handover', 0)], links: [{ id: 'l1', from: 1, to: 2, type: 'FS', lag: 0 }, { id: 'l2', from: 2, to: 3, type: 'FS', lag: 0 }] });
-    s.save(); const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...response, state: s.savedState() }) });
+    s.save(); const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: changesBetween(response.state, s.savedState()) }) });
     if (!result.ok) throw new Error('Cannot prepare critical-path fixture');
   });
   await page.reload(); await page.getByText('Site work', { exact: true }).first().waitFor(); await saved();
@@ -48,8 +53,8 @@ try {
   await method.selectOption('longest'); assert(!(await threshold.isVisible())); assert(!(await dialog.getByRole('alert').isVisible()));
   await dialog.getByLabel('Calculate critical path to').selectOption('3');
   await page.screenshot({ path: join(evidence, 'longest-path-dialog.png') });
-  await dialog.getByRole('button', { name: 'Show critical path' }).click(); await saved();
-  assert((await site.getAttribute('class')).includes('critical'));
+  await commitAction(() => dialog.getByRole('button', { name: 'Show critical path' }).click());
+  await page.waitForFunction(() => document.querySelector('.bar[data-id="1"]')?.classList.contains('critical'));
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.bar[data-id="1"]')).backgroundColor === 'rgb(244, 63, 94)');
   assert((await page.locator('.lk[data-id="l1"]').getAttribute('class')).includes('crit'));
   assert.equal(await page.locator('#gbody .r[data-id="1"] [data-col=float]').textContent(), '2');
@@ -61,12 +66,12 @@ try {
   await page.reload(); await site.waitFor(); assert((await site.getAttribute('class')).includes('critical'));
   await page.locator('#critical-target').click(); assert.equal(await method.inputValue(), 'longest');
   await method.selectOption('float'); await threshold.fill('1');
-  await dialog.getByRole('button', { name: 'Show critical path' }).click(); await saved();
+  await commitAction(() => dialog.getByRole('button', { name: 'Show critical path' }).click());
   assert(!(await site.getAttribute('class')).includes('critical'));
   await page.locator('#critical-target').click(); await threshold.fill('2');
-  await dialog.getByRole('button', { name: 'Show critical path' }).click(); await saved(); assert((await site.getAttribute('class')).includes('critical'));
+  await commitAction(() => dialog.getByRole('button', { name: 'Show critical path' }).click()); await page.waitForFunction(() => document.querySelector('.bar[data-id="1"]')?.classList.contains('critical'));
   await page.locator('#critical-target').click(); await method.selectOption('longest');
-  await dialog.getByRole('button', { name: 'Show critical path' }).click(); await saved();
+  await commitAction(() => dialog.getByRole('button', { name: 'Show critical path' }).click());
   const exports = await page.evaluate(async () => {
     const { Store } = await import('./js/model.js'), { buildXlsx } = await import('./js/xlsx.js'), { buildPdf } = await import('./js/pdf.js');
     const { readSpreadsheet } = await import('./js/xlsxread.js'), { mapSheet } = await import('./js/import.js');

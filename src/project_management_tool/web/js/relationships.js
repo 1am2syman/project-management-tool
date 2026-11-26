@@ -9,9 +9,10 @@ const signature = (links) => JSON.stringify(links.map(({ id, from, to, type, lag
 export function createRelationshipEditor(ctx) {
   const { store, ui } = ctx;
   const reviewButton = document.querySelector('#reviewlinks');
+  let pending = false;
   let dialog = null, editorSheet = null, reviewedSheet = null;
 
-  function close() { const active = dialog; dialog = null; active?.close(); }
+  function close() { if (pending) return; const active = dialog; dialog = null; active?.close(); }
 
   function review() {
     const pair = store.linkConflicts()[0];
@@ -19,6 +20,7 @@ export function createRelationshipEditor(ctx) {
   }
 
   function open(id, proposedType) {
+    if (pending) return;
     const first = store.links.find((l) => l.id === id); if (!first) return;
     close();
     ctx.selectLink(id);
@@ -61,18 +63,30 @@ export function createRelationshipEditor(ctx) {
       if (signature(store.linksBetween(first.from, first.to)) !== before) { error.textContent = 'These relationships changed while the editor was open. Close and reopen it before applying changes.'; return false; }
       return true;
     };
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (readOnly || !form.reportValidity() || !stillCurrent()) return;
-      const err = store.updateLink(chosen.id, { type: typeInput.value, lag: Number(lagInput.value) }, { resolvePair: conflict });
-      if (err) { error.textContent = err; return; }
-      ui.linkId = chosen.id;
-      close(); ctx.requestRender();
-      if (conflict) queueMicrotask(review);
+      if (pending || readOnly || !form.reportValidity() || !stillCurrent()) return;
+      pending = true; current.setPending(true);
+      try {
+        const err = await store.updateLink(chosen.id, { type: typeInput.value, lag: Number(lagInput.value) }, { resolvePair: conflict });
+        if (err?.cancelled) return;
+        if (err) { error.textContent = err; return; }
+        ui.linkId = chosen.id;
+        pending = false; current.setPending(false); close(); ctx.requestRender();
+        if (conflict) queueMicrotask(review);
+      } catch (failure) { error.textContent = failure.message || String(failure); }
+      finally { pending = false; current.setPending(false); }
     });
-    form.querySelector('[data-remove]')?.addEventListener('click', () => {
-      if (!stillCurrent()) return;
-      store.removeLink(chosen.id); ui.linkId = null; close(); ctx.requestRender();
+    form.querySelector('[data-remove]')?.addEventListener('click', async () => {
+      if (pending || !stillCurrent()) return;
+      pending = true; current.setPending(true);
+      try {
+        const err = await store.removeLink(chosen.id);
+        if (err?.cancelled) return;
+        if (err) { error.textContent = err; return; }
+        ui.linkId = null; pending = false; current.setPending(false); close(); ctx.requestRender();
+      } catch (failure) { error.textContent = failure.message || String(failure); }
+      finally { pending = false; current.setPending(false); }
     });
   }
 

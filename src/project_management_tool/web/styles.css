@@ -84,7 +84,7 @@ svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-l
 .g-band>:nth-child(2)::after,.g-letters>:nth-child(2)::after,.g-headrow>:nth-child(2)::after,.r>:nth-child(2)::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:6px;margin-right:-6px;background:linear-gradient(90deg,rgba(15,23,42,.06),transparent);pointer-events:none;opacity:0;transition:opacity .15s}
 .gx.scrolled .g-band>:nth-child(2)::after,.gx.scrolled .g-letters>:nth-child(2)::after,.gx.scrolled .g-headrow>:nth-child(2)::after,.gx.scrolled .r>:nth-child(2)::after{opacity:1}
 
-.r{height:var(--row);background:var(--bg);cursor:default}
+.r{height:var(--row);background:var(--bg);cursor:default;position:relative;z-index:0}/* own stacking context: keeps the sticky frozen cells from forcing a full re-layerize on every scroll frame */
 .r:nth-child(even){background:var(--alt)}
 .r .c{border-bottom:1px solid var(--line2)}
 .r.on{background:#eef3ff !important}
@@ -361,7 +361,7 @@ code{font:11.5px var(--mono);background:#f1f5f9;padding:1px 5px;border-radius:5p
 .focusing .bar.summary.dim{background:color-mix(in srgb,var(--sum) 25%,var(--bg))}
 .focusing .bar.summary.dim::before,.focusing .bar.summary.dim::after{border-top-color:color-mix(in srgb,var(--sum) 25%,var(--bg))}
 .focusing .bar.ms.dim::before{opacity:.25}
-.focusing .lk.dim{opacity:.18}
+.focusing .lk.dim .vis,.focusing .lk.dim .halo{stroke-opacity:.18}.focusing .lk.dim .ah{fill-opacity:.18}
 .lk.r-up .vis{stroke:var(--up);stroke-width:2.2}.lk.r-up .ah{fill:var(--up)}
 .lk.r-down .vis{stroke:var(--down);stroke-width:2.2}.lk.r-down .ah{fill:var(--down)}
 .lk.r-up,.lk.r-down{opacity:1}

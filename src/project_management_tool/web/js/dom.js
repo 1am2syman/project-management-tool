@@ -25,7 +25,17 @@ export function openModal(title, bodyMarkup, { wide = false, onClose } = {}) {
   document.body.appendChild(back);
   const prev = document.activeElement, modal = back.querySelector('.modal');
   modal.setAttribute('tabindex', '-1');
-  const close = () => { document.removeEventListener('keydown', key, true); back.remove(); onClose?.(); if (prev && prev.isConnected && prev.focus) prev.focus(); };
+  let pending = false;
+  const disabled = new Map();
+  const notice = document.createElement('span'); notice.className = 'modal-pending'; notice.setAttribute('role', 'status'); notice.textContent = 'Pending…'; notice.hidden = true;
+  back.querySelector('.m-head').appendChild(notice);
+  const setPending = (value) => {
+    pending = !!value; notice.hidden = !pending; modal.setAttribute('aria-busy', String(pending));
+    if (pending) {
+      for (const control of modal.querySelectorAll('button,input,select,textarea')) { if (!disabled.has(control)) disabled.set(control, control.disabled); control.disabled = true; }
+    } else { for (const [control, previous] of disabled) control.disabled = previous; disabled.clear(); }
+  };
+  const close = () => { if (pending) return; document.removeEventListener('keydown', key, true); back.remove(); onClose?.(); if (prev && prev.isConnected && prev.focus) prev.focus(); };
   const focusables = () => [...modal.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])')].filter((x) => !x.disabled && !x.hidden && x.offsetParent !== null);
   const key = (e) => {
     if (!back.isConnected) return;
@@ -44,5 +54,5 @@ export function openModal(title, bodyMarkup, { wide = false, onClose } = {}) {
   setTimeout(() => { if (back.isConnected && !modal.contains(document.activeElement)) (modal.querySelector('input:not([disabled]),textarea,select') || modal).focus(); }, 0);
   back.addEventListener('pointerdown', (e) => { if (e.target === back) close(); });
   back.querySelector('.m-x').addEventListener('click', close);
-  return { el: back, body, close };
+  return { el: back, body, close, setPending };
 }

@@ -9,6 +9,12 @@ export function createExport(ctx) {
   const { store } = ctx;
   const btn = document.querySelector('#expbtn'), menu = document.querySelector('#expmenu');
   let pdfSlack = appState.getItem('pm-pdf-slack') !== '0';
+  function syncPdfSlack() {
+    pdfSlack = appState.getItem('pm-pdf-slack') !== '0';
+    const input = menu.querySelector?.('#pdf-slack');
+    if (input) input.checked = pdfSlack;
+  }
+  store.on?.(() => { if (!store.pending) syncPdfSlack(); });
 
   const stamp = () => new Date().toISOString().slice(0, 10);
   const fname = (s) => String(s).replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'project';
@@ -18,7 +24,6 @@ export function createExport(ctx) {
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
   function projects(all) {
-    store.save();
     const sheets = all ? store.wb.sheets : [store.sheet()], shown = store.previewing;
     // A saved version on screen exports as shown; every other project exports its current plan.
     return sheets.map((s) => (shown && s.id === store.wb.active
@@ -26,6 +31,7 @@ export function createExport(ctx) {
       : { name: s.name, store: store.view(s.id) }));
   }
   async function run(kind, all) {
+    syncPdfSlack();
     const ps = projects(all), base = all ? `workbook-${stamp()}` : `${fname(ps[0].name)}-${stamp()}`;
     const op = diagnostics.begin('export.run', { kind, all, sheetCount: ps.length, ...(kind === 'pdf' ? { pdfSlack } : {}) });
     try {
@@ -38,6 +44,7 @@ export function createExport(ctx) {
 
   const item = (k, a, label, hint) => `<button data-k="${k}" data-all="${a}"><b>${label}</b><span>${hint}</span></button>`;
   function open() {
+    syncPdfSlack();
     const n = store.wb.sheets.length;
     setHTML(menu, '<div class="ttl">Export</div>' + `<label class="export-option"><input type="checkbox" id="pdf-slack"${pdfSlack ? ' checked' : ''}> Include slack columns in PDF</label>` +
       item('xlsx', 0, 'Excel · this sheet', 'Tasks + Gantt, styled, filters, grouping') +
@@ -50,7 +57,13 @@ export function createExport(ctx) {
   }
   const close = () => { menu.hidden = true; };
   btn.addEventListener('click', (e) => { e.stopPropagation(); if (menu.hidden) open(); else close(); });
-  menu.addEventListener('change', (e) => { if (e.target.id === 'pdf-slack') { pdfSlack = e.target.checked; appState.setItem('pm-pdf-slack', pdfSlack ? '1' : '0'); } });
+  menu.addEventListener('change', async (e) => {
+    if (e.target.id !== 'pdf-slack') return;
+    const input = e.target, next = input.checked; input.disabled = true;
+    try { await appState.setItem('pm-pdf-slack', next ? '1' : '0'); pdfSlack = next; }
+    catch (error) { input.checked = pdfSlack; ctx.toast(`Could not save export preference: ${error.message || error}`); }
+    finally { input.disabled = false; }
+  });
   menu.addEventListener('click', (e) => { const b = e.target.closest('button[data-k]'); if (!b) return; close(); run(b.dataset.k, b.dataset.all === '1'); });
   document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target) && !btn.contains(e.target)) close(); }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });

@@ -26,6 +26,8 @@ from .persistence import (
     RevisionConflict,
     default_data_dir,
     reject_constant,
+    strict_object,
+    validate_revision,
 )
 from .project_files import FileConflict, FileService, FileTooLarge, OperationError
 
@@ -57,6 +59,11 @@ def native_windows_available():
 
 
 class PlanServer(http.server.ThreadingHTTPServer):
+    # A cold ES-module graph opens connections in bursts. The stdlib default of
+    # five pending connections can drop a burst while the accept loop is busy,
+    # leading to TCP retransmission delays or failed module loads.
+    request_queue_size = 128
+
     # On Windows SO_REUSEADDR lets a second process bind a port that is already listening, so a second launch
     # would start a duplicate server instead of reusing the running one. Failing the bind lets create_server's
     # OSError path health-check the existing instance. POSIX keeps reuse for quick restarts.
@@ -295,7 +302,7 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             except LookupError as e:
                 self.send_json(404, {"error": str(e)})
             except (OSError, ValueError, sqlite3.Error) as e:
-                self.send_json(503, {"error": f"Cannot read saved app state. Keep plan.db intact and check the server window. ({e})"})
+                self.send_json(503, {"error": f"Cannot read saved app state. Keep plan.db intact and check the server window. ({e})", "dataFile": str(self.storage.path)})
         else:
             super().do_GET()
 
@@ -306,35 +313,46 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.file_api():
             return
-        if urlsplit(self.path).path != "/api/projects":
+        endpoint = urlsplit(self.path).path
+        if endpoint not in ("/api/projects", "/api/projects/changes"):
             self.send_json(404, {"error": "Unknown endpoint"})
             return
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != self.headers.get("Host"):
-            self.send_json(403, {"error": "Save requests must come from this app"})
+            self.send_json(403, {"error": "Save requests must come from this app", "dataFile": str(self.storage.path)})
             return
         if self.headers.get_content_type() != "application/json":
-            self.send_json(415, {"error": "Expected application/json"})
+            self.send_json(415, {"error": "Expected application/json", "dataFile": str(self.storage.path)})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
         if not 0 < length <= MAX_BYTES:
-            self.send_json(413, {"error": "Save request must be between 1 byte and 64 MB"})
+            self.send_json(413, {"error": "Save request must be between 1 byte and 64 MB", "dataFile": str(self.storage.path)})
             return
         try:
-            body = json.loads(self.rfile.read(length), parse_constant=reject_constant)
-            if not isinstance(body, dict) or "revision" not in body:
-                raise ValueError("Expected a save revision")
-            result = self.storage.write(body["revision"], body.get("state"))
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError("Incomplete save request")
+            body = json.loads(raw, parse_constant=reject_constant, object_pairs_hook=strict_object)
+            fields = {"revision", "changes"} if endpoint.endswith("/changes") else {"revision", "state"}
+            if not isinstance(body, dict) or set(body) != fields:
+                raise ValueError("Expected exactly " + ", ".join(sorted(fields)))
+            validate_revision(body["revision"])
+            if endpoint.endswith("/changes"):
+                result = self.storage.apply_changes(body["revision"], body["changes"])
+            else:
+                if body["revision"] is not None:
+                    raise ValueError("Full saves are bootstrap-only; use /api/projects/changes")
+                result = self.storage.write(None, body["state"])
             self.send_json(200, result)
         except ConflictError as e:
-            self.send_json(409, {"error": str(e)})
+            self.send_json(409, {"error": str(e), "dataFile": str(self.storage.path)})
         except (ValueError, UnicodeError, RecursionError) as e:
-            self.send_json(400, {"error": str(e)})
+            self.send_json(400, {"error": str(e), "dataFile": str(self.storage.path)})
         except (OSError, sqlite3.Error) as e:
-            self.send_json(503, {"error": f"Could not save app state. Check free space and folder permissions. ({e})"})
+            self.send_json(503, {"error": f"Could not save app state. Check free space and folder permissions. ({e})", "dataFile": str(self.storage.path)})
 
 
 def create_server(port, data_dir, *, native_files=True):

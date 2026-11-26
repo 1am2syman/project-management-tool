@@ -411,6 +411,7 @@ function effSince(s, before) {
 }
 // Set the agreed finish of one task. Changing an existing agreed date is a revision: it needs a reason and an approver.
 export function setAgreed(store, id, finishDay, { reason = '', approvedBy = '' } = {}) {
+  if (store.commitsEnabled) return store.commit(draft => setAgreed(draft, id, finishDay, { reason, approvedBy }), { errorStrings: true });
   const err = store.structureError(); if (err) return err;
   const t = store.byId.get(id); if (!t) return 'Task no longer exists';
   if (store.info.get(id).summary) return 'Summary dates come from their tasks';
@@ -458,6 +459,7 @@ function agreeIncl(store, t, finishDay, reason, approvedBy) {
 // Every task without an agreed date gets its expected one. Agreed dates already set are kept unless `replace` is chosen,
 // which records a revision for each and needs a reason and an approver. `includePending` agrees waiting inclusions with it.
 export function agreeBaseline(store, { replace = false, reason = '', approvedBy = '', includePending = false } = {}) {
+  if (store.commitsEnabled) return store.commit(draft => agreeBaseline(draft, { replace, reason, approvedBy, includePending }), { errorStrings: true });
   const err = store.structureError(); if (err) return err;
   const waiting = includePending ? leaves(store).filter((t) => t.inc) : [];
   if ((waiting.length || (replace && baselineChanges(store).length)) && (need(reason) || need(approvedBy))) return waiting.length ? 'Agreeing inclusions needs a reason and who approved it' : 'Changing agreed dates needs a reason and who approved it';
@@ -481,6 +483,7 @@ export function agreeBaseline(store, { replace = false, reason = '', approvedBy 
 // An edit just moved `id` later. `pre` is snapshotBefore() taken before it. Records a delay or a revision at that task;
 // a revision also moves the agreed dates of the tasks it pushed, so only the edited task shows variance against its new date.
 export function record(store, id, pre, entry, { anchor = false, link = false } = {}) {
+  if (store.commitsEnabled) return store.commit(draft => record(draft, id, pre, entry, { anchor, link }), { errorStrings: true });
   const t = store.byId.get(id), a = t?.agr; if (!a) return 'This task has no agreed date';
   if (entry.type === 'revision' && (need(entry.reason) || need(entry.approvedBy))) return 'A revision needs a reason and who approved it';
   const now = fin(store, id), from = Math.max(pre.fins.get(id) ?? now, a.f), days = Math.max(1, wd(store, from, now, id));
@@ -525,6 +528,7 @@ export function record(store, id, pre, entry, { anchor = false, link = false } =
 // A task became a milestone, so it is a new place where delay is measured. Delays recorded before only know the milestones that existed
 // then: give each the effect it has here (its own days at the task itself, its days downstream of it) so nothing is "unexplained".
 export function addTarget(store, id) {
+  if (store.commitsEnabled) return store.commit(draft => addTarget(draft, id), { errorStrings: true });
   const t = store.byId.get(id); if (!t?.ms) return;
   const reaches = (from) => { const seen = new Set([from]), q = [from]; for (let i = 0; i < q.length; i++) { if (q[i] === id) return true; for (const l of store.outgoing(q[i])) if (!seen.has(l.to)) { seen.add(l.to); q.push(l.to); } } return false; };
   store.amend(() => {
@@ -537,6 +541,7 @@ export function addTarget(store, id) {
 // Auto-schedule turned back on: tasks that waited catch up with the delays recorded while it was off. Each milestone's extra days are
 // attributed to the recorded delays upstream of it (newest first, no entry beyond its own days), so they are explained, not "unexplained".
 export function catchUp(store, pre) {
+  if (store.commitsEnabled) return store.commit(draft => catchUp(draft, pre), { errorStrings: true });
   const gain = {};
   for (const tg of targets(store)) { const d = tg.id === 'end' ? wd(store, pre.end, endDay(store)) : pre.fins.has(tg.id) ? wd(store, pre.fins.get(tg.id), fin(store, tg.id), tg.id) : 0; if (d > 0) gain[tg.id] = d; }
   if (!Object.keys(gain).length) return null;
@@ -563,6 +568,7 @@ export function catchUp(store, pre) {
 export const unrecordedDays = (s, id) => { const r = row(s, id); if (!r || r.summary || r.own <= 0) return 0; return Math.max(0, r.own - entriesOf(s, id).reduce((n, e) => n + e.days, 0)); };
 // Record that variance now. It is replayed (the task's days taken off) to find its effect on the milestones, as entries without a stored effect are.
 export function recordUnrecorded(store, id, entry) {
+  if (store.commitsEnabled) return store.commit(draft => recordUnrecorded(draft, id, entry), { errorStrings: true });
   const t = store.byId.get(id), days = unrecordedDays(store, id); if (!t || !days) return 'No unrecorded delay at this task';
   store.tx(() => push(store, { type: 'delay', taskId: id, taskName: t.name, days, op: 'finish', kind: KINDS.includes(entry.kind) ? entry.kind : 'Overrun', cause: entry.cause || null, party: String(entry.party || '').trim(), note: entry.note || '' }));
   // Fix its effect on every milestone now (by replaying it once), so later structure changes cannot lose it.
@@ -574,6 +580,7 @@ export function recordUnrecorded(store, id, entry) {
 // within its agreed date (0 days: it used up slack). Either way the effect on the milestones is attributed to that task and stored, so
 // it is explained instead of "unexplained". Returns the signed days, or null when nothing moved.
 export function recover(store, id, pre) {
+  if (store.commitsEnabled) return store.commit(draft => recover(draft, id, pre), { errorStrings: true });
   const t = store.byId.get(id); if (!t?.agr || !pre || store.info.get(id).summary) return null;
   const was = pre.fins.get(id), now = fin(store, id); if (was == null) return null;
   const eff = {};
@@ -599,6 +606,7 @@ export function recover(store, id, pre) {
 }
 // Re-classify a recorded delay (cause, party, kind, note). One undo step.
 export function reclassify(store, entryId, patch) {
+  if (store.commitsEnabled) return store.commit(draft => reclassify(draft, entryId, patch), { errorStrings: true });
   const e = store.log.find((x) => x.id === entryId); if (!e || e.type !== 'delay') return 'That entry no longer exists';
   store.tx(() => {
     if ('cause' in patch) e.cause = patch.cause || null;
@@ -612,6 +620,7 @@ export function reclassify(store, entryId, patch) {
 export const unclassifiedDelays = (s) => (s.log || []).filter((e) => e.type === 'delay' && !e.cause && e.days > 0);
 export const delaysOf = (s, taskId) => (s.log || []).filter((e) => e.type === 'delay' && e.taskId === taskId && e.days > 0);
 export function agreeInclusion(store, id, { finishDay = null, reason = '', approvedBy = '' } = {}) {
+  if (store.commitsEnabled) return store.commit(draft => agreeInclusion(draft, id, { finishDay, reason, approvedBy }), { errorStrings: true });
   const err = store.structureError(); if (err) return err;
   const t = store.byId.get(id); if (!t?.inc) return 'This task is not a pending inclusion';
   if (need(reason) || need(approvedBy)) return 'An agreed inclusion needs a reason and who approved it';
@@ -630,6 +639,7 @@ export function omitChain(s, id) {
 // predecessors are connected to the successors so the rest of the chain keeps its order; the days that pulls in move the
 // agreed dates of the tasks that finish earlier, so an agreed omission is not a recovery.
 export function omit(store, id, { reason = '', approvedBy = '', relink = true } = {}) {
+  if (store.commitsEnabled) return store.commit(draft => omit(draft, id, { reason, approvedBy, relink }), { errorStrings: true });
   const err = store.structureError(); if (err) return err;
   const f = store.info.get(id); if (!f) return 'Task no longer exists';
   if (need(reason) || need(approvedBy)) return 'An agreed omission needs a reason and who approved it';
@@ -649,3 +659,37 @@ export function omit(store, id, { reason = '', approvedBy = '', relink = true } 
   return null;
 }
 export const hasAgreedRows = (s, id) => { const f = s.info.get(id); return !!f && s.tasks.slice(f.i, f.sub + 1).some((t) => t.agr); };
+
+// Bind every read and deterministic amendment to the candidate. The optional UI
+// decision returns a record, or null to discard the entire originating action.
+export function createDelayHook(store, decide) {
+  return {
+    before: () => !store.readOnly && hasAgreed(store) ? snapshotBefore(store) : null,
+    after({ id, kind, pre }) {
+      if (!pre || store.readOnly) return;
+      if (kind === 'auto') { catchUp(store, pre); return; }
+      if (kind === 'kind') { addTarget(store, id); kind = 'dur'; }
+      const linkLike = ['link', 'calendar', 'mode'].includes(kind);
+      let target = id;
+      if (linkLike) {
+        const pushed = t => t?.agr && pre.fins.has(t.id) && fin(store, t.id) > pre.fins.get(t.id) && fin(store, t.id) > t.agr.f;
+        target = kind === 'mode' && pushed(store.byId.get(id)) ? id : leaves(store).find(pushed)?.id;
+        if (target == null) { if (kind !== 'calendar') recover(store, id, pre); return; }
+      }
+      const task = store.byId.get(target);
+      if (!task?.agr || store.info.get(target).summary) return;
+      const old = pre.fins.get(target), now = fin(store, target);
+      if (old == null || now <= task.agr.f || now <= old) { recover(store, target, pre); return; }
+      const op = kind === 'start' || kind === 'move' || linkLike || task.ms ? 'start' : 'finish';
+      const option = { id: target, op, old, now, pushed: leaves(store).filter(t => t.id !== target && t.agr && pre.fins.has(t.id) && fin(store, t.id) > pre.fins.get(t.id)).length,
+        finish: Math.max(0, wd(store, pre.end, endDay(store))), oldStart: pre.starts.get(target), newStart: store.info.get(target).start,
+        pre, anchor: op === 'start' && !linkLike, link: linkLike };
+      if (!decide) throw new Error('A delay decision is required before accepting this action');
+      return Promise.resolve(decide(option, store)).then(entry => {
+        if (!entry) { store.cancel(); return; }
+        const error = record(store, target, pre, { ...entry, op }, { anchor: option.anchor, link: linkLike });
+        if (error) throw new Error(error);
+      });
+    },
+  };
+}

@@ -61,7 +61,7 @@ export function createGrid(ctx) {
   const $ = (s) => document.querySelector(s);
   const gx = $('#gx'), inner = $('#ginner'), band = $('#gband'), letters = $('#gletters'), head = $('#ghead'), body = $('#gbody');
   const namebox = $('#namebox'), fxin = $('#fxin');
-  let editing = null, commitEditing = null, headKey = '', restoringScroll = true;
+  let editing = null, commitEditing = null, formulaEdit = null, headKey = '', restoringScroll = true;
   try {
     const widths = JSON.parse(appState.getItem('pm-column-widths') || '{}');
     for (const col of COLS) if (Number.isFinite(widths?.[col.id])) col.w = Math.max(44, Math.min(1000, widths[col.id]));
@@ -173,8 +173,16 @@ export function createGrid(ctx) {
     if (totHtml !== totShown) { const [el] = parseRows([totHtml]); totEl.replaceWith(el); totEl = el; totShown = totHtml; }
   }
 
-  function render() {
-    if (editing) return;
+  function render(force = false) {
+    if (editing?.inp.isConnected && editing.sheet === store.wb.active && !store.decisionPreview && !force) return;
+    // Keep the submitted editor available in memory while showing the staged
+    // delay decision in both panes. Reattach it if validation/storage fails.
+    if (editing?.inp.isConnected && (store.decisionPreview || force || editing.sheet !== store.wb.active)) {
+      if (editing.sheet !== store.wb.active) editing.parked = true;
+      // Removing a focused input fires blur; that must never submit again.
+      editing.detaching = true;
+      try { editing.inp.remove(); } finally { editing.detaching = false; }
+    }
     applyTpl(); renderHead();
     const rows = store.rows;
     let maxDur = 1; for (const t of store.tasks) { const f = store.info.get(t.id); if (!f.summary) maxDur = Math.max(maxDur, store.duration(t.id)); }
@@ -202,14 +210,20 @@ export function createGrid(ctx) {
     paintRows(rowHtml, totHtml);
     // name box + formula bar
     const col = COLS.find((c) => c.id === ui.col), has = ui.selId != null && store.info.has(ui.selId);
-    namebox.textContent = has ? col.letter + store.rowNum(ui.selId) : 'A1';
-    fxin.readOnly = ui.col === 'float' || ui.col === 'freeFloat';
-    if (document.activeElement !== fxin) fxin.value = has ? raw(ui.selId, ui.col) : '';
+    namebox.textContent = formulaEdit?.address ?? (has ? col.letter + store.rowNum(ui.selId) : 'A1');
+    const inputCol = formulaEdit?.col ?? ui.col;
+    fxin.readOnly = store.readOnly || store.pending || store.suspended || !!formulaCommit || inputCol === 'float' || inputCol === 'freeFloat';
+    if (!formulaEdit && document.activeElement !== fxin) fxin.value = has ? raw(ui.selId, ui.col) : '';
+    if (editing && editing.sheet === store.wb.active && !store.decisionPreview && !editing.inp.isConnected) {
+      body.querySelector(`.r[data-id="${editing.id}"] .c[data-col="${editing.col}"]`)?.appendChild(editing.inp);
+      if (editing.parked && editing.inp.isConnected) { editing.parked = false; editing.inp.focus({ preventScroll: true }); }
+    }
   }
 
   // ---- editing ----
   function startEdit(id, col, initial) {
-    if (editing) return;
+    if (editing || store.pending || store.suspended) return;
+    if (formulaEdit) { fxin.focus(); return; }
     if (col === 'float' || col === 'freeFloat') { if (initial == null) ctx.slack.open(id); return; }
     if (col === 'cause' && ctx.delay?.hasAgreed()) { if (initial == null) ctx.delay.editCause(id); return; }
     if (store.readOnly) { store.emit('denied'); return; }
@@ -220,20 +234,48 @@ export function createGrid(ctx) {
     const inp = document.createElement('input'); inp.className = 'editor';
     inp.value = initial ?? raw(id, col); el.appendChild(inp); inp.focus();
     if (initial == null) inp.select(); else inp.setSelectionRange(inp.value.length, inp.value.length);
-    editing = { id, col, inp };
+    editing = { sheet: store.wb.active, id, col, inp };
     let picked = null, unpick = null;
     const finish = (commit, move) => {
-      if (!editing) return; const e = editing; editing = null; commitEditing = null;
-      const val = e.inp.value; e.inp.remove(); unpick?.();
-      if (commit && picked) store.setOwner(e.id, picked.name, picked.email);
-      else if (commit && val !== raw(e.id, e.col)) { const err = store.setCell(e.id, e.col, val); if (err) ctx.toast(err); }
-      if (move) { render(); move(); } else ctx.requestRender();
-      if (document.activeElement?.tagName === 'INPUT') document.activeElement.blur();
+      if (!editing) return Promise.resolve(true);
+      const e = editing;
+      if (e.finishing) return e.finishing;
+      if (commit && e.sheet !== store.wb.active) {
+        ctx.toast('Return to the original project to correct this input, or press Escape to discard it.');
+        return Promise.resolve(false);
+      }
+      e.finishing = (async () => {
+        const val = e.inp.value;
+        e.inp.readOnly = true; e.inp.setAttribute('aria-busy', 'true');
+        try {
+          let error;
+          if (commit && picked) error = await store.setOwner(e.id, picked.name, picked.email);
+          else if (commit && val !== raw(e.id, e.col)) error = await store.setCell(e.id, e.col, val);
+          if (error && !error.cancelled) { ctx.toast(error); return false; }
+          editing = null; commitEditing = null; store.unsubmitted = false;
+          e.inp.remove(); unpick?.(); store.emit('input');
+          if (error?.cancelled && e.sheet === store.wb.active) { fxin.value = raw(e.id, e.col); ctx.requestRender(); }
+          else if (move && e.sheet === store.wb.active) { render(); move(); } else ctx.requestRender();
+          return true;
+        } catch (error) { ctx.toast(`${error.message} Download copy is available.`); return false; }
+        finally {
+          const hadFocus = document.activeElement === e.inp;
+          e.inp.readOnly = false; e.inp.removeAttribute('aria-busy'); e.finishing = null;
+          if (editing) {
+            render(true);
+            if (!e.inp.isConnected && e.sheet === store.wb.active) body.querySelector(`.r[data-id="${e.id}"] .c[data-col="${e.col}"]`)?.appendChild(e.inp);
+            // A rejected value stays in the editor, still focused, for correction.
+            if (hadFocus && e.inp.isConnected) e.inp.focus({ preventScroll: true });
+            store.unsubmitted = true; store.emit('input');
+          }
+        }
+      })();
+      return e.finishing;
     };
     commitEditing = () => finish(true);
     inp.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Enter') { e.preventDefault(); finish(true); ctx.insertTask(e.shiftKey); }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Enter') { e.preventDefault(); void finish(true).then(ok => { if (ok) void ctx.insertTask(e.shiftKey); }); }
       else if (e.key === 'Enter') { e.preventDefault(); finish(true, () => moveSel(1, 0)); }
       else if (e.key === 'Tab') { e.preventDefault(); const d = e.shiftKey ? -1 : 1; finish(true, () => moveSel(0, d)); }
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
@@ -242,8 +284,8 @@ export function createGrid(ctx) {
       picked = p; inp.value = p.name;
       finish(true, ev && ev.key === 'Enter' ? () => moveSel(1, 0) : ev && ev.key === 'Tab' ? () => moveSel(0, ev.shiftKey ? -1 : 1) : undefined);
     });
-    inp.addEventListener('blur', () => finish(true));
-    inp.addEventListener('input', () => { fxin.value = inp.value; });
+    inp.addEventListener('blur', () => { if (!editing?.detaching) void finish(true); });
+    inp.addEventListener('input', () => { fxin.value = inp.value; store.unsubmitted = true; store.emit('input'); });
   }
 
   function moveSel(dr, dc) {
@@ -283,31 +325,62 @@ export function createGrid(ctx) {
   letters.addEventListener('pointerdown', (e) => {
     const rs = e.target.closest('.rs');
     if (!rs) { const c = e.target.closest('.c[data-i]'); if (c && ui.selId != null) ctx.select(ui.selId, COLS[+c.dataset.i].id); return; }
+    if (store.pending || store.suspended || store.locked) return;
     const col = COLS[+rs.dataset.i], x0 = e.clientX, w0 = col.w;
     rs.setPointerCapture(e.pointerId);
     const mv = (ev) => { col.w = Math.max(44, w0 + ev.clientX - x0); applyTpl(); };
-    const up = () => {
+    const up = async () => {
       rs.removeEventListener('pointermove', mv); rs.removeEventListener('lostpointercapture', up);
-      appState.setItem('pm-column-widths', JSON.stringify(Object.fromEntries(COLS.map((item) => [item.id, item.w]))));
+      const next = col.w, widths = Object.fromEntries(COLS.map((item) => [item.id, item.w]));
+      col.w = w0; applyTpl();
+      try { await appState.setItem('pm-column-widths', JSON.stringify(widths)); col.w = next; applyTpl(); }
+      catch (error) { ctx.toast(error.message); }
     };
     rs.addEventListener('pointermove', mv); rs.addEventListener('lostpointercapture', up);
   });
 
-  let fxcancel = false;
-  fxin.addEventListener('focus', () => { fxcancel = false; });
-  fxin.addEventListener('blur', () => {
-    if (fxcancel || ui.selId == null || !store.info.has(ui.selId)) return;
-    if (fxin.value !== raw(ui.selId, ui.col)) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); }
-  });
-  fxin.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Enter') {
-      e.preventDefault();
-      if (ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) { ctx.toast(err); e.stopPropagation(); return; } }
-      fxcancel = true; fxin.blur(); ctx.insertTask(e.shiftKey);
+  let fxcancel = false, formulaCommit = null;
+  const finishFormula = () => {
+    if (formulaCommit) return formulaCommit;
+    if (fxcancel || !formulaEdit) return Promise.resolve(true);
+    const { sheet, id, col, value } = formulaEdit;
+    if (sheet !== store.wb.active || !store.info.has(id)) {
+      ctx.toast('Return to the original project to correct this input, or press Escape to discard it.');
+      return Promise.resolve(false);
     }
-    else if (e.key === 'Enter' && ui.selId != null) { const err = store.setCell(ui.selId, ui.col, fxin.value); if (err) ctx.toast(err); fxcancel = true; fxin.blur(); render(); }
-    else if (e.key === 'Escape') { fxcancel = true; fxin.value = ui.selId != null ? raw(ui.selId, ui.col) : ''; fxin.blur(); render(); }
+    formulaCommit = (async () => {
+      try {
+        const error = await (value === raw(id, col) ? null : store.setCell(id, col, value));
+        if (error && !error.cancelled) { ctx.toast(error); return false; }
+        formulaEdit = null; store.unsubmitted = false; store.emit('input');
+        if (error?.cancelled) { fxin.value = raw(id, col); return false; }
+        return true;
+      } catch (error) { ctx.toast(error.message); return false; }
+      finally { formulaCommit = null; ctx.requestRender(); }
+    })();
+    return formulaCommit;
+  };
+  fxin.addEventListener('focus', () => { fxcancel = false; });
+  fxin.addEventListener('input', () => {
+    if (!formulaEdit) {
+      if (ui.selId == null || !store.info.has(ui.selId)) return;
+      formulaEdit = { sheet: store.wb.active, id: ui.selId, col: ui.col, address: namebox.textContent };
+    }
+    formulaEdit.value = fxin.value;
+    store.unsubmitted = true; store.emit('input');
+  });
+  fxin.addEventListener('blur', () => { void finishFormula(); });
+  fxin.addEventListener('keydown', async (e) => {
     e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!await finishFormula()) return;
+      fxcancel = true; fxin.blur(); render();
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) await ctx.insertTask(e.shiftKey);
+    } else if (e.key === 'Escape') {
+      if (formulaCommit || store.pending || store.suspended) return;
+      fxcancel = true; formulaEdit = null; store.unsubmitted = false; store.emit('input'); fxin.value = ui.selId != null ? raw(ui.selId, ui.col) : ''; fxin.blur(); render();
+    }
   });
 
   // ---- column picker ----
@@ -319,10 +392,37 @@ export function createGrid(ctx) {
     }).join('');
     setHTML(colpop, `<div class="ttl"><b>Columns</b><button data-all="1">Show all</button></div>${rows}<div class="ttl foot">${VIS().length} of ${COLS.filter((c) => !c.dly || ctx.delay?.colVisible(c.id)).length} shown</div>`);
   }
-  function applyCols() {
-    try { appState.setItem(HKEY, JSON.stringify([...hidden])); } catch { /* storage unavailable */ }
-    if (hidden.has(ui.col)) ui.col = 'name';
-    headKey = ''; fillColPop(); render(); ctx.requestRender();
+  let columnsPending = false;
+  let acceptedColumns = appState.getItem(HKEY), acceptedWidths = appState.getItem('pm-column-widths');
+  function syncAcceptedColumns() {
+    const columns = appState.getItem(HKEY), widths = appState.getItem('pm-column-widths');
+    if (columns !== acceptedColumns) {
+      acceptedColumns = columns;
+      try { hidden = new Set(columns == null ? ['email'] : JSON.parse(columns)); } catch { hidden = new Set(['email']); }
+      hidden.delete('name'); headKey = '';
+      if (hidden.has(ui.col)) ui.col = 'name';
+      if (!colpop.hidden) fillColPop();
+    }
+    if (widths !== acceptedWidths) {
+      acceptedWidths = widths;
+      try {
+        const parsed = JSON.parse(widths || '{}');
+        for (const col of COLS) if (Number.isFinite(parsed?.[col.id])) col.w = Math.max(44, Math.min(1000, parsed[col.id]));
+        applyTpl();
+      } catch { /* invalid legacy widths retain current geometry */ }
+    }
+  }
+  async function applyCols(next) {
+    if (columnsPending || store.pending || store.suspended || store.locked) { fillColPop(); return; }
+    columnsPending = true;
+    colpop.querySelectorAll('input,button').forEach(control => { control.disabled = true; });
+    try { await appState.setItem(HKEY, JSON.stringify([...next])); hidden = next; }
+    catch (error) { ctx.toast(error.message); }
+    finally {
+      columnsPending = false;
+      if (hidden.has(ui.col)) ui.col = 'name';
+      headKey = ''; fillColPop(); render(); ctx.requestRender();
+    }
   }
   colbtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -333,12 +433,30 @@ export function createGrid(ctx) {
   });
   colpop.addEventListener('change', (e) => {
     const id = e.target.dataset.c; if (!id) return;
-    if (e.target.checked) hidden.delete(id); else hidden.add(id);
-    applyCols();
+    const next = new Set(hidden);
+    if (e.target.checked) next.delete(id); else next.add(id);
+    void applyCols(next);
   });
-  colpop.addEventListener('click', (e) => { if (e.target.dataset.all) { hidden.clear(); applyCols(); } });
+  colpop.addEventListener('click', (e) => { if (e.target.dataset.all) void applyCols(new Set()); });
   document.addEventListener('pointerdown', (e) => { if (!colpop.hidden && !colpop.contains(e.target) && !colbtn.contains(e.target)) colpop.hidden = true; }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') colpop.hidden = true; });
 
-  return { render, startEdit, commitEdit: () => commitEditing?.(), moveSel, restoreScroll, resetScroll: () => { restoringScroll = true; }, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
+  // A read-before-retry may confirm an action whose first acknowledgement was
+  // lost. Retire only an editor that still exactly matches the adopted value;
+  // newer or invalid input remains available for correction/copy.
+  store.on(kind => {
+    // Only an accepted/adopted state can retire input. The grid's own 'input'
+    // and commit status events fire while the user is still typing, when the
+    // text may momentarily equal the stored value.
+    if (kind === 'input' || kind === 'pending' || kind === 'idle' || kind === 'suspended') return;
+    if (store.pending || store.suspended) return;
+    syncAcceptedColumns();
+    if (editing && !editing.finishing && editing.sheet === store.wb.active && store.info.has(editing.id) && editing.inp.value === raw(editing.id, editing.col)) {
+      editing.inp.remove(); editing = null; commitEditing = null; store.unsubmitted = false; store.emit('input'); ctx.requestRender();
+    } else if (!editing && formulaEdit && formulaEdit.sheet === store.wb.active && store.info.has(formulaEdit.id) && formulaEdit.value === raw(formulaEdit.id, formulaEdit.col)) {
+      formulaEdit = null; store.unsubmitted = false; store.emit('input'); ctx.requestRender();
+    }
+  });
+
+  return { render, startEdit, commitEdit: () => commitEditing ? commitEditing() : finishFormula(), moveSel, restoreScroll, resetScroll: () => { restoringScroll = true; }, setScrollTop: (v) => { if (gx.scrollTop !== v) gx.scrollTop = v; }, scrollIntoView: () => body.querySelector('.c.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), isEditing: () => !!editing, invalidateHead: () => { headKey = ''; } };
 }

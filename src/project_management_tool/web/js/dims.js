@@ -3,12 +3,15 @@ import { appState } from './appstate.js';
 export const DENSITY = { compact: { row: 24, bar: 18 }, roomy: { row: 34, bar: 26 } };
 export const dims = { row: 24, bar: 18, msz: 14, name: 'compact' };
 
-export function setDensity(name) {
+export function setDensity(name, { persist = true } = {}) {
   name = name === 'compact' ? 'compact' : 'auto';
-  const d = name === 'compact' ? DENSITY.compact : DENSITY.roomy;
-  Object.assign(dims, d, { name, msz: Math.round(d.bar * 0.75) });
-  apply();
-  try { appState.setItem('pm-density', name); } catch { /* storage unavailable */ }
+  const update = () => {
+    const d = name === 'compact' ? DENSITY.compact : DENSITY.roomy;
+    Object.assign(dims, d, { name, msz: Math.round(d.bar * 0.75) }); apply();
+  };
+  if (persist && appState.isDisk()) return Promise.resolve(appState.setItem('pm-density', name)).then(update);
+  if (persist) appState.setItem('pm-density', name);
+  update();
 }
 export function fitDensity(height, count) {
   if (dims.name !== 'auto') return;
@@ -28,5 +31,5 @@ export function apply() {
 export function initDensity() {
   let n = 'auto';
   try { n = appState.getItem('pm-density') || n; } catch { /* storage unavailable */ }
-  setDensity(n);
+  setDensity(n, { persist: false });
 }

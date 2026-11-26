@@ -28,17 +28,41 @@ try {
   const start = Date.parse('2026-11-06T00:00:00Z') / 86400000;
   const task = (id, name, level = 0) => ({ id, name, level, start, dur: 3, progress: 0, owner: '', email: '', ms: false });
   const initial = { active: 's1', nextSheet: 2, sheets: [{ id: 's1', name: 'Procurement browser fixture', data: { tasks: [task(1, 'Commercial Procurement'), task(2, 'Sleeve'), task(3, 'Sleeve AW', 1), task(4, 'PM Connection', 1), task(5, 'CFC'), task(6, 'CFC AW', 1), task(7, 'CFC connection', 1), task(8, 'Shipping')], links: [{ id: 'l1', from: 3, to: 6, type: 'SS', lag: 0 }], collapsed: [], nextId: 9, nextLink: 2 } }] };
-  await page.addInitScript((wb) => { if (!localStorage.getItem('pm-workbook-v1')) { localStorage.setItem('pm-workbook-v1', JSON.stringify(wb)); localStorage.setItem('pm-proto-v2:prefs', JSON.stringify({ auto: false, critical: true })); } }, initial);
-  await page.goto(url); await page.locator('#gbody .r[data-id="8"]').waitFor();
+  await page.goto(url); await page.locator('#gbody .r[data-id="21"]').waitFor();
+  await page.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
+  await page.evaluate(async workbook => {
+    const { Store } = await import('./js/model.js'), { changesBetween } = await import('./js/changes.js');
+    const current = await (await fetch('/api/projects')).json();
+    const fixture = new Store({ ...current.state, workbook, preferences: { auto: false, critical: true }, history: {} }, { disk: true });
+    fixture.sheet().data = JSON.parse(fixture.serialize());
+    const response = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: current.revision, changes: changesBetween(current.state, fixture.savedState()) }) });
+    if (!response.ok) throw new Error(`Cannot prepare structure fixture: ${response.status} ${await response.text()}`);
+  }, initial);
+  await page.reload(); await page.locator('#gbody .r[data-id="8"]').waitFor();
   async function state(p = page) {
-    await p.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved');
+    await p.waitForFunction(() => document.querySelector('#save-status').dataset.state === 'saved', null, { polling: 100 });
     return p.evaluate(async () => (await (await fetch('/api/projects')).json()).state);
   }
   const data = async (p = page) => { const s = await state(p); return s.workbook.sheets.find((sheet) => sheet.id === s.workbook.active).data; };
   const row = (id) => page.locator(`#gbody .r[data-id="${id}"]`);
   async function select(id) { await row(id).locator('[data-col=name]').click(); }
-  async function key(value) { await page.keyboard.press(value); }
-  async function menu(id, label) { await row(id).locator('[data-col=name]').click({ button: 'right' }); await page.getByRole('menuitem', { name: label, exact: true }).click(); }
+  async function commitAction(action, p = page) {
+    const response = p.waitForResponse(r => r.url().endsWith('/api/projects/changes') && r.request().method() === 'POST');
+    await action(); const ack = await response; assert.equal(ack.status(), 200, await ack.text()); await state(p);
+  }
+  async function key(value) {
+    const insertion = ['Control+Enter', 'Control+Shift+Enter'].includes(value);
+    const previousEditor = insertion ? await page.locator('.editor').evaluateAll(inputs => inputs[0]?.closest('.r').dataset.id ?? null) : null;
+    const mutation = ['Alt+ArrowRight', 'Control+z', 'Control+Shift+z', 'Control+Enter', 'Control+Shift+Enter', 'Enter'].includes(value);
+    if (mutation) await commitAction(() => page.keyboard.press(value)); else await page.keyboard.press(value);
+    // Insertion while editing acknowledges the edit before submitting the new row.
+    // Wait for that new row's editor so a fast test cannot type into the old input.
+    if (insertion) await page.waitForFunction(previous => {
+      const editor = document.querySelector('.editor');
+      return editor && !editor.readOnly && editor.closest('.r').dataset.id !== previous;
+    }, previousEditor, { polling: 100 });
+  }
+  async function menu(id, label) { await row(id).locator('[data-col=name]').click({ button: 'right' }); await commitAction(() => page.getByRole('menuitem', { name: label, exact: true }).click()); }
   async function drag(id, targetId, ratio, { cancel = false, invalid = false } = {}) {
     await row(id).locator('.row-handle').waitFor({ state: 'visible' });
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
@@ -48,7 +72,8 @@ try {
     await page.locator('.row-drop:not([hidden])').waitFor();
     if (invalid) assert.match(await page.locator('.row-drop').getAttribute('class'), /invalid/);
     if (cancel) await key('Escape');
-    await page.mouse.up(); await page.locator('body.reordering-rows').waitFor({ state: 'detached' });
+    if (cancel || invalid) await page.mouse.up(); else await commitAction(() => page.mouse.up());
+    await page.locator('body.reordering-rows').waitFor({ state: 'detached' });
   }
   await select(2); await key('Alt+ArrowRight');
   await page.waitForFunction(() => document.querySelector('.r[data-id="2"]').getAttribute('aria-level') === '2');
@@ -105,7 +130,7 @@ try {
   await dialog.getByRole('button', { name: 'Mon–Fri', exact: true }).click();
   assert.match(await dialog.locator('[data-calendar-preview]').textContent(), /will change dates/);
   assert.equal((await data()).calendar.workdays.length, 7, 'draft calendar is not saved');
-  await dialog.getByRole('button', { name: 'Save global calendar', exact: true }).click();
+  await commitAction(() => dialog.getByRole('button', { name: 'Save global calendar', exact: true }).click());
   d = await data(); assert.deepEqual(d.calendar, { workdays: [1, 2, 3, 4, 5], holidays: [{ date: '2026-11-09', name: 'Office closure' }] });
   assert.equal((await row(8).locator('[data-col=end]').textContent()).trim(), 'Nov 11');
   assert.equal((await row(8).locator('[data-col=dur]').textContent()).trim(), '3');
@@ -155,13 +180,14 @@ try {
   await restored.goto(url); await restored.locator('#gbody .r[data-id="8"]').waitFor();
   assert.deepEqual((await data(restored)).calendar, d.calendar);
   assert.equal((await restored.locator('.r[data-id="8"] [data-col=end]').textContent()).trim(), 'Nov 11');
-  await restored.keyboard.press('Control+z'); assert.equal((await data(restored)).calendar.workdays.length, 7);
+  await commitAction(() => restored.keyboard.press('Control+z'), restored); assert.equal((await data(restored)).calendar.workdays.length, 7);
   console.log('PASS narrow context-menu layout and SQLite restore into a fresh browser with undo history');
   const locked = await restored.evaluate(async () => {
     const response = await (await fetch('/api/projects')).json();
     const sheet = response.state.workbook.sheets.find((s) => s.id === response.state.workbook.active);
     sheet.readOnly = true; sheet.source = { driveId: 'fixture', itemId: 'fixture', by: 'Browser test', byEmail: '', fetchedAt: 0 };
-    const result = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+    const index = response.state.workbook.sheets.indexOf(sheet);
+    const result = await fetch('/api/projects/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: response.revision, changes: [{ op: 'set', path: ['workbook', 'sheets', index, 'readOnly'], value: true }, { op: 'set', path: ['workbook', 'sheets', index, 'source'], value: sheet.source }] }) });
     if (!result.ok) throw new Error('Cannot prepare read-only fixture');
     return JSON.stringify(sheet.data.tasks);
   });

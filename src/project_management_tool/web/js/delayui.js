@@ -17,16 +17,37 @@ export function createDelayUI(ctx) {
   const { store } = ctx;
   const $ = (s) => document.querySelector(s);
   const api = {};
-  let causes = loadCauses(), pop = null, layer = null, layerMarkup = '', vis = { any: false, rev: false };
-  const editable = () => !store.readOnly && !store.stale;
+  let causes = loadCauses(), pop = null, layer = null, layerMarkup = '', vis = { any: false, rev: false }, settingsAccepted = null;
+  const editable = () => !store.readOnly && !store.stale && !store.pending && !store.suspended;
   const refreshCauses = () => { causes = loadCauses(); };
-  const denial = () => (store.readOnly ? 'This project is read-only.' : store.stale ? 'This project changed in another tab; reload before recording.' : '');
+  const denial = () => (store.readOnly ? 'This project is read-only.' : store.stale ? 'This project changed in another tab; reload before recording.' : store.suspended ? 'Workspace saving failed. Copy your input and retry or reload.' : store.pending ? 'Finish the pending action first.' : '');
 
   // Anything that moves an agreed task past its agreed date is watched: the record popover opens after it.
-  store.hook = { before: () => (editable() && DL.hasAgreed(store) ? DL.snapshotBefore(store) : null), after: (e) => afterEdit(e) };
-  store.on((kind) => { if (kind === 'sheet' || kind === 'version') { closePop(); refreshCauses(); } }); // a file opened elsewhere may bring causes
+  store.hook = {
+    before: () => (editable() && DL.hasAgreed(store) ? DL.snapshotBefore(store) : null), after: (e) => afterEdit(e),
+    forDraft: draft => DL.createDelayHook(draft, option => new Promise(resolve => {
+      store.decisionPreview = draft;
+      openPopover({ ...option, draft, decide: resolve });
+      ctx.requestRender();
+    })),
+  };
+  function acceptedDelay(current) {
+    if (!current?.o.decide || !current.settled || current.reported || store.pending || store.suspended ||
+      current.o.draft._acceptedCandidate !== store.savedState()) return;
+    current.reported = true;
+    const entry = current.entry;
+    diagnostics.record('delay.record', { type: entry.type, op: current.o.op, hasCause: !!entry.cause, overdue: false });
+    closePop(false, true);
+    const days = DL.lastDelay(store, current.o.id)?.days ?? DL.wd(store, current.o.old, current.o.now, current.o.id);
+    ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(current.o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(days)}d ${DL.causeName(causes, entry.cause)}` : 'Delay recorded without a cause · classify it from the task menu');
+  }
+  store.on(kind => {
+    if (kind === 'sheet' || kind === 'version') { acceptedDelay(pop); closePop(); refreshCauses(); }
+    else if (kind === 'change' || kind === 'idle' || kind === 'meta') { refreshCauses(); acceptedDelay(pop); }
+    if (['sheet', 'version', 'change', 'idle', 'meta'].includes(kind) && !store.pending && !store.suspended) settingsAccepted?.();
+  }); // adoption also handles successful retry of a failed delay decision
   window.addEventListener('storage', (e) => { // causes added or renamed in another tab
-    if (e.key !== 'pm-delay-causes' || e.newValue == null) return;
+    if (store.commitsEnabled || e.key !== 'pm-delay-causes' || e.newValue == null) return;
     appState.adopt(e.key, e.newValue); refreshCauses(); ctx.requestRender();
   });
 
@@ -113,11 +134,19 @@ export function createDelayUI(ctx) {
   };
   // the Gantt layer is redrawn as the pointer goes down, so the Overdue chip reacts to the press itself
   document.addEventListener('pointerdown', (e) => { const b = e.target.closest?.('.dly-od-g'); if (b) { e.stopPropagation(); e.preventDefault(); api.openOverdue(+b.dataset.dlyOverdue); } }, true);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && pop) { e.stopPropagation(); closePop(true); } }, true);
+  document.addEventListener('keydown', (e) => { if (pop && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closePop(true); } }, true);
+
+  document.addEventListener('keydown', e => {
+    if (!pop || e.key !== 'Tab') return;
+    const items = [...pop.el.querySelectorAll('button,input,select,textarea')].filter(el => !el.disabled && el.offsetParent !== null);
+    if (!items.length) return;
+    const index = items.indexOf(document.activeElement), next = e.shiftKey ? (index <= 0 ? items.length - 1 : index - 1) : (index + 1) % items.length;
+    e.preventDefault(); e.stopImmediatePropagation(); items[next].focus();
+  }, true);
 
   // ---------------------------------------------------------------- the record popover
-  function closePop(undo = false) {
-    if (!pop) return; const p = pop; pop = null; p.el.remove(); if (undo && p.o.undo) p.o.undo();
+  function closePop(undo = false, force = false) {
+    if (!pop || (pop.busy && !force)) return; const p = pop; pop = null; p.el.remove(); if (p.o.decide && !p.settled) { p.settled = true; p.o.decide(null); } else if (undo && p.o.undo) p.o.undo();
     // Focus goes back to where it was (the grid, with the edited cell selected), never to the page body.
     const back = p.opener?.isConnected && p.opener !== document.body ? p.opener : document.querySelector('#gx');
     if (back && (!document.activeElement || document.activeElement === document.body || p.el.contains(document.activeElement))) back.focus({ preventScroll: true });
@@ -159,10 +188,11 @@ export function createDelayUI(ctx) {
   };
   function openPopover(o) {
     closePop();
+    const store = o.draft || ctx.store;
     const a = store.byId.get(o.id).agr, t = store.byId.get(o.id), w = (x, y) => DL.wd(store, x, y, o.id);
     const days = w(o.old, o.now), beyond = w(Math.max(o.old, a.f), o.now);
     const newAgreed = store.workFor(t).shift(a.f, beyond);
-    const el = document.createElement('div'); el.className = 'dly-pop'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Record why this finish moved');
+    const el = document.createElement('div'); el.className = 'dly-pop'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Record why this finish moved'); el.style.zIndex = '10000';
     const active = DL.activeCauses(causes), unit = t.ms ? 'Date' : 'Finish';
     const head = (oldF, newF, oldS, newS, d) => `<b>${!t.ms && oldS !== newS ? `Start ${fmtDate(oldS)} → ${fmtDate(newS)} · ` : ''}${unit} ${fmtDate(oldF)} → ${fmtDate(newF)}</b><span class="dly-days">${sign(d)} working days</span>`;
     const overdueField = o.overdue ? `<label class="fld dly-newfin"><span>New expected finish</span><input data-f="newfin" value="${fmtISO(o.now)}" autocomplete="off" aria-label="New expected finish"><em>Prefilled with today. Type a later date if you expect more.</em></label>` : '';
@@ -180,6 +210,10 @@ export function createDelayUI(ctx) {
       <div class="dly-effect" data-effect>${o.overdue ? 'Nothing moves until you record.' : effectText(o.pushed, o.finish)}</div>
       <p class="set-err" role="alert"></p>
       <div class="dly-actions"><button data-skip title="Record the delay without a cause">Skip reason</button><span class="grow"></span><button data-cancel>Cancel</button><button class="primary" data-record>Record</button></div>`);
+    if (o.draft) {
+      const notice = document.createElement('p'); notice.className = 'help'; notice.setAttribute('role', 'status');
+      notice.textContent = 'Unsaved preview · Record or Skip to apply; Cancel discards this edit.'; el.prepend(notice);
+    }
     const opener = document.activeElement;
     document.body.appendChild(el);
     pop = { el, o, opener };
@@ -199,26 +233,54 @@ export function createDelayUI(ctx) {
     el.addEventListener('change', (e) => { if (e.target.name === 'dlymode') for (const b of el.querySelectorAll('.dly-opt')) b.classList.toggle('on', b.dataset.mode === e.target.value); });
     el.addEventListener('pointerdown', (e) => { const opt = e.target.closest('.dly-opt'); if (opt && !e.target.closest('label')) { const r = opt.querySelector('input[type=radio]'); r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); } });
     const typed = () => { const v = f('newfin')?.value.trim(); return v ? parseDate(v, o.old) : null; };
-    const finish = (entry) => {
+    const finish = async (entry) => {
+      if (pop?.busy || pop?.settled) return;
+      if (o.draft) {
+        const current = pop;
+        current.settled = true; current.busy = true; current.entry = entry;
+        for (const button of el.querySelectorAll('button')) button.disabled = true;
+        el.querySelector('[data-effect]').textContent = 'Pending · saving this edit and its reason…';
+        o.decide(entry);
+        try { await ctx.store.whenIdle(); acceptedDelay(current); }
+        catch (error) { err(error.message); current.busy = false; for (const button of el.querySelectorAll('[data-cancel]')) button.disabled = false; }
+        ctx.requestRender(); return;
+      }
+      const current = pop;
+      try {
       if (!editable()) return err(denial()); // a stale or read-only tab saves nothing: say so instead of reporting success
+      current.busy = true;
+      for (const button of el.querySelectorAll('button')) button.disabled = true;
       if (o.unrecorded) {
-        const x = DL.recordUnrecorded(store, o.id, { ...entry, kind: entry.kind });
+        const x = await DL.recordUnrecorded(store, o.id, { ...entry, kind: entry.kind });
         if (x) return err(x);
         diagnostics.record('delay.record', { type: 'delay', hasCause: !!entry.cause, unrecorded: true });
-        closePop(); ctx.toast(entry.cause ? `Delay recorded · ${DL.causeName(causes, entry.cause)}` : 'Delay recorded without a cause · classify it from the task menu'); ctx.requestRender(); return;
+        closePop(false, true); ctx.toast(entry.cause ? `Delay recorded · ${DL.causeName(causes, entry.cause)}` : 'Delay recorded without a cause · classify it from the task menu'); ctx.requestRender(); return;
       }
-      if (o.overdue) { // apply the typed date now, then record why; the task keeps its scheduling mode
-        const d = typed(); if (d == null || d <= Math.max(o.old, a.f)) return err(`Type a finish date after ${fmtDate(Math.max(o.old, a.f))}.`);
-        o.pre = DL.snapshotBefore(store);
-        const e = store.applyCell(o.id, 'end', fmtISO(d)); if (e) return err(e);
-        o.now = DL.fin(store, o.id);
+      let e;
+      if (o.overdue && store.commitsEnabled) {
+        const day = typed(); if (day == null || day <= Math.max(o.old, a.f)) return err(`Type a finish date after ${fmtDate(Math.max(o.old, a.f))}.`);
+        e = await store.commit(draft => {
+          const pre = DL.snapshotBefore(draft), error = draft.applyCell(o.id, 'end', fmtISO(day));
+          if (error) return error;
+          return DL.record(draft, o.id, pre, { ...entry, op: o.op }, { anchor: !!o.anchor, link: !!o.link });
+        }, { errorStrings: true });
+      } else {
+        if (o.overdue) {
+          const d = typed(); if (d == null || d <= Math.max(o.old, a.f)) return err(`Type a finish date after ${fmtDate(Math.max(o.old, a.f))}.`);
+          o.pre = DL.snapshotBefore(store);
+          const error = store.applyCell(o.id, 'end', fmtISO(d)); if (error) return err(error);
+          o.now = DL.fin(store, o.id);
+        }
+        e = await DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor, link: !!o.link });
       }
-      const e = DL.record(store, o.id, o.pre, { ...entry, op: o.op }, { anchor: !!o.anchor, link: !!o.link });
+      if (e?.cancelled) return;
       if (e) return err(e);
       diagnostics.record('delay.record', { type: entry.type, op: o.op, hasCause: !!entry.cause, overdue: !!o.overdue });
-      closePop();
+      closePop(false, true);
       ctx.toast(entry.type === 'revision' ? `Revision recorded · agreed ${fmtDate(store.byId.get(o.id).agr.f)}` : entry.cause ? `Delay recorded · ${sign(DL.lastDelay(store, o.id)?.days ?? days)}d ${DL.causeName(causes, entry.cause)}` : `Delay recorded without a cause · classify it from the task menu`);
       ctx.requestRender();
+      } catch (error) { err(error.message); }
+      finally { if (pop === current) { current.busy = false; for (const button of el.querySelectorAll('button')) button.disabled = false; } }
     };
     if (o.overdue) {
       const upd = () => {
@@ -288,10 +350,16 @@ export function createDelayUI(ctx) {
     q('#dly-entry')?.addEventListener('change', (ev) => { e = list.find((x) => x.id === +ev.target.value) || e; fill(); });
     if (ctx.people) q('#dly-party').addEventListener('focus', (ev) => ctx.people.attach(ev.target, (p) => { ev.target.value = p.name; }));
     q('[data-cancel]').addEventListener('click', () => m.close());
-    q('[data-ok]').addEventListener('click', () => {
+    let applying = false;
+    q('[data-ok]').addEventListener('click', async () => {
+      if (applying) return; applying = true;
+      try {
+      m.setPending(true);
       if (!editable()) { q('.set-err').textContent = denial(); return; }
-      const err = DL.reclassify(store, e.id, { kind: q('#dly-kind').value, cause: q('#dly-cause').value, party: q('#dly-party').value, note: q('#dly-note').value });
-      if (err) q('.set-err').textContent = err; else { diagnostics.record('delay.reclassify', { hasCause: !!q('#dly-cause').value }); m.close(); ctx.requestRender(); after?.(); }
+      const err = await DL.reclassify(store, e.id, { kind: q('#dly-kind').value, cause: q('#dly-cause').value, party: q('#dly-party').value, note: q('#dly-note').value });
+      if (err) q('.set-err').textContent = err; else { diagnostics.record('delay.reclassify', { hasCause: !!q('#dly-cause').value }); m.setPending(false); m.close(); ctx.requestRender(); after?.(); }
+      } catch (error) { q('.set-err').textContent = error.message; }
+      finally { applying = false; m.setPending(false); }
     });
     setTimeout(() => q('#dly-cause')?.focus(), 0);
   };
@@ -364,14 +432,20 @@ export function createDelayUI(ctx) {
     b.addEventListener('change', (e) => { if (e.target.name === 'dlyd') { for (const c of b.querySelectorAll('.dly-choice')) c.classList.toggle('on', c.querySelector('input').checked); update(); } });
     update();
     b.querySelector('[data-cancel]').addEventListener('click', () => m.close());
-    const ok = () => {
+    let applying = false;
+    const ok = async () => {
+      if (applying) return; applying = true;
+      try {
+      m.setPending(true);
       const day = chosen();
       if (day == null) { err.textContent = 'Pick a date first.'; return; }
       const f = (k) => b.querySelector(`[data-f=${k}]`)?.value ?? '';
-      const e = incl ? DL.agreeInclusion(store, id, { finishDay: day, reason: f('reason'), approvedBy: f('approved') }) : DL.setAgreed(store, id, day, { reason: f('reason'), approvedBy: f('approved') });
+      const e = incl ? await DL.agreeInclusion(store, id, { finishDay: day, reason: f('reason'), approvedBy: f('approved') }) : await DL.setAgreed(store, id, day, { reason: f('reason'), approvedBy: f('approved') });
       if (e) { err.textContent = e; return; }
       diagnostics.record('delay.agree', { kind });
-      m.close(); ctx.toast(incl ? `Agreed inclusion “${t.name}” · agreed ${fmtDate(store.byId.get(id).agr.f)}` : `Agreed ${unit} ${fmtDate(store.byId.get(id).agr.f)} set for “${t.name}”`); ctx.requestRender();
+      m.setPending(false); m.close(); ctx.toast(incl ? `Agreed inclusion “${t.name}” · agreed ${fmtDate(store.byId.get(id).agr.f)}` : `Agreed ${unit} ${fmtDate(store.byId.get(id).agr.f)} set for “${t.name}”`); ctx.requestRender();
+      } catch (error) { err.textContent = error.message; }
+      finally { applying = false; m.setPending(false); }
     };
     b.querySelector('[data-ok]').addEventListener('click', ok);
     b.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'radio') { e.preventDefault(); ok(); } });
@@ -379,7 +453,7 @@ export function createDelayUI(ctx) {
   // Deleting a task that has an agreed date: omit it from scope (agreed, kept as a record) or delete it (added by mistake).
   api.confirmDelete = (id, del, afterOmit) => {
     const t = store.byId.get(id);
-    if (!t || store.readOnly || !DL.hasAgreedRows(store, id)) { del(); return; }
+    if (!t || store.readOnly || !DL.hasAgreedRows(store, id)) return del();
     const chain = DL.omitChain(store, id), nm = (ids) => ids.map((x) => store.byId.get(x)?.name).filter(Boolean).join(', ');
     const rows = store.info.get(id).summary ? 'These rows have agreed dates.' : `${esc(t.name)} has an agreed date (${fmtDate(t.agr.f)}).`;
     const m = openModal('Remove an agreed task', `<p class="help"><b>${esc(t.name)}</b>: ${rows} How should it leave the plan?</p>
@@ -391,16 +465,22 @@ export function createDelayUI(ctx) {
     const b = m.body, mode = () => b.querySelector('input[name=dlyrm]:checked').value;
     b.addEventListener('change', (e) => { if (e.target.name === 'dlyrm') { for (const c of b.querySelectorAll('.dly-choice')) c.classList.toggle('on', c.querySelector('input').checked); b.querySelector('.dly-omit').hidden = e.target.value !== 'omit'; } });
     b.querySelector('[data-cancel]').addEventListener('click', () => m.close());
-    b.querySelector('[data-ok]').addEventListener('click', () => {
+    let applying = false;
+    b.querySelector('[data-ok]').addEventListener('click', async () => {
+      if (applying) return; applying = true;
+      try {
+      m.setPending(true);
       if (mode() === 'omit') {
         const f = (k) => b.querySelector(`[data-f=${k}]`);
         const relink = f('relink') ? f('relink').checked : false;
-        const e = DL.omit(store, id, { reason: f('reason').value, approvedBy: f('approved').value, relink });
+        const e = await DL.omit(store, id, { reason: f('reason').value, approvedBy: f('approved').value, relink });
         if (e) { b.querySelector('.set-err').textContent = e; return; }
         diagnostics.record('delay.omit', { relink });
-        m.close(); afterOmit(); ctx.toast(`Omitted “${t.name}” from scope · kept in the Delay log`);
-      } else { m.close(); del(); ctx.toast(`Deleted “${t.name}”`); }
+        m.setPending(false); m.close(); afterOmit(); ctx.toast(`Omitted “${t.name}” from scope · kept in the Delay log`);
+      } else { await del(); m.setPending(false); m.close(); ctx.toast(`Deleted “${t.name}”`); }
       ctx.requestRender();
+      } catch (error) { b.querySelector('.set-err').textContent = error.message; }
+      finally { applying = false; m.setPending(false); }
     });
   };
 
@@ -439,18 +519,20 @@ export function createDelayUI(ctx) {
     const name = (e) => esc(store.byId.get(e.taskId)?.name ?? e.taskName ?? '');
     setHTML(host, `<p class="vwarn">${pl(list.length, 'delay')} ${list.length === 1 ? 'has' : 'have'} no cause: ${list.map((e) => `${name(e)} ${sign(e.days)}`).join(', ')}. You can still save; classify them now or later.</p>
       <div class="dly-nocause-list">${list.map((e) => `<label class="fld dly-nocause-row"><span>${name(e)} ${sign(e.days)}d${e.kind ? ` · ${esc(e.kind)}` : ''}</span><select data-dly-classify="${e.id}" aria-label="Cause of ${name(e)} ${sign(e.days)}"><option value="">Classify…</option>${causes.list.filter((c) => !c.retired).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></label>`).join('')}</div>`);
-    for (const sel of host.querySelectorAll('[data-dly-classify]')) sel.addEventListener('change', () => {
+    for (const sel of host.querySelectorAll('[data-dly-classify]')) sel.addEventListener('change', async () => {
+      try {
       if (!sel.value) return;
-      const err = DL.reclassify(store, +sel.dataset.dlyClassify, { cause: sel.value });
+      const err = await DL.reclassify(store, +sel.dataset.dlyClassify, { cause: sel.value });
       if (err) ctx.toast(err);
       renderUnclassified(host);
+      } catch (error) { ctx.toast(error.message); }
     });
   }
   api.readType = (body) => body.querySelector('#vtype')?.value || null;
   // Before an Agreed baseline is saved: agree the dates. Returns an error message, or null.
-  api.agreeOnSave = (body) => {
-    const changes = DL.baselineChanges(store).length;
-    return DL.agreeBaseline(store, { replace: changes > 0, includePending: !!body.querySelector('#dly-incl')?.checked, reason: body.querySelector('#dly-reason')?.value ?? '', approvedBy: body.querySelector('#dly-appr')?.value ?? '' });
+  api.agreeOnSave = (body, candidate = store) => {
+    const changes = DL.baselineChanges(candidate).length;
+    return DL.agreeBaseline(candidate, { replace: changes > 0, includePending: !!body.querySelector('#dly-incl')?.checked, reason: body.querySelector('#dly-reason')?.value ?? '', approvedBy: body.querySelector('#dly-appr')?.value ?? '' });
   };
 
   // ---------------------------------------------------------------- Settings -> Delay causes
@@ -470,53 +552,102 @@ export function createDelayUI(ctx) {
     const m = openModal('Settings', `<div class="dly-set"><h3>Delay causes</h3><p class="help">One list for all projects. Renaming updates existing delays. Removing a cause that is already used retires it: it disappears from the picker, old delays keep it.</p>
       <div class="dly-causes" id="dly-causes"></div>
       <div class="dly-addrow"><input id="dly-new" placeholder="Add a cause, e.g. Weather" maxlength="60" autocomplete="off"><button class="primary" id="dly-add">Add cause</button></div>
-      <p class="set-err" role="alert"></p><p class="mut">Party is free text; it suggests people already in this workbook, like Owner.</p></div>`);
+      <p class="set-err" role="alert"></p><p class="mut">Party is free text; it suggests people already in this workbook, like Owner.</p></div>`, { onClose: () => { settingsAccepted = null; } });
     const body = m.body, list = body.querySelector('#dly-causes'), err = body.querySelector('.set-err');
+    let causes = structuredClone(loadCauses()), saving = false, retry = null;
     const { entries, used } = allEntries(), uses = (id) => entries.filter((e) => e.cause === id).length;
-    const save = () => { saveCauses(causes); diagnostics.record('delay.causes.save', { count: causes.list.length }); ctx.requestRender(); };
-    const paint = () => {
-      setHTML(list, causes.list.map((c) => `<div class="dly-cause-row${c.retired ? ' retired' : ''}" data-id="${esc(c.id)}"><span class="dly-grip" role="button" tabindex="0" title="Drag to reorder (or use Alt+↑ / Alt+↓)" aria-label="Reorder ${esc(c.name)}">⠿</span><span class="dly-cname" data-rename="${esc(c.id)}" tabindex="0" role="button" title="Click to rename">${esc(c.name)}</span>${c.retired ? '<span class="dly-chip ret">Retired</span>' : ''}<span class="dly-use">${uses(c.id) ? `Used by ${pl(uses(c.id), 'delay')}` : used.has(c.id) ? 'Only in saved versions' : 'Not used'}</span><span class="grow"></span>${c.retired ? `<button data-restore="${esc(c.id)}">Restore</button>` : `<button data-remove="${esc(c.id)}" aria-label="${used.has(c.id) ? 'Retire' : 'Remove'} ${esc(c.name)}">${used.has(c.id) ? 'Retire' : 'Remove'}</button>`}</div>`).join(''));
+    const canChange = () => {
+      if (saving || store.pending || store.suspended || store.locked) {
+        err.textContent = store.locked ? 'This workspace is read-only in this tab.' : store.suspended ? 'Saving failed. Copy your input, then retry or reload.' : 'Finish the pending action first.';
+        return false;
+      }
+      return true;
+    };
+    const paint = (shown = causes) => {
+      setHTML(list, shown.list.map((c) => `<div class="dly-cause-row${c.retired ? ' retired' : ''}" data-id="${esc(c.id)}"><span class="dly-grip" role="button" tabindex="0" title="Drag to reorder (or use Alt+↑ / Alt+↓)" aria-label="Reorder ${esc(c.name)}">⠿</span><span class="dly-cname" data-rename="${esc(c.id)}" tabindex="0" role="button" title="Click to rename">${esc(c.name)}</span>${c.retired ? '<span class="dly-chip ret">Retired</span>' : ''}<span class="dly-use">${uses(c.id) ? `Used by ${pl(uses(c.id), 'delay')}` : used.has(c.id) ? 'Only in saved versions' : 'Not used'}</span><span class="grow"></span>${c.retired ? `<button data-restore="${esc(c.id)}">Restore</button>` : `<button data-remove="${esc(c.id)}" aria-label="${used.has(c.id) ? 'Retire' : 'Remove'} ${esc(c.name)}">${used.has(c.id) ? 'Retire' : 'Remove'}</button>`}</div>`).join(''));
+    };
+    const accept = (candidate, after) => {
+      causes = structuredClone(candidate); retry = null; refreshCauses(); paint(); after(); err.textContent = '';
+      diagnostics.record('delay.causes.save', { count: causes.list.length }); ctx.requestRender();
+    };
+    settingsAccepted = () => {
+      if (saving || !retry || !body.isConnected || JSON.stringify(loadCauses()) !== JSON.stringify(retry.candidate)) return;
+      accept(retry.candidate, retry.after);
+    };
+    // The visible list is accepted state. Text inputs and pointer reorder frames are
+    // temporary input; neither replaces it until the commit acknowledgement arrives.
+    const save = async (candidate, after = () => {}) => {
+      if (!canChange()) return false;
+      saving = true; m.setPending(true); err.textContent = '';
+      try {
+        if (store.commitsEnabled) await store.commit(draft => draft.appState.setItem('pm-delay-causes', JSON.stringify(candidate)));
+        else saveCauses(candidate);
+        accept(candidate, after); return true;
+      } catch (error) { retry = store.pendingCandidate ? { candidate, after } : null; err.textContent = error.message; return false; }
+      finally { saving = false; m.setPending(false); }
     };
     paint();
-    const add = () => {
-      const inp = body.querySelector('#dly-new'), e = DL.addCause(causes, inp.value);
-      if (e) { err.textContent = e; return; }
-      inp.value = ''; err.textContent = ''; paint(); save();
+    const add = async () => {
+      if (!canChange()) return;
+      const inp = body.querySelector('#dly-new'), input = inp.value, candidate = structuredClone(causes), error = DL.addCause(candidate, input);
+      if (error) { err.textContent = error; return; }
+      await save(candidate, () => { if (inp.value === input) inp.value = ''; });
     };
     body.querySelector('#dly-add').addEventListener('click', add);
-    body.querySelector('#dly-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
-    const rename = (cid) => {
-      const rn = list.querySelector(`[data-rename="${cid}"]`), c = causes.list.find((x) => x.id === cid); if (!rn || !c || rn.querySelector('input')) return;
+    body.querySelector('#dly-new').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    const rename = cid => {
+      if (!canChange()) return;
+      const rn = list.querySelector(`[data-rename="${cid}"]`), c = causes.list.find(x => x.id === cid); if (!rn || !c || rn.querySelector('input')) return;
       const inp = document.createElement('input'); inp.className = 'dly-rename'; inp.value = c.name; inp.maxLength = 60; rn.textContent = ''; rn.appendChild(inp); inp.focus(); inp.select();
-      const done = (ok) => { if (!inp.isConnected) return; const e = ok ? DL.renameCause(causes, cid, inp.value) : null; if (e) err.textContent = e; paint(); if (ok && !e) { err.textContent = ''; save(); } };
-      inp.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') done(true); else if (ev.key === 'Escape') done(false); });
+      const done = async ok => {
+        if (!inp.isConnected || saving) return;
+        if (!ok) { paint(); return; }
+        if (!canChange()) return;
+        const candidate = structuredClone(causes), error = DL.renameCause(candidate, cid, inp.value);
+        if (error) { err.textContent = error; return; }
+        await save(candidate);
+      };
+      inp.addEventListener('keydown', ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); done(true); } else if (ev.key === 'Escape') { ev.preventDefault(); done(false); } });
       inp.addEventListener('blur', () => done(true));
     };
-    list.addEventListener('click', (e) => {
+    list.addEventListener('click', e => {
       const rn = e.target.closest('[data-rename]'), rm = e.target.closest('[data-remove]'), rs = e.target.closest('[data-restore]');
-      if (rm) { DL.removeCause(causes, rm.dataset.remove, used.has(rm.dataset.remove)); paint(); save(); }
-      else if (rs) { causes.list.find((x) => x.id === rs.dataset.restore).retired = false; paint(); save(); }
-      else if (rn) rename(rn.dataset.rename);
+      if (rm || rs) {
+        if (!canChange()) return;
+        const candidate = structuredClone(causes);
+        if (rm) DL.removeCause(candidate, rm.dataset.remove, used.has(rm.dataset.remove));
+        else candidate.list.find(x => x.id === rs.dataset.restore).retired = false;
+        void save(candidate);
+      } else if (rn) rename(rn.dataset.rename);
     });
-    list.addEventListener('keydown', (e) => {
+    list.addEventListener('keydown', e => {
       const grip = e.target.closest('.dly-grip'), name = e.target.closest('[data-rename]');
       if (name && (e.key === 'Enter' || e.key === ' ') && !name.querySelector('input')) { e.preventDefault(); rename(name.dataset.rename); }
       if (grip && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-        e.preventDefault(); const id = grip.closest('.dly-cause-row').dataset.id, i = causes.list.findIndex((c) => c.id === id);
-        DL.moveCause(causes, id, i + (e.key === 'ArrowUp' ? -1 : 1)); paint(); list.querySelector(`[data-id="${id}"] .dly-grip`)?.focus(); save();
+        e.preventDefault(); if (!canChange()) return;
+        const id = grip.closest('.dly-cause-row').dataset.id, candidate = structuredClone(causes), i = candidate.list.findIndex(c => c.id === id);
+        DL.moveCause(candidate, id, i + (e.key === 'ArrowUp' ? -1 : 1));
+        void save(candidate, () => list.querySelector(`[data-id="${id}"] .dly-grip`)?.focus());
       }
     });
-    list.addEventListener('pointerdown', (e) => { // drag the grip to reorder
-      const grip = e.target.closest('.dly-grip'); if (!grip) return;
-      const id = grip.closest('.dly-cause-row').dataset.id; grip.closest('.dly-cause-row').classList.add('moving');
-      const move = (ev) => {
-        const over = [...list.children].find((r) => r.dataset.id !== id && ev.clientY < r.getBoundingClientRect().top + r.getBoundingClientRect().height / 2);
-        const from = causes.list.findIndex((c) => c.id === id), c = causes.list.splice(from, 1)[0];
-        const to = over ? causes.list.findIndex((x) => x.id === over.dataset.id) : causes.list.length; causes.list.splice(to, 0, c);
-        paint(); list.querySelector(`[data-id="${id}"]`)?.classList.add('moving');
+    list.addEventListener('pointerdown', e => {
+      const grip = e.target.closest('.dly-grip'); if (!grip || !canChange()) return;
+      const id = grip.closest('.dly-cause-row').dataset.id, candidate = structuredClone(causes);
+      list.setAttribute('aria-label', 'Unsaved cause reorder preview');
+      grip.closest('.dly-cause-row').classList.add('moving');
+      const move = ev => {
+        const over = [...list.children].find(r => r.dataset.id !== id && ev.clientY < r.getBoundingClientRect().top + r.getBoundingClientRect().height / 2);
+        const from = candidate.list.findIndex(c => c.id === id), item = candidate.list.splice(from, 1)[0];
+        const to = over ? candidate.list.findIndex(c => c.id === over.dataset.id) : candidate.list.length;
+        candidate.list.splice(to, 0, item); paint(candidate); list.querySelector(`[data-id="${id}"]`)?.classList.add('moving');
       };
-      const up = () => { document.removeEventListener('pointermove', move, true); document.removeEventListener('pointerup', up, true); paint(); save(); };
-      document.addEventListener('pointermove', move, true); document.addEventListener('pointerup', up, true);
+      const stop = commit => {
+        document.removeEventListener('pointermove', move, true); document.removeEventListener('pointerup', up, true); document.removeEventListener('keydown', cancel, true); document.removeEventListener('pointercancel', abort, true);
+        list.removeAttribute('aria-label'); paint();
+        if (commit) void save(candidate);
+      };
+      const up = () => stop(true), abort = () => stop(false), cancel = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopImmediatePropagation(); stop(false); } };
+      document.addEventListener('pointermove', move, true); document.addEventListener('pointerup', up, true); document.addEventListener('keydown', cancel, true); document.addEventListener('pointercancel', abort, true);
     });
   };
   $('#settingsbtn')?.addEventListener('click', () => api.openSettings());
