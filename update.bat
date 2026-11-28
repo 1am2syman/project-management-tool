@@ -29,7 +29,23 @@ if errorlevel 1 goto fetch_error
 
 set "PLAN_LOCAL="
 for /f "delims=" %%i in ('git status --porcelain') do set "PLAN_LOCAL=1"
+if not defined PLAN_LOCAL goto update_ready
 
+echo.
+echo Some app files in this folder have been changed or added on this computer.
+echo To install the latest version, Plan needs to replace the changed app files.
+echo Your saved projects in Documents\Plan will not be changed.
+echo.
+echo   1. Back up the changed app files, then update Plan (recommended).
+echo      The backup stays in this folder's update history. The updated app
+echo      uses the published files; your changes are not reapplied automatically.
+echo   2. Cancel and keep the app folder as it is.
+echo.
+choice /c 12 /n /m "Choose 1 or 2: "
+if errorlevel 2 goto update_cancelled
+if not errorlevel 1 goto choice_error
+
+:update_ready
 rem Parse the complete update block before Git can replace this batch file.
 rem Labels and goto must not be used below this point.
 (
@@ -44,7 +60,9 @@ rem Labels and goto must not be used below this point.
             endlocal
             exit /b 1
         )
-        echo Files that differed from the published version were set aside in Git stash.
+        echo Backup saved in this folder's update history ^(Git stash^).
+        echo If you need those app changes back, ask the person who maintains Plan.
+        echo Your saved projects in Documents\Plan were not changed.
     )
     git reset --hard --quiet "@{u}"
     if errorlevel 1 (
@@ -84,6 +102,18 @@ rem Labels and goto must not be used below this point.
     endlocal
     exit /b 0
 )
+
+:update_cancelled
+echo.
+echo Update cancelled. Your app files and saved projects were not changed.
+popd
+pause
+endlocal & exit /b 0
+
+:choice_error
+echo.
+echo Could not read your choice. The update was cancelled without changing app files.
+goto checkout_error
 
 :running_error
 echo Plan is still running from this folder. Close Plan (and any Plan launcher

@@ -38,7 +38,7 @@ If you already use uv for development, `uv run --locked project-management-tool`
 On Windows:
 
 1. Wait for **Saved to this computer**, then close Plan (and any console launcher window if you started it with `start.bat`).
-2. Double-click **update.bat** inside the cloned repository. It downloads the latest published version, makes the folder match it exactly and keeps the window open so you can read the result.
+2. Double-click **update.bat** inside the cloned repository. It downloads the latest published version. If app files have been changed or added on this computer, it asks you to choose **1: Back up the changed app files, then update Plan (recommended)** or **2: Cancel and keep the app folder as it is**. Choose 1 to continue; choose 2 to leave your app files untouched. After an update, the folder matches the published version and the window stays open so you can read the result.
 3. Open **Plan** from the Start Menu (or run **start.bat**). It uses the updated source and bundled runtime directly.
 
 The page does not hot reload. For front-end-only JS/CSS/HTML updates, the running server reads the changed files directly with caching disabled: refresh the browser to load them. Python server or dependency updates require a server restart. The stop/update/start procedure above works for both kinds of update.
@@ -46,7 +46,7 @@ The page does not hot reload. For front-end-only JS/CSS/HTML updates, the runnin
 The updater requires Git and internet access. Every update repairs the app folder, including a copy left with missing or mixed files by an earlier interrupted update:
 
 - It stops without changing anything if Plan is still running from this folder, Git cannot download the update, or the copy does not follow a published branch. It removes a lock left by an interrupted Git command when no Git command is running.
-- It resets every tracked file to the current branch's published version and removes untracked and generated files under `src`. Anything in the folder that differed from that version is first set aside in Git stash: `git stash list` shows it, and `git stash show -p --include-untracked` shows its contents. Local commits that were not published remain recoverable through `git reflog`.
+- When local app files have changed, it waits for your choice before backing up or replacing them. There is no automatic selection. Cancelling leaves the app files untouched. Continuing sets aside changed and untracked files in this folder's update history (Git stash), resets every tracked file to the current branch's published version and removes untracked and generated files under `src`. The backup is not reapplied automatically, so older app files do not interfere with the update. If you need those changes back, ask the person who maintains Plan; for maintainers, `git stash list` shows the backups and `git stash show -p --include-untracked` shows their contents. Local commits that were not published remain recoverable through `git reflog`.
 - It confirms that `git status` is clean before reporting **Plan is up to date** with the installed commit.
 
 If another program keeps a file open, the update reports that it did not finish (Git may first ask whether to retry). Close that program and run **update.bat** again; a rerun completes the update. The bundled runtime is restored like any other tracked file, and saved projects in Documents/Plan are never touched.
