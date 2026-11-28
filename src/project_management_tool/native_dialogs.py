@@ -11,6 +11,7 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 
 
 def _windows_available():
@@ -224,6 +225,10 @@ class WindowsDialogs:
         user.IsWindowVisible.restype = wt.BOOL
         user.FlashWindowEx.argtypes = [ctypes.POINTER(FLASHWINFO)]
         user.FlashWindowEx.restype = wt.BOOL
+        user.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT, ctypes.c_int, ctypes.c_int, wt.UINT]
+        user.LoadImageW.restype = wt.HANDLE
+        user.DestroyIcon.argtypes = [wt.HICON]
+        user.DestroyIcon.restype = wt.BOOL
         user.DestroyWindow.argtypes = [wt.HWND]
         user.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
         user.GetMessageW.restype = ctypes.c_int
@@ -439,8 +444,13 @@ class WindowsDialogs:
         instance = kernel.GetModuleHandleW(None)
         name = "PlanFileDialog-" + uuid.uuid4().hex
         registered = False
+        icon_path = Path(__file__).resolve().parent / "web" / "plan.ico"
+        hicon = None
+        if icon_path.is_file():
+            # IMAGE_ICON (1), LR_LOADFROMFILE (0x10) | LR_DEFAULTSIZE (0x40)
+            hicon = user.LoadImageW(None, str(icon_path), 1, 0, 0, 0x0010 | 0x0040) or None
         try:
-            wc = WNDCLASS(0, window_proc, 0, 0, instance, None, None, None, None, name)
+            wc = WNDCLASS(0, window_proc, 0, 0, instance, hicon, None, None, None, name)
             if not user.RegisterClassW(ctypes.byref(wc)):
                 raise WinError(get_last_error())
             registered = True
@@ -462,4 +472,6 @@ class WindowsDialogs:
                 user.DestroyWindow(self._hwnd)
             if registered:
                 user.UnregisterClassW(name, instance)
+            if hicon:
+                user.DestroyIcon(hicon)
             ole.CoUninitialize()

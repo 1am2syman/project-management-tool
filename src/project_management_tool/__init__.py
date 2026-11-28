@@ -8,16 +8,20 @@ import json
 import os
 import platform
 import secrets
+import select
+import socket
 import sqlite3
 import struct
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
+from . import desktop_win
 from .native_dialogs import WindowsDialogs
 from .persistence import (
     MAX_BYTES,
@@ -38,7 +42,7 @@ def runtime_diagnostics():
     """Describe the running build without exposing paths, environment variables or saved data."""
     digest = hashlib.sha256()
     source = WEB.parent
-    for path in sorted([*source.glob("*.py"), *WEB.glob("*.html"), *WEB.glob("*.css"), *WEB.glob("*.svg"), *WEB.glob("js/*.js"), *WEB.glob("fonts/*.woff2")]):
+    for path in sorted([*source.glob("*.py"), *WEB.glob("*.html"), *WEB.glob("*.css"), *WEB.glob("*.svg"), *WEB.glob("*.ico"), *WEB.glob("js/*.js"), *WEB.glob("fonts/*.woff2")]):
         digest.update(path.relative_to(source).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
@@ -74,6 +78,13 @@ class PlanServer(http.server.ThreadingHTTPServer):
     file_attempted: bool
     file_lock: threading.Lock
     file_storage: ProjectStorage
+    app_mode: bool
+    app_sessions: desktop_win.AppSessionTracker
+
+    def server_close(self):
+        if getattr(self, 'app_sessions', None) is not None:
+            self.app_sessions.close_all()
+        super().server_close()
 
     def use_file_service(self, service):
         # An injected service is authoritative, so the capability status must agree with it.
@@ -107,7 +118,7 @@ class PlanServer(http.server.ThreadingHTTPServer):
 class ProjectHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
-                      ".woff2": "font/woff2"}
+                      ".woff2": "font/woff2", ".ico": "image/x-icon"}
 
     def __init__(self, *args, storage, **kwargs):
         self.storage = storage
@@ -280,6 +291,8 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(503, {"error": "Cannot inspect the installed app source"})
         elif parsed.path == "/api/health":
             self.send_json(200, {"app": "plan-local", "dataFile": str(self.storage.path)})
+        elif parsed.path == "/api/app-session":
+            self.serve_app_session()
         elif parsed.path == "/api/projects" or parsed.path.startswith("/api/history"):
             try:
                 if parsed.path == "/api/projects":
@@ -306,6 +319,57 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+    def _same_loopback_host(self):
+        expected_host = f"127.0.0.1:{cast(PlanServer, self.server).server_port}"
+        if self.headers.get("Host") != expected_host:
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != f"http://{expected_host}":
+            return False
+        return True
+
+    def serve_app_session(self):
+        if not self._same_loopback_host():
+            self.close_connection = True
+            self.send_json(403, {"error": "App session authorization failed"})
+            return
+        server = cast(PlanServer, self.server)
+        self.close_connection = True
+        if not server.app_mode:
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        sid = server.app_sessions.register_session()
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            last_ping = time.monotonic()
+            while not server.app_sessions.stop_event.is_set():
+                try:
+                    readable, _, _ = select.select([self.connection], [], [], 0.25)
+                except (OSError, ValueError):
+                    break
+                if readable:
+                    try:
+                        if not self.connection.recv(1, socket.MSG_PEEK):
+                            break
+                    except OSError:
+                        break
+                now = time.monotonic()
+                if now - last_ping >= 15.0:
+                    last_ping = now
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            server.app_sessions.unregister_session(sid)
+
     def do_PUT(self):
         if not self.file_api():
             self.send_json(404, {'error': 'Unknown endpoint'})
@@ -314,6 +378,14 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
         if self.file_api():
             return
         endpoint = urlsplit(self.path).path
+        if endpoint == "/api/window/focus":
+            if not self._same_loopback_host() or self.headers.get("X-Plan-Instance") != "1":
+                self.close_connection = True
+                self.send_json(403, {"error": "Window focus authorization failed"})
+                return
+            focused, hwnd = cast(PlanServer, self.server).app_sessions.focus_active_window()
+            self.send_json(200, {"focused": focused, "hwnd": hwnd})
+            return
         if endpoint not in ("/api/projects", "/api/projects/changes"):
             self.send_json(404, {"error": "Unknown endpoint"})
             return
@@ -355,7 +427,7 @@ class ProjectHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": f"Could not save app state. Check free space and folder permissions. ({e})", "dataFile": str(self.storage.path)})
 
 
-def create_server(port, data_dir, *, native_files=True):
+def create_server(port, data_dir, *, native_files=True, app_mode=False):
     storage = ProjectStorage(data_dir)
     server = PlanServer(("127.0.0.1", port), functools.partial(ProjectHandler, storage=storage))
     server.file_session = secrets.token_urlsafe(32)
@@ -364,6 +436,8 @@ def create_server(port, data_dir, *, native_files=True):
     server.file_attempted = False
     server.file_lock = threading.Lock()
     server.file_storage = storage
+    server.app_mode = bool(app_mode)
+    server.app_sessions = desktop_win.AppSessionTracker()
     # Automated tests pass native_files=False: no chooser, no %LOCALAPPDATA%, and the browser
     # fallback is reported as unsupported. Production remains native-first.
     server.file_failed = native_files and native_windows_available()
@@ -372,22 +446,97 @@ def create_server(port, data_dir, *, native_files=True):
     return server
 
 
-def main():
+def build_arg_parser():
     ap = argparse.ArgumentParser(description="Plan: project sheet and Gantt with automatic SQLite saves")
     ap.add_argument("-p", "--port", type=int, default=5173)
     ap.add_argument("--data-dir", type=Path, help="Folder for plan.db (default: Documents/Plan)")
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser window")
     ap.add_argument("--file-access", choices=("native", "off"), default="native",
                     help="Windows file dialogs. 'off' keeps the browser fallback and never touches %%LOCALAPPDATA%%; automated tests use it")
-    a = ap.parse_args()
+    ap.add_argument("--app", action="store_true",
+                    help="Run as a Windows desktop app window (no console) and stop when the window closes")
+    ap.add_argument("--install-shortcut", action="store_true",
+                    help="Create or update the Windows Start Menu shortcut for Plan")
+    ap.add_argument("--uninstall-shortcut", action="store_true",
+                    help="Remove the installed Windows shortcut(s) for Plan")
+    ap.add_argument("--desktop", action="store_true",
+                    help="With --install-shortcut or --uninstall-shortcut, also manage a Desktop shortcut")
+    ap.add_argument("--profile-dir", type=Path,
+                    help="Dedicated browser profile folder for --app mode (default: %%LOCALAPPDATA%%\\Plan\\shell)")
+    return ap
+
+
+def try_focus_running_instance(port):
+    """Ask a running Plan --app server to focus its window; also focus locally with foreground rights."""
+    req = Request(
+        f"http://127.0.0.1:{port}/api/window/focus",
+        data=b"",
+        method="POST",
+        headers={"X-Plan-Instance": "1", "Content-Length": "0"},
+    )
+    try:
+        with urlopen(req, timeout=2) as response:
+            payload = json.load(response)
+    except (OSError, ValueError):
+        return False
+    hwnd = payload.get("hwnd")
+    if isinstance(hwnd, int) and hwnd > 0 and os.name == "nt":
+        desktop_win.focus_window(hwnd)
+    return bool(payload.get("focused"))
+
+
+def _fatal_error(ap, message, *, app_mode=False):
+    if app_mode or (os.name == "nt" and (sys.stdout is None or sys.stderr is None)):
+        desktop_win.show_error_dialog("Plan could not start", message.strip())
+    ap.exit(1, message if message.endswith("\n") else message + "\n")
+
+
+def main(argv=None):
+    # Under pythonw.exe stdout/stderr are None; redirect before argparse or print can touch them.
+    if os.name == "nt" and (sys.stdout is None or sys.stderr is None):
+        desktop_win.ensure_stdio()
+    ap = build_arg_parser()
+    a = ap.parse_args(argv)
+    if a.install_shortcut and a.uninstall_shortcut:
+        ap.error("--install-shortcut and --uninstall-shortcut cannot be combined")
     if not 0 <= a.port <= 65535:
         ap.error("port must be between 0 and 65535")
+
+    if a.install_shortcut or a.uninstall_shortcut:
+        if os.name != "nt":
+            _fatal_error(ap, "Windows desktop shortcuts can only be managed on Windows.\n", app_mode=a.app)
+        try:
+            if a.install_shortcut:
+                paths = desktop_win.install_shortcuts(
+                    desktop_win.repo_root_from_package(),
+                    desktop=a.desktop,
+                    port=a.port,
+                    data_dir=a.data_dir,
+                    profile_dir=a.profile_dir,
+                    file_access=a.file_access,
+                )
+                for path in paths:
+                    print(f"Installed shortcut: {path}", flush=True)
+            else:
+                removed = desktop_win.uninstall_shortcuts(desktop=a.desktop)
+                if removed:
+                    for path in removed:
+                        print(f"Removed shortcut: {path}", flush=True)
+                else:
+                    print("No installed Plan shortcuts were found.", flush=True)
+        except OSError as e:
+            _fatal_error(ap, f"Could not update Plan shortcuts: {e}\n", app_mode=a.app)
+        return
+
+    if a.app and os.name == "nt":
+        desktop_win.init_process_identity()
+
     try:
         directory = a.data_dir if a.data_dir is not None else default_data_dir()
     except OSError as e:
-        ap.exit(1, f"Cannot locate Documents: {e}\n")
+        _fatal_error(ap, f"Cannot locate Documents: {e}\n", app_mode=a.app)
     try:
-        srv = create_server(a.port, directory, native_files=a.file_access == "native")
+        srv = create_server(a.port, directory, native_files=a.file_access == "native", app_mode=a.app)
     except OSError as e:
         # Double-clicking again reuses the running server for this database.
         try:
@@ -396,21 +545,48 @@ def main():
             if health.get("app") != "plan-local" or health.get("dataFile") != str((directory / "plan.db").resolve()):
                 raise ValueError("Different app or database")
         except (OSError, ValueError):
-            ap.exit(1, f"Cannot start Plan on port {a.port}: {e}\nClose the other server or choose --port 5174.\n")
+            _fatal_error(
+                ap,
+                f"Cannot start Plan on port {a.port}: {e}\nClose the other server or choose --port 5174.\n",
+                app_mode=a.app,
+            )
         url = f"http://127.0.0.1:{a.port}/"
+        if try_focus_running_instance(a.port):
+            print(f"Plan is already running (focused existing window): {url}", flush=True)
+            return
         print(f"Plan is already running: {url}", flush=True)
         if not a.no_open:
             webbrowser.open(url)
         return
     with srv:
         url = f"http://127.0.0.1:{srv.server_port}/"
-        print(f"Plan is running: {url}\nApp state: {(directory / 'plan.db').resolve()}\nKeep this window open. Press Ctrl+C to stop.", flush=True)
-        if not a.no_open:
-            webbrowser.open(url)
+        tracker_thread = None
+        if a.app and os.name == "nt" and not a.no_open:
+            print(f"Plan desktop app is running: {url}\nApp state: {(directory / 'plan.db').resolve()}", flush=True)
+            tracker_thread = threading.Thread(
+                target=desktop_win.launch_and_track,
+                args=(url, desktop_win.repo_root_from_package(), srv, srv.app_sessions),
+                kwargs={
+                    "port": srv.server_port,
+                    "data_dir": a.data_dir,
+                    "profile_dir": a.profile_dir,
+                    "file_access": a.file_access,
+                },
+                name="plan-desktop-tracker",
+                daemon=True,
+            )
+            tracker_thread.start()
+        else:
+            print(f"Plan is running: {url}\nApp state: {(directory / 'plan.db').resolve()}\nKeep this window open. Press Ctrl+C to stop.", flush=True)
+            if not a.no_open:
+                webbrowser.open(url)
         try:
             with contextlib.suppress(KeyboardInterrupt):
                 srv.serve_forever()
         finally:
+            srv.app_sessions.close_all()
+            if tracker_thread is not None:
+                tracker_thread.join(timeout=3)
             with srv.file_lock:
                 if srv.file_service:
                     srv.file_service.close()

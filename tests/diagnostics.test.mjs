@@ -119,6 +119,8 @@ test('fetch records metadata and failures while preserving responses and excludi
 test('urlLabel covers motion/fonts/local file APIs, redaction covers newer user fields, and status 0 resources lead', async () => {
   const h = await harness();
   assert.equal(h.api.urlLabel('http://localhost:5173/motion.css'), 'http://localhost:5173/motion.css');
+  assert.equal(h.api.urlLabel('http://localhost:5173/plan.ico'), 'http://localhost:5173/plan.ico');
+  assert.equal(h.api.urlLabel('http://localhost:5173/api/app-session'), 'http://localhost:5173/api/app-session');
   assert.equal(h.api.urlLabel('http://localhost:5173/fonts/Geist-Variable.woff2'), 'http://localhost:5173/fonts/Geist-Variable.woff2');
   assert.equal(h.api.urlLabel('http://localhost:5173/api/file-access'), 'http://localhost:5173/api/file-access');
   assert.equal(h.api.urlLabel('http://localhost:5173/api/file-connections/check'), 'http://localhost:5173/api/file-connections/check');

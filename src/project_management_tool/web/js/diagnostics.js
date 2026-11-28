@@ -15,7 +15,7 @@
       const position = u.pathname.match(/:\d+(?::\d+)?$/)?.[0] || '';
       const pathname = position ? u.pathname.slice(0, -position.length) : u.pathname;
       let path = '/[path]';
-      if (/^\/(?:api\/(?:projects|health|diagnostics|history(?:\/\d+)?|file-access|file-connections\/check|file-operations)|js\/[\w.-]+\.js|fonts\/[\w.-]+\.woff2|(?:styles|motion)\.css|index\.html|favicon\.svg)?$/.test(pathname)) {
+      if (/^\/(?:api\/(?:projects|health|diagnostics|app-session|window\/focus|history(?:\/\d+)?|file-access|file-connections\/check|file-operations)|js\/[\w.-]+\.js|fonts\/[\w.-]+\.woff2|(?:styles|motion)\.css|index\.html|favicon\.svg|plan\.ico)?$/.test(pathname)) {
         path = pathname;
       } else {
         const fileOp = pathname.match(/^\/api\/file-operations\/[A-Za-z0-9_-]{1,100}(?:\/(content|snapshot|commit|attach|cancel|raise|release))?$/);

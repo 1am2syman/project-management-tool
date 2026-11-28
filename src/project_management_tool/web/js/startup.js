@@ -1,6 +1,14 @@
 // Keep this entry point outside the module graph: dependency failures must reach the UI and Log.
 (() => {
   const log = window.PlanDiagnostics;
+  // Keep desktop-app sessions alive across startup failures and reloads (no-op / 204 outside --app mode).
+  let appSession = null;
+  try {
+    if (window.EventSource && location.hostname === '127.0.0.1') {
+      appSession = new EventSource('/api/app-session');
+      window.addEventListener('pagehide', () => { try { appSession?.close(); } catch { /* ignore */ } });
+    }
+  } catch { /* session tracking is optional */ }
   let operation;
   try { operation = log?.begin('app.load'); } catch { /* logging is optional */ }
   import('./main.js').then(() => {

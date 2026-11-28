@@ -13,13 +13,17 @@ On **64-bit Windows 10/11**, the repository includes Python; no Python or uv ins
    git clone https://github.com/1am2syman/project-management-tool.git
    ```
 
-2. Double-click **start.bat** inside the `project-management-tool` folder.
+2. **Desktop app shortcut (recommended):** Double-click **install-shortcut.bat** (or run `runtime\windows-x64\python.exe -B start.py --install-shortcut`; add `--desktop` to also add a Desktop shortcut, or `--uninstall-shortcut` to remove it). Open **Plan** from the Start Menu, or right-click **Plan** in the Start Menu (or on the running taskbar icon) and choose **Pin to taskbar**.
+   - Plan opens in its own app window with its own icon and single taskbar button, with no console window.
+   - Launching Plan again while it is open brings the existing window to the front instead of opening a read-only duplicate.
+   - Closing the Plan window stops the local server cleanly after your changes are saved.
+3. **Console launcher:** You can also double-click **start.bat** inside the `project-management-tool` folder at any time.
 
-The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` to run `start.py` directly. The app opens in your default browser at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
+The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` (or `pythonw.exe` for the Start Menu desktop app) to run `start.py` directly. The app runs locally at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. If you move the folder, run **install-shortcut.bat** again to update the shortcut paths. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
 
-If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat**, then launch **start.bat** again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
+If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat**, then launch Plan again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
 
-Keep the launcher window open while using Plan. Wait for **Saved to this computer** before closing the app, then stop the server with Ctrl+C or close its window. Run `start.bat` again to reopen your saved app state automatically. Double-clicking it while Plan is running opens that instance for the same database. If another program uses port 5173, run `start.bat --port 5174`.
+Wait for **Saved to this computer** before closing Plan. With the desktop app shortcut, closing the Plan window stops the server automatically; with **start.bat**, keep the launcher window open while using Plan and stop it with Ctrl+C or by closing its window. If another program uses port 5173, run `start.bat --port 5174` (or `install-shortcut.bat --port 5174`).
 
 On macOS/Linux with Python 3.10 or newer:
 
@@ -33,9 +37,9 @@ If you already use uv for development, `uv run --locked project-management-tool`
 
 On Windows:
 
-1. Wait for **Saved to this computer**, then stop Plan by closing its launcher window or pressing Ctrl+C there.
+1. Wait for **Saved to this computer**, then close Plan (and any console launcher window if you started it with `start.bat`).
 2. Double-click **update.bat** inside the cloned repository. It downloads the latest published version, makes the folder match it exactly and keeps the window open so you can read the result.
-3. Run **start.bat** again. It uses the updated source and bundled runtime directly.
+3. Open **Plan** from the Start Menu (or run **start.bat**). It uses the updated source and bundled runtime directly.
 
 The page does not hot reload. For front-end-only JS/CSS/HTML updates, the running server reads the changed files directly with caching disabled: refresh the browser to load them. Python server or dependency updates require a server restart. The stop/update/start procedure above works for both kinds of update.
 

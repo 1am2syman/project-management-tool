@@ -78,7 +78,7 @@ rem Labels and goto must not be used below this point.
     )
     echo.
     git --no-pager log -1 "--format=Plan is up to date: %%h %%s"
-    echo Run start.bat to open Plan.
+    echo Open Plan from the Start Menu or run start.bat.
     popd
     pause
     endlocal
@@ -86,8 +86,8 @@ rem Labels and goto must not be used below this point.
 )
 
 :running_error
-echo Plan is still running from this folder. Close the Plan launcher window,
-echo then run update.bat again. Nothing was changed.
+echo Plan is still running from this folder. Close Plan (and any Plan launcher
+echo window), then run update.bat again. Nothing was changed.
 goto checkout_error
 
 :git_busy
