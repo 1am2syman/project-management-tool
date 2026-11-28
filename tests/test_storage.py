@@ -158,7 +158,6 @@ class StorageTests(unittest.TestCase):
         snapshot = json.dumps({"tasks": [{"id": 1, "name": "Example task " * 100}], "links": []})
         state["history"]["s1"]["u"] = [snapshot, snapshot]
         _, first = self.request({"revision": None, "state": state})
-        state["workbook"]["sheets"][0]["name"] = "Changed"
         self.assertEqual(self.request({"revision": first["revision"], "changes": [
             {"op": "set", "path": ["workbook", "sheets", 0, "name"], "value": "Changed"}
         ]}, path="/api/projects/changes")[0], 200)
@@ -279,17 +278,6 @@ except ConflictError:
         self.assertTrue(all(result.returncode == 0 for result in results), [result.stderr for result in results])
         self.assertEqual(sorted(result.stdout.strip() for result in results), ["CONFLICT", "SAVED"])
 
-    def test_invalid_writes_preserve_saved_state(self):
-        _, saved = self.request({"revision": None, "state": STATE})
-        for state in [None, {}, {"workbook": {"sheets": []}}, {**STATE, "templates": "invalid"},
-                      {**STATE, "history": []}, {**STATE, "workbook": {**STATE["workbook"], "active": "missing"}}]:
-            self.assertEqual(self.request({**saved, "state": state})[0], 400)
-            self.assertEqual(self.request()[1]["state"], STATE)
-        self.assertEqual(self.request({**saved, "state": STATE}, headers={"Content-Type": "text/plain"})[0], 415)
-        self.assertEqual(self.request({**saved, "state": STATE}, headers={"Origin": "https://unrelated.example"})[0], 403)
-        self.assertEqual(self.request({"revision": saved["revision"], "changes": []},
-                                      headers={"Origin": self.url}, path="/api/projects/changes")[0], 200)
-
     def test_corrupt_file_is_not_replaced(self):
         self.directory.mkdir()
         path = self.directory / "plan.db"
@@ -312,8 +300,6 @@ except ConflictError:
         _, saved = self.request({"revision": None, "state": STATE})
         with closing(sqlite3.connect(self.directory / "plan.db")) as db, db:
             db.execute("CREATE TRIGGER fail_save BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT,'Simulated write failure'); END")
-        changed = copy.deepcopy(STATE)
-        changed["workbook"]["sheets"][0]["name"] = "Must roll back"
         changes = {"revision": saved["revision"], "changes": [
             {"op": "set", "path": ["workbook", "sheets", 0, "name"], "value": "Must roll back"}
         ]}

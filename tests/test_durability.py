@@ -756,6 +756,9 @@ class PatchHTTPTests(unittest.TestCase):
         self.assertEqual(refused["dataFile"], identity)
         status, result = self.request({"revision": "1", "changes": [set_value(["preferences", "auto"], True)]})
         self.assertEqual((status, result["revision"], result["dataFile"]), (200, "2", identity))
+        status, unchanged = self.request({"revision": "2", "changes": []},
+                                         headers={"Origin": f"http://127.0.0.1:{self.server.server_port}"})
+        self.assertEqual((status, unchanged["revision"]), (200, "2"))
         self.assertEqual(self.request({"revision": "1", "changes": []})[0], 409)
         self.assertEqual(self.request({"revision": None, "state": STATE}, "/api/projects")[0], 409)
 
@@ -770,6 +773,15 @@ class PatchHTTPTests(unittest.TestCase):
         self.assertEqual((saved["revision"], saved["state"]), ("1", STATE))
 
     def test_strict_fields_duplicates_numbers_and_request_size(self):
+        # Full state is valid only at bootstrap. Invalid update envelopes would
+        # be refused before state validation, hiding regressions in these cases.
+        for state in (None, {}, {"workbook": {"sheets": []}}, {**STATE, "templates": "invalid"},
+                      {**STATE, "history": []}, {**STATE, "workbook": {**STATE["workbook"], "active": "missing"}}):
+            with self.subTest(state=state), patch.object(p, "validate_state", wraps=p.validate_state) as validate:
+                status, _ = self.request({"revision": None, "state": state}, "/api/projects")
+                self.assertEqual(status, 400)
+                validate.assert_called_once_with(state)
+                self.assertFalse((Path(self.temp.name) / "plan.db").exists())
         invalid = [b'{"revision":null,"revision":"1","changes":[]}',
                    b'{"revision":null,"changes":[],"extra":1}',
                    b'{"revision":true,"changes":[]}',
