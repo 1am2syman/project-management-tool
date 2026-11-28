@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,7 @@ class UpdaterTests(unittest.TestCase):
         self.script = (ROOT / "update.bat").read_bytes()
         (self.seed / "update.bat").write_bytes(self.script)
         (self.seed / ".gitattributes").write_text("*.bat text eol=crlf\n", encoding="ascii")
+        (self.seed / ".gitignore").write_text("__pycache__/\n*.tmp\n", encoding="ascii")
         (self.seed / "src").mkdir()
         (self.seed / "src" / "app.txt").write_text("old version\n", encoding="ascii")
         self.commit("Original version")
@@ -69,7 +71,9 @@ class UpdaterTests(unittest.TestCase):
         (self.checkout / "update.bat").write_bytes(self.script + b"\r\nrem Local edit\r\n")
 
     def run_updater(self, answer):
-        result = subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "update.bat"],
+        # CALL reliably propagates EXIT /B when the batch replaces itself.
+        result = subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c",
+                                 "call", "update.bat"],
                                 check=False, cwd=self.checkout, env=self.env, input=answer,
                                 capture_output=True, text=True, timeout=60)
         self.assertNotIn("was unexpected at this time", result.stdout + result.stderr)
@@ -117,6 +121,82 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(self.git(self.checkout, "rev-parse", "HEAD").strip(), self.old_head)
         self.assertEqual(self.git(self.checkout, "status", "--porcelain"), before)
         self.assertEqual(self.git(self.checkout, "stash", "list"), "")
+
+    @contextmanager
+    def lock_directory(self, path):
+        # Hold a real directory handle without FILE_SHARE_DELETE, matching a
+        # Windows process that prevents Git from removing an empty cache folder.
+        if sys.platform != "win32":
+            raise RuntimeError("Directory locking requires Windows")
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.CreateFileW(str(path), 1, 3, None, 3, 0x02000000, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            kernel.CloseHandle(handle)
+
+    def test_locked_python_caches_do_not_block_clean_or_backup_update(self):
+        cache = self.checkout / "src" / "project_management_tool" / "__pycache__"
+        cache.mkdir(parents=True)
+        bytecode = cache / "old.cpython-311.pyc"
+        bytecode.write_bytes(b"cached bytecode")
+        empty_cache = self.checkout / "src" / "removed_module" / "__pycache__"
+        empty_cache.mkdir(parents=True)
+        for local_changes in (False, True):
+            with self.subTest(local_changes=local_changes):
+                if local_changes:
+                    self.change_local_files()
+                # Ignored stray source still needs cleanup, including a sibling
+                # in a removed package whose locked cache must be preserved.
+                stale = empty_cache.parent / "old.tmp"
+                stale.write_text("obsolete source", encoding="ascii")
+                with self.lock_directory(empty_cache), bytecode.open("rb"):
+                    result, output = self.run_updater("1\n\n" if local_changes else "\n")
+                self.assertEqual(result.returncode, 0, output)
+                self.assertNotIn("Should I try again", output)
+                self.assertIn("Plan is up to date", output)
+                self.assertEqual("Backup saved" in output, local_changes)
+                self.assertEqual(bytecode.read_bytes(), b"cached bytecode")
+                self.assertTrue(empty_cache.is_dir())
+                self.assertFalse(stale.exists())
+                self.assert_updated()
+
+    def test_locked_tracked_file_stops_then_recovers_after_release(self):
+        with (self.checkout / "src" / "app.txt").open("rb"):
+            result, output = self.run_updater("\n")
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("Update did not finish", output)
+        self.assertNotIn("Should I try again", output)
+        self.assertNotIn("Plan is up to date", output)
+        result, output = self.run_updater("1\n\n")
+        self.assertEqual(result.returncode, 0, output)
+        self.assert_updated()
+
+    def test_locked_ignored_source_stops_then_recovers_after_release(self):
+        stale = self.checkout / "src" / "obsolete.tmp"
+        stale.write_text("obsolete source", encoding="ascii")
+        with stale.open("rb"):
+            result, output = self.run_updater("\n")
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("Update did not finish", output)
+        self.assertNotIn("Should I try again", output)
+        self.assertNotIn("Plan is up to date", output)
+        self.assertTrue(stale.exists())
+        result, output = self.run_updater("\n")
+        self.assertEqual(result.returncode, 0, output)
+        self.assertFalse(stale.exists())
+        self.assert_updated()
 
     def test_clean_update_and_repeat_do_not_prompt(self):
         for _ in range(2):

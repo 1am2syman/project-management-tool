@@ -51,10 +51,12 @@ rem Labels and goto must not be used below this point.
 (
     echo Updating Plan...
     if defined PLAN_LOCAL (
-        git -c "user.name=Plan updater" -c "user.email=plan-updater@localhost" stash push --include-untracked --quiet -m "Set aside by update.bat"
+        rem NUL input disables Git for Windows file-deletion retry prompts.
+        git -c "user.name=Plan updater" -c "user.email=plan-updater@localhost" stash push --include-untracked --quiet -m "Set aside by update.bat" <nul
         if errorlevel 1 (
             echo.
-            echo Update stopped. Nothing was changed. Close programs using files in the Plan folder, then run update.bat again.
+            echo Update stopped while backing up local app files. A backup may already be in Git stash.
+            echo Close programs using files in the Plan folder, then run update.bat again.
             popd
             pause
             endlocal
@@ -64,7 +66,7 @@ rem Labels and goto must not be used below this point.
         echo If you need those app changes back, ask the person who maintains Plan.
         echo Your saved projects in Documents\Plan were not changed.
     )
-    git reset --hard --quiet "@{u}"
+    git reset --hard --quiet "@{u}" <nul
     if errorlevel 1 (
         echo.
         echo Update did not finish. Close programs using files in the Plan folder, then run update.bat again.
@@ -73,7 +75,9 @@ rem Labels and goto must not be used below this point.
         endlocal
         exit /b 1
     )
-    git clean -fdxq -- src
+    rem Python validates these caches against source; locked caches can stay.
+    rem Still remove other stray source files left by interrupted updates.
+    git clean -fdxq -e "__pycache__/" -- src <nul
     if errorlevel 1 (
         echo.
         echo Update did not finish. Close programs using files in the Plan folder, then run update.bat again.
