@@ -4,7 +4,7 @@ pushd "%~dp0"
 if errorlevel 1 goto folder_error
 
 if not exist "runtime\windows-x64\python.exe" goto runtime_error
-"runtime\windows-x64\python.exe" -B "start.py" %*
+"runtime\windows-x64\python.exe" -B "start.py" --desktop-launch %*
 set "PLAN_EXIT=%errorlevel%"
 popd
 if not "%PLAN_EXIT%"=="0" pause

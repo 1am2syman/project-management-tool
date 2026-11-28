@@ -13,6 +13,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 from unittest import mock
 
+from src import project_management_tool as app
 from src.project_management_tool import build_arg_parser, create_server, desktop_win, try_focus_running_instance
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +88,137 @@ class DesktopLauncherUnitTests(unittest.TestCase):
             self.assertIn("--data-dir", custom.arguments)
             self.assertIn("--profile-dir", custom.arguments)
             self.assertIn("--port 5174", custom.relaunch_command)
+
+    def test_batch_launch_installs_both_shortcuts_and_starts_pythonw_with_custom_options(self):
+        with tempfile.TemporaryDirectory(prefix="Plan launch with spaces ") as tmp:
+            repo = Path(tmp)
+            runtime = repo / "runtime" / "windows-x64"
+            runtime.mkdir(parents=True)
+            pythonw = runtime / "pythonw.exe"
+            pythonw.write_bytes(b"MZ")
+            options = {"port": 5174, "data_dir": repo / "saved data", "profile_dir": repo / "app profile", "file_access": "off"}
+            with (
+                mock.patch.object(desktop_win, "install_shortcuts") as install,
+                mock.patch.object(desktop_win.subprocess, "Popen") as spawn,
+            ):
+                desktop_win.launch_desktop_app(repo, port=5174, data_dir=repo / "saved data",
+                                               profile_dir=repo / "app profile", file_access="off")
+            install.assert_called_once_with(repo.resolve(), desktop=True, **options)
+            spawn.assert_called_once_with([
+                str(pythonw.resolve()), "-B", str(repo.resolve() / "start.py"), "--app",
+                "--port", "5174", "--data-dir", str((repo / "saved data").resolve()),
+                "--profile-dir", str((repo / "app profile").resolve()), "--file-access", "off",
+            ], cwd=str(repo.resolve()))
+            self.assertNotIn("--desktop-launch", spawn.call_args.args[0])
+
+    def test_batch_launch_reports_missing_pythonw_before_installing_shortcuts(self):
+        with (
+            mock.patch.object(desktop_win, "resolve_pythonw_path", return_value=Path("python.exe")),
+            mock.patch.object(desktop_win, "install_shortcuts") as install,
+            mock.patch.object(desktop_win.subprocess, "Popen") as spawn,
+            self.assertRaisesRegex(OSError, "pythonw.exe runtime is missing"),
+        ):
+            desktop_win.launch_desktop_app(ROOT)
+        install.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_batch_launch_does_not_start_app_after_shortcut_install_failure(self):
+        with (
+            mock.patch.object(desktop_win, "install_shortcuts", side_effect=OSError("Start Menu is read-only")),
+            mock.patch.object(desktop_win.subprocess, "Popen") as spawn,
+            self.assertRaisesRegex(OSError, "Start Menu is read-only"),
+        ):
+            desktop_win.launch_desktop_app(ROOT)
+        spawn.assert_not_called()
+
+    def test_desktop_launch_cli_hands_off_without_starting_console_server(self):
+        with (
+            mock.patch.object(app, "os") as platform_os,
+            mock.patch.object(desktop_win, "launch_desktop_app") as launch,
+            mock.patch.object(app, "create_server") as server,
+            mock.patch.object(app.webbrowser, "open") as browser,
+        ):
+            platform_os.name = "nt"
+            app.main(["--desktop-launch", "--port", "5174", "--data-dir", "saved data",
+                      "--profile-dir", "app profile", "--file-access", "off"])
+        launch.assert_called_once_with(ROOT, port=5174, data_dir=Path("saved data"),
+                                       profile_dir=Path("app profile"), file_access="off")
+        server.assert_not_called()
+        browser.assert_not_called()
+
+    def test_desktop_launch_cli_reports_failures_and_invalid_arguments(self):
+        with (
+            mock.patch.object(app, "os") as platform_os,
+            mock.patch.object(desktop_win, "launch_desktop_app", side_effect=OSError("Access denied")) as launch,
+            mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr,
+        ):
+            platform_os.name = "nt"
+            with self.assertRaises(SystemExit) as error:
+                app.main(["--desktop-launch"])
+            self.assertEqual(error.exception.code, 1)
+            self.assertIn("Could not launch Plan: Access denied", stderr.getvalue())
+            launch.reset_mock()
+            for flags in (["--port", "65536"], ["--install-shortcut", "--uninstall-shortcut"]):
+                with self.subTest(flags=flags), self.assertRaises(SystemExit) as invalid:
+                    app.main(["--desktop-launch", *flags])
+                self.assertEqual(invalid.exception.code, 2)
+            launch.assert_not_called()
+
+    def test_desktop_launch_cli_preserves_explicit_shortcut_management(self):
+        with (
+            mock.patch.object(app, "os") as platform_os,
+            mock.patch.object(desktop_win, "launch_desktop_app") as launch,
+            mock.patch.object(desktop_win, "install_shortcuts", return_value=[]) as install,
+            mock.patch.object(desktop_win, "uninstall_shortcuts", return_value=[]) as uninstall,
+            mock.patch.object(sys, "stdout", new_callable=io.StringIO),
+        ):
+            platform_os.name = "nt"
+            app.main(["--desktop-launch", "--install-shortcut", "--desktop"])
+            install.assert_called_once_with(ROOT, desktop=True, port=5173, data_dir=None,
+                                            profile_dir=None, file_access="native")
+            app.main(["--desktop-launch", "--uninstall-shortcut", "--desktop"])
+            uninstall.assert_called_once_with(desktop=True)
+            launch.assert_not_called()
+
+    def test_app_launch_does_not_reopen_a_browser_tab_for_an_old_console_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            health = io.BytesIO(json.dumps({"app": "plan-local", "dataFile": str((data / "plan.db").resolve())}).encode())
+            with (
+                mock.patch.object(app, "os") as platform_os,
+                mock.patch.object(app, "create_server", side_effect=OSError("Port in use")),
+                mock.patch.object(app, "urlopen", return_value=health),
+                mock.patch.object(app, "try_focus_running_instance", return_value=False),
+                mock.patch.object(desktop_win, "init_process_identity"),
+                mock.patch.object(desktop_win, "show_error_dialog") as dialog,
+                mock.patch.object(app.webbrowser, "open") as browser,
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO),
+                self.assertRaises(SystemExit) as error,
+            ):
+                platform_os.name = "nt"
+                app.main(["--app", "--data-dir", str(data)])
+            self.assertEqual(error.exception.code, 1)
+            self.assertIn("Close the existing Plan window and its launcher", dialog.call_args.args[1])
+            browser.assert_not_called()
+
+    def test_desktop_launch_no_open_keeps_server_in_console_without_installing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            server = mock.MagicMock(server_port=5174, file_service=None)
+            with (
+                mock.patch.object(app, "os") as platform_os,
+                mock.patch.object(desktop_win, "launch_desktop_app") as launch,
+                mock.patch.object(app, "create_server", return_value=server) as create,
+                mock.patch.object(app.webbrowser, "open") as browser,
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO),
+            ):
+                platform_os.name = "nt"
+                app.main(["--desktop-launch", "--no-open", "--port", "5174", "--data-dir", str(data),
+                          "--file-access", "off"])
+            create.assert_called_once_with(5174, data, native_files=False, app_mode=False)
+            server.serve_forever.assert_called_once()
+            launch.assert_not_called()
+            browser.assert_not_called()
 
     def test_prepare_profile_seeds_first_run_and_preserves_existing_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,6 +382,7 @@ class DesktopLauncherUnitTests(unittest.TestCase):
             log_file.parent.mkdir(parents=True)
             log_file.write_bytes(b"x" * 2048)
             orig_out, orig_err = sys.stdout, sys.stderr
+            stream = None
             try:
                 sys.stdout = None
                 sys.stderr = None

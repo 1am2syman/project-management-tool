@@ -17,7 +17,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
@@ -455,6 +455,8 @@ def build_arg_parser():
                     help="Windows file dialogs. 'off' keeps the browser fallback and never touches %%LOCALAPPDATA%%; automated tests use it")
     ap.add_argument("--app", action="store_true",
                     help="Run as a Windows desktop app window (no console) and stop when the window closes")
+    ap.add_argument("--desktop-launch", action="store_true",
+                    help="Install Windows Start Menu and Desktop shortcuts and launch the app without a console (used by start.bat)")
     ap.add_argument("--install-shortcut", action="store_true",
                     help="Create or update the Windows Start Menu shortcut for Plan")
     ap.add_argument("--uninstall-shortcut", action="store_true",
@@ -485,7 +487,7 @@ def try_focus_running_instance(port):
     return bool(payload.get("focused"))
 
 
-def _fatal_error(ap, message, *, app_mode=False):
+def _fatal_error(ap: argparse.ArgumentParser, message: str, *, app_mode=False) -> NoReturn:
     if app_mode or (os.name == "nt" and (sys.stdout is None or sys.stderr is None)):
         desktop_win.show_error_dialog("Plan could not start", message.strip())
     ap.exit(1, message if message.endswith("\n") else message + "\n")
@@ -528,6 +530,21 @@ def main(argv=None):
             _fatal_error(ap, f"Could not update Plan shortcuts: {e}\n", app_mode=a.app)
         return
 
+    if a.desktop_launch and not a.no_open:
+        if os.name != "nt":
+            _fatal_error(ap, "The desktop launcher is only available on Windows.\n", app_mode=a.app)
+        try:
+            desktop_win.launch_desktop_app(
+                desktop_win.repo_root_from_package(),
+                port=a.port,
+                data_dir=a.data_dir,
+                profile_dir=a.profile_dir,
+                file_access=a.file_access,
+            )
+        except OSError as e:
+            _fatal_error(ap, f"Could not launch Plan: {e}\n", app_mode=a.app)
+        return
+
     if a.app and os.name == "nt":
         desktop_win.init_process_identity()
 
@@ -554,6 +571,13 @@ def main(argv=None):
         if try_focus_running_instance(a.port):
             print(f"Plan is already running (focused existing window): {url}", flush=True)
             return
+        if a.app and os.name == "nt" and not a.no_open:
+            _fatal_error(
+                ap,
+                "Plan is already running, but its app window could not be focused.\n"
+                "Close the existing Plan window and its launcher, then run start.bat again.\n",
+                app_mode=True,
+            )
         print(f"Plan is already running: {url}", flush=True)
         if not a.no_open:
             webbrowser.open(url)

@@ -13,17 +13,17 @@ On **64-bit Windows 10/11**, the repository includes Python; no Python or uv ins
    git clone https://github.com/1am2syman/project-management-tool.git
    ```
 
-2. **Desktop app shortcut (recommended):** Double-click **install-shortcut.bat** (or run `runtime\windows-x64\python.exe -B start.py --install-shortcut`; add `--desktop` to also add a Desktop shortcut, or `--uninstall-shortcut` to remove it). Open **Plan** from the Start Menu, or right-click **Plan** in the Start Menu (or on the running taskbar icon) and choose **Pin to taskbar**.
-   - Plan opens in its own app window with its own icon and single taskbar button, with no console window.
+2. **Start Plan:** Double-click **start.bat** inside the `project-management-tool` folder. It creates or updates **Plan** shortcuts in the Start Menu and on the Desktop, then opens Plan in its own app window. The launcher console closes after handing off to the app.
+   - Plan uses Microsoft Edge or Google Chrome to display an app window with its own icon and single taskbar button.
    - Launching Plan again while it is open brings the existing window to the front instead of opening a read-only duplicate.
    - Closing the Plan window stops the local server cleanly after your changes are saved.
-3. **Console launcher:** You can also double-click **start.bat** inside the `project-management-tool` folder at any time.
+3. Next time, open **Plan** from the Desktop or Start Menu, or run **start.bat** again. To pin it, right-click **Plan** in the Start Menu (or on the running taskbar icon) and choose **Pin to taskbar**. To install only the Start Menu shortcut without launching, use **install-shortcut.bat**; add `--desktop` to also install a Desktop shortcut. To remove both shortcuts, run `runtime\windows-x64\python.exe -B start.py --uninstall-shortcut --desktop`.
 
-The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` (or `pythonw.exe` for the Start Menu desktop app) to run `start.py` directly. The app runs locally at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. If you move the folder, run **install-shortcut.bat** again to update the shortcut paths. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
+The launcher uses the bundled interpreter at `runtime/windows-x64/python.exe` to prepare the shortcuts, then starts `pythonw.exe` for the desktop app. The app runs locally at **http://127.0.0.1:5173/**. Startup works offline, including the first launch: it does not download Python, contact Astral, install packages, or create a virtual environment. Git is needed only to clone and update the repository. A complete repository ZIP or copied folder also works; keep the `runtime` and `src` folders beside the launcher. If you move the folder, run **start.bat** again to update both shortcut paths. See [bundled runtime details](runtime/README.md) for its source, license and verification instructions.
 
 If an older checkout stopped with an Astral download or `UnknownIssuer` certificate error, run **update.bat**, then launch Plan again. The updated launcher uses the runtime delivered by Git. Existing `.venv` folders belong to the optional development setup and can be removed after stopping any app instance that uses them. Saved projects stay in Documents/Plan.
 
-Wait for **Saved to this computer** before closing Plan. With the desktop app shortcut, closing the Plan window stops the server automatically; with **start.bat**, keep the launcher window open while using Plan and stop it with Ctrl+C or by closing its window. If another program uses port 5173, run `start.bat --port 5174` (or `install-shortcut.bat --port 5174`).
+Wait for **Saved to this computer** before closing Plan. Closing the Plan app window stops the server automatically. For console/server-only use, run `start.bat --no-open`, open `http://127.0.0.1:5173/` yourself and keep the console open; stop it with Ctrl+C. This mode does not install shortcuts. If another program uses port 5173, run `start.bat --port 5174` (or `install-shortcut.bat --port 5174`). If an older console launcher is still running, close its Plan page and launcher window before starting the desktop app. If neither Edge nor Chrome is installed, Plan falls back to the default browser.
 
 On macOS/Linux with Python 3.10 or newer:
 
@@ -37,7 +37,7 @@ If you already use uv for development, `uv run --locked project-management-tool`
 
 On Windows:
 
-1. Wait for **Saved to this computer**, then close Plan (and any console launcher window if you started it with `start.bat`).
+1. Wait for **Saved to this computer**, then close Plan (and any console server started with `start.bat --no-open`).
 2. Double-click **update.bat** inside the cloned repository. It downloads the latest published version. If app files have been changed or added on this computer, it asks you to choose **1: Back up the changed app files, then update Plan (recommended)** or **2: Cancel and keep the app folder as it is**. Choose 1 to continue; choose 2 to leave your app files untouched. After an update, the folder matches the published version and the window stays open so you can read the result.
 3. Open **Plan** from the Start Menu (or run **start.bat**). It uses the updated source and bundled runtime directly.
 

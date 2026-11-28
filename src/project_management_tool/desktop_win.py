@@ -152,6 +152,37 @@ def build_shortcut_spec(
     )
 
 
+def launch_desktop_app(
+    repo_dir: Path,
+    *,
+    port: int = DEFAULT_PORT,
+    data_dir: Path | None = None,
+    profile_dir: Path | None = None,
+    file_access: str = "native",
+) -> None:
+    """Install shortcuts and hand the batch launcher off to a console-free app."""
+    repo = Path(repo_dir).resolve()
+    pythonw = resolve_pythonw_path(repo)
+    if pythonw.name.lower() != "pythonw.exe" or not pythonw.is_file():
+        raise OSError("The Windows pythonw.exe runtime is missing. Restore the runtime folder and try again.")
+    install_shortcuts(
+        repo,
+        desktop=True,
+        port=port,
+        data_dir=data_dir,
+        profile_dir=profile_dir,
+        file_access=file_access,
+    )
+    args = build_app_cli_args(
+        str(repo / "start.py"),
+        port=port,
+        data_dir=data_dir,
+        profile_dir=profile_dir,
+        file_access=file_access,
+    )
+    subprocess.Popen([str(pythonw), *args], cwd=str(repo))
+
+
 def build_browser_args(browser_path: Path | str, url: str, profile_dir: Path | str) -> list[str]:
     return [
         str(browser_path),
